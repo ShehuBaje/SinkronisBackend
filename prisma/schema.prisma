@@ -1,0 +1,1191 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model agentinvitation {
+  id              String                 @id
+  organizationId  String
+  email           String
+  token           String                 @unique(map: "AgentInvitation_token_key")
+  status          agentinvitation_status @default(PENDING)
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime
+  roleId          String?
+  invitedByUserId String?
+  moduleAccess    Json?
+  user            user?                  @relation(fields: [invitedByUserId], references: [id], map: "AgentInvitation_invitedByUserId_fkey")
+  organization    organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AgentInvitation_organizationId_fkey")
+  role            role?                  @relation(fields: [roleId], references: [id], map: "AgentInvitation_roleId_fkey")
+
+  @@index([invitedByUserId], map: "AgentInvitation_invitedByUserId_fkey")
+  @@index([organizationId, roleId], map: "AgentInvitation_organizationId_roleId_idx")
+  @@index([organizationId, status], map: "AgentInvitation_organizationId_status_idx")
+  @@index([roleId], map: "AgentInvitation_roleId_fkey")
+}
+
+model announcementreadstatus {
+  id                   String               @id
+  organizationId       String
+  userId               String
+  announcementId       String
+  readAt               DateTime             @default(now())
+  createdAt            DateTime             @default(now())
+  platformannouncement platformannouncement @relation(fields: [announcementId], references: [id], onDelete: Cascade, map: "AnnouncementReadStatus_announcementId_fkey")
+  organization         organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AnnouncementReadStatus_organizationId_fkey")
+  user                 user                 @relation(fields: [userId], references: [id], onDelete: Cascade, map: "AnnouncementReadStatus_userId_fkey")
+
+  @@unique([userId, announcementId], map: "AnnouncementReadStatus_userId_announcementId_key")
+  @@index([announcementId], map: "AnnouncementReadStatus_announcementId_fkey")
+  @@index([organizationId, userId, readAt], map: "AnnouncementReadStatus_organizationId_userId_readAt_idx")
+}
+
+model appraisalcycle {
+  id             String                @id
+  organizationId String
+  title          String
+  periodStart    DateTime
+  periodEnd      DateTime
+  status         appraisalcycle_status @default(DRAFT)
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime
+
+  @@index([organizationId, status], map: "AppraisalCycle_organizationId_status_idx")
+}
+
+model attendance {
+  id             String            @id
+  organizationId String
+  employeeId     String
+  clockInAt      DateTime
+  clockOutAt     DateTime?
+  source         attendance_source @default(WEB)
+  note           String?           @db.Text
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime
+  employee       employee          @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "Attendance_employeeId_fkey")
+
+  @@index([employeeId], map: "Attendance_employeeId_fkey")
+  @@index([organizationId, employeeId, clockInAt], map: "Attendance_organizationId_employeeId_clockInAt_idx")
+}
+
+model auditlog {
+  id             String       @id
+  organizationId String
+  actorUserId    String?
+  action         String
+  resource       String
+  resourceId     String?
+  summary        String
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+  previousHash   String?      @db.Char(64)
+  hash           String?      @db.Char(64)
+  sequence       Int?
+  user           user?        @relation(fields: [actorUserId], references: [id], map: "AuditLog_actorUserId_fkey")
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuditLog_organizationId_fkey")
+
+  @@unique([organizationId, sequence], map: "AuditLog_organizationId_sequence_key")
+  @@index([actorUserId], map: "AuditLog_actorUserId_fkey")
+  @@index([organizationId, createdAt], map: "AuditLog_organizationId_createdAt_idx")
+  @@index([organizationId, hash], map: "AuditLog_organizationId_hash_idx")
+  @@index([organizationId, resource, createdAt], map: "AuditLog_organizationId_resource_createdAt_idx")
+}
+
+model auditlogchain {
+  organizationId String       @id
+  lastHash       String?      @db.Char(64)
+  sequence       Int          @default(0)
+  updatedAt      DateTime
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuditLogChain_organizationId_fkey")
+}
+
+model authchallenge {
+  id             String       @id
+  organizationId String
+  userId         String
+  purpose        String
+  method         String
+  codeHash       String
+  attempts       Int          @default(0)
+  maxAttempts    Int          @default(5)
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuthChallenge_organizationId_fkey")
+  user           user         @relation(fields: [userId], references: [id], onDelete: Cascade, map: "AuthChallenge_userId_fkey")
+
+  @@index([organizationId, expiresAt], map: "AuthChallenge_organizationId_expiresAt_idx")
+  @@index([organizationId, userId, purpose, createdAt], map: "AuthChallenge_organizationId_userId_purpose_createdAt_idx")
+  @@index([userId], map: "AuthChallenge_userId_fkey")
+}
+
+model authevent {
+  id              String       @id
+  organizationId  String
+  userId          String?
+  emailAttempted  String?
+  eventType       String
+  status          String
+  reasonCode      String?
+  ipAddress       String?
+  userAgent       String?      @db.Text
+  deviceName      String?
+  locationState   String?
+  locationCountry String?
+  occurredAt      DateTime     @default(now())
+  organization    organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuthEvent_organizationId_fkey")
+  user            user?        @relation(fields: [userId], references: [id], map: "AuthEvent_userId_fkey")
+
+  @@index([organizationId, occurredAt], map: "AuthEvent_organizationId_occurredAt_idx")
+  @@index([organizationId, status, occurredAt], map: "AuthEvent_organizationId_status_occurredAt_idx")
+  @@index([organizationId, userId, occurredAt], map: "AuthEvent_organizationId_userId_occurredAt_idx")
+  @@index([userId], map: "AuthEvent_userId_fkey")
+}
+
+model billingfeature {
+  id                 String               @id
+  key                String               @unique(map: "BillingFeature_key_key")
+  name               String
+  normalizedName     String
+  description        String?              @db.Text
+  moduleKey          String?
+  status             String               @default("ACTIVE")
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime
+  billingplanfeature billingplanfeature[]
+
+  @@unique([moduleKey, normalizedName], map: "BillingFeature_moduleKey_normalizedName_key")
+  @@index([moduleKey, status], map: "BillingFeature_moduleKey_status_idx")
+}
+
+model billinghistory {
+  id             String       @id
+  organizationId String
+  description    String
+  amount         Decimal      @db.Decimal(14, 2)
+  currency       String       @default("NGN")
+  status         String
+  billedAt       DateTime
+  providerRef    String?
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "BillingHistory_organizationId_fkey")
+
+  @@index([organizationId, billedAt], map: "BillingHistory_organizationId_billedAt_idx")
+  @@index([organizationId, status, billedAt], map: "BillingHistory_organizationId_status_billedAt_idx")
+  @@index([status, billedAt], map: "BillingHistory_status_billedAt_idx")
+}
+
+model billingnotification {
+  id             String       @id
+  organizationId String
+  type           String
+  renewalDate    DateTime
+  scheduledFor   DateTime
+  channels       Json
+  status         String       @default("PENDING")
+  attempts       Int          @default(0)
+  lastAttemptAt  DateTime?
+  sentAt         DateTime?
+  failedAt       DateTime?
+  errorMessage   String?      @db.Text
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "BillingNotification_organizationId_fkey")
+
+  @@unique([organizationId, type, renewalDate], map: "BillingNotification_organizationId_type_renewalDate_key")
+  @@index([status, scheduledFor], map: "BillingNotification_status_scheduledFor_idx")
+}
+
+model billingplanfeature {
+  planId             String
+  featureId          String
+  createdAt          DateTime           @default(now())
+  billingfeature     billingfeature     @relation(fields: [featureId], references: [id], map: "BillingPlanFeature_featureId_fkey")
+  billingproductplan billingproductplan @relation(fields: [planId], references: [id], onDelete: Cascade, map: "BillingPlanFeature_planId_fkey")
+
+  @@id([planId, featureId])
+  @@index([featureId], map: "BillingPlanFeature_featureId_idx")
+}
+
+model billingplanmodule {
+  planId             String
+  moduleKey          String
+  createdAt          DateTime           @default(now())
+  billingproductplan billingproductplan @relation(fields: [planId], references: [id], onDelete: Cascade, map: "BillingPlanModule_planId_fkey")
+
+  @@id([planId, moduleKey])
+  @@index([moduleKey], map: "BillingPlanModule_moduleKey_idx")
+}
+
+model billingpriceversion {
+  id                         String                       @id
+  planId                     String
+  monthlyPrice               Decimal                      @db.Decimal(14, 2)
+  currency                   String                       @default("NGN")
+  effectiveAt                DateTime
+  endsAt                     DateTime?
+  reason                     String?                      @db.Text
+  changedByUserId            String?
+  version                    Int
+  createdAt                  DateTime                     @default(now())
+  billingproductplan         billingproductplan           @relation(fields: [planId], references: [id], onDelete: Cascade, map: "BillingPriceVersion_planId_fkey")
+  subscriptionpriceagreement subscriptionpriceagreement[]
+
+  @@unique([planId, version], map: "BillingPriceVersion_planId_version_key")
+  @@index([effectiveAt, endsAt], map: "BillingPriceVersion_effectiveAt_endsAt_idx")
+  @@index([planId, effectiveAt], map: "BillingPriceVersion_planId_effectiveAt_idx")
+}
+
+model billingproductplan {
+  id                         String                       @id
+  key                        String                       @unique(map: "BillingProductPlan_key_key")
+  name                       String
+  normalizedName             String                       @unique(map: "BillingProductPlan_normalizedName_key")
+  description                String                       @db.Text
+  status                     String                       @default("ACTIVE")
+  pricingModel               String                       @default("FLAT_MONTHLY")
+  isSystem                   Boolean                      @default(false)
+  rowVersion                 Int                          @default(1)
+  createdByUserId            String?
+  createdAt                  DateTime                     @default(now())
+  updatedAt                  DateTime
+  billingplanfeature         billingplanfeature[]
+  billingplanmodule          billingplanmodule[]
+  billingpriceversion        billingpriceversion[]
+  subscriptionpriceagreement subscriptionpriceagreement[]
+
+  @@index([status, updatedAt], map: "BillingProductPlan_status_updatedAt_idx")
+}
+
+model branch {
+  id             String       @id
+  organizationId String
+  name           String
+  address        String       @db.Text
+  phone          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Branch_organizationId_fkey")
+
+  @@unique([organizationId, name], map: "Branch_organizationId_name_key")
+  @@index([organizationId], map: "Branch_organizationId_idx")
+}
+
+model client {
+  id             String       @id
+  organizationId String
+  name           String
+  email          String?
+  phone          String?
+  address        String?      @db.Text
+  taxId          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Client_organizationId_fkey")
+  invoice        invoice[]
+
+  @@index([organizationId], map: "Client_organizationId_idx")
+}
+
+model conductlog {
+  id             String   @id
+  organizationId String
+  employeeId     String
+  category       String
+  summary        String
+  details        String?  @db.Text
+  incidentDate   DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime
+  employee       employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "ConductLog_employeeId_fkey")
+
+  @@index([employeeId], map: "ConductLog_employeeId_fkey")
+  @@index([organizationId, employeeId], map: "ConductLog_organizationId_employeeId_idx")
+}
+
+model department {
+  id                                           String       @id
+  organizationId                               String
+  name                                         String
+  description                                  String?      @db.Text
+  createdAt                                    DateTime     @default(now())
+  updatedAt                                    DateTime
+  headEmployeeId                               String?
+  employee_department_headEmployeeIdToemployee employee?    @relation("department_headEmployeeIdToemployee", fields: [headEmployeeId], references: [id], map: "Department_headEmployeeId_fkey")
+  organization                                 organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Department_organizationId_fkey")
+  employee_employee_departmentIdTodepartment   employee[]   @relation("employee_departmentIdTodepartment")
+  team                                         team[]
+
+  @@unique([organizationId, name], map: "Department_organizationId_name_key")
+  @@index([headEmployeeId], map: "Department_headEmployeeId_idx")
+  @@index([organizationId], map: "Department_organizationId_idx")
+}
+
+model employee {
+  id                                             String            @id
+  organizationId                                 String
+  departmentId                                   String?
+  teamId                                         String?
+  employeeNo                                     String
+  firstName                                      String
+  lastName                                       String
+  email                                          String
+  phone                                          String?
+  jobTitle                                       String?
+  hireDate                                       DateTime?
+  status                                         employee_status   @default(ACTIVE)
+  baseSalary                                     Decimal?          @db.Decimal(14, 2)
+  bankName                                       String?
+  bankAccountNumber                              String?
+  pensionPin                                     String?
+  createdAt                                      DateTime          @default(now())
+  updatedAt                                      DateTime
+  attendance                                     attendance[]
+  conductlog                                     conductlog[]
+  department_department_headEmployeeIdToemployee department[]      @relation("department_headEmployeeIdToemployee")
+  department_employee_departmentIdTodepartment   department?       @relation("employee_departmentIdTodepartment", fields: [departmentId], references: [id], map: "Employee_departmentId_fkey")
+  organization                                   organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Employee_organizationId_fkey")
+  team                                           team?             @relation(fields: [teamId], references: [id], map: "Employee_teamId_fkey")
+  leaverequest                                   leaverequest[]
+  loanadvance                                    loanadvance[]
+  payslip                                        payslip[]
+  salarystructure                                salarystructure[]
+  user                                           user?
+
+  @@unique([organizationId, email], map: "Employee_organizationId_email_key")
+  @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
+  @@index([departmentId], map: "Employee_departmentId_fkey")
+  @@index([organizationId], map: "Employee_organizationId_idx")
+  @@index([teamId], map: "Employee_teamId_fkey")
+}
+
+model invoice {
+  id             String         @id
+  organizationId String
+  clientId       String
+  invoiceNo      String
+  issueDate      DateTime
+  dueDate        DateTime?
+  status         invoice_status @default(DRAFT)
+  subtotal       Decimal        @db.Decimal(14, 2)
+  taxAmount      Decimal        @default(0.00) @db.Decimal(14, 2)
+  total          Decimal        @db.Decimal(14, 2)
+  notes          String?        @db.Text
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime
+  client         client         @relation(fields: [clientId], references: [id], map: "Invoice_clientId_fkey")
+  organization   organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Invoice_organizationId_fkey")
+  invoiceitem    invoiceitem[]
+
+  @@unique([organizationId, invoiceNo], map: "Invoice_organizationId_invoiceNo_key")
+  @@index([clientId], map: "Invoice_clientId_fkey")
+  @@index([organizationId, status], map: "Invoice_organizationId_status_idx")
+}
+
+model invoiceitem {
+  id          String  @id
+  invoiceId   String
+  description String
+  quantity    Decimal @db.Decimal(12, 2)
+  unitPrice   Decimal @db.Decimal(14, 2)
+  total       Decimal @db.Decimal(14, 2)
+  invoice     invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade, map: "InvoiceItem_invoiceId_fkey")
+
+  @@index([invoiceId], map: "InvoiceItem_invoiceId_fkey")
+}
+
+model ipallowlistentry {
+  id              String       @id
+  organizationId  String
+  value           String
+  label           String?
+  createdByUserId String?
+  createdAt       DateTime     @default(now())
+  user            user?        @relation(fields: [createdByUserId], references: [id], map: "IpAllowlistEntry_createdByUserId_fkey")
+  organization    organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "IpAllowlistEntry_organizationId_fkey")
+
+  @@unique([organizationId, value], map: "IpAllowlistEntry_organizationId_value_key")
+  @@index([createdByUserId], map: "IpAllowlistEntry_createdByUserId_fkey")
+  @@index([organizationId, createdAt], map: "IpAllowlistEntry_organizationId_createdAt_idx")
+}
+
+model leaverequest {
+  id             String              @id
+  organizationId String
+  employeeId     String
+  type           String
+  startDate      DateTime
+  endDate        DateTime
+  reason         String?             @db.Text
+  status         leaverequest_status @default(PENDING)
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime
+  employee       employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LeaveRequest_employeeId_fkey")
+
+  @@index([employeeId], map: "LeaveRequest_employeeId_fkey")
+  @@index([organizationId, employeeId, status], map: "LeaveRequest_organizationId_employeeId_status_idx")
+}
+
+model loanadvance {
+  id             String   @id
+  organizationId String
+  employeeId     String
+  amount         Decimal  @db.Decimal(14, 2)
+  outstanding    Decimal  @db.Decimal(14, 2)
+  reason         String?  @db.Text
+  issuedAt       DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime
+  employee       employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LoanAdvance_employeeId_fkey")
+
+  @@index([employeeId], map: "LoanAdvance_employeeId_fkey")
+  @@index([organizationId, employeeId], map: "LoanAdvance_organizationId_employeeId_idx")
+}
+
+model notificationcategory {
+  id                           String                         @id
+  moduleKey                    String
+  moduleName                   String
+  key                          String
+  name                         String
+  description                  String                         @db.Text
+  isActive                     Boolean                        @default(true)
+  sortOrder                    Int                            @default(0)
+  createdAt                    DateTime                       @default(now())
+  updatedAt                    DateTime
+  tenantnotificationpreference tenantnotificationpreference[]
+
+  @@unique([moduleKey, key], map: "NotificationCategory_moduleKey_key_key")
+  @@index([moduleKey, isActive, sortOrder], map: "NotificationCategory_moduleKey_isActive_sortOrder_idx")
+}
+
+model notificationchannel {
+  id                           String                         @id
+  key                          String                         @unique(map: "NotificationChannel_key_key")
+  name                         String
+  description                  String?
+  isActive                     Boolean                        @default(true)
+  sortOrder                    Int                            @default(0)
+  createdAt                    DateTime                       @default(now())
+  updatedAt                    DateTime
+  tenantnotificationpreference tenantnotificationpreference[]
+
+  @@index([isActive, sortOrder], map: "NotificationChannel_isActive_sortOrder_idx")
+}
+
+model organization {
+  id                           String                         @id
+  name                         String
+  slug                         String                         @unique(map: "Organization_slug_key")
+  email                        String?
+  phone                        String?
+  address                      String?                        @db.Text
+  country                      String?
+  currency                     String                         @default("NGN")
+  taxId                        String?
+  status                       organization_status            @default(ACTIVE)
+  createdAt                    DateTime                       @default(now())
+  updatedAt                    DateTime
+  profileImageUrl              String?
+  industry                     String?
+  cacNumber                    String?
+  registrationAddress          String?                        @db.Text
+  website                      String?
+  fiscalYearStart              String?
+  companySize                  String?
+  suspendedAt                  DateTime?
+  suspensionReason             String?                        @db.Text
+  suspendedByUserId            String?
+  agentinvitation              agentinvitation[]
+  announcementreadstatus       announcementreadstatus[]
+  auditlog                     auditlog[]
+  auditlogchain                auditlogchain?
+  authchallenge                authchallenge[]
+  authevent                    authevent[]
+  billinghistory               billinghistory[]
+  billingnotification          billingnotification[]
+  branch                       branch[]
+  client                       client[]
+  department                   department[]
+  employee                     employee[]
+  invoice                      invoice[]
+  ipallowlistentry             ipallowlistentry[]
+  organizationdataexport       organizationdataexport[]
+  organizationdeletionrequest  organizationdeletionrequest[]
+  organizationgeneralsettings  organizationgeneralsettings?
+  paymentcard                  paymentcard[]
+  paymentrequest               paymentrequest[]
+  payrollrun                   payrollrun[]
+  platformimpersonationsession platformimpersonationsession[]
+  role                         role[]
+  salarystructure              salarystructure[]
+  securitypolicy               securitypolicy?
+  subscriptionplanchange       subscriptionplanchange[]
+  subscriptionpriceagreement   subscriptionpriceagreement[]
+  supportticket                supportticket[]
+  systemalert                  systemalert[]
+  systemconfig                 systemconfig[]
+  taxreport                    taxreport[]
+  team                         team[]
+  tenantnotificationpreference tenantnotificationpreference[]
+  user                         user[]
+  usersession                  usersession[]
+  walletaccount                walletaccount[]
+  workschedule                 workschedule?
+
+  @@index([status, createdAt], map: "Organization_status_createdAt_idx")
+}
+
+model organizationdataexport {
+  id                String       @id
+  organizationId    String
+  requestedByUserId String
+  status            String       @default("PENDING_PLATFORM_FULFILLMENT")
+  fileName          String?
+  fileReference     String?
+  fileSize          Int?
+  requestedAt       DateTime     @default(now())
+  completedAt       DateTime?
+  failedAt          DateTime?
+  errorMessage      String?      @db.Text
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime
+  deliveryEmail     String
+  deliveryDueAt     DateTime
+  deliveredAt       DateTime?
+  organization      organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "OrgDataExport_org_fkey")
+
+  @@index([status, deliveryDueAt], map: "OrgDataExport_delivery_due_idx")
+  @@index([organizationId, requestedAt], map: "OrgDataExport_org_requested_idx")
+  @@index([status, requestedAt], map: "OrgDataExport_status_requested_idx")
+}
+
+model organizationdeletionrequest {
+  id                String       @id
+  organizationId    String
+  requestedByUserId String
+  status            String       @default("PENDING_PLATFORM_APPROVAL")
+  reason            String?      @db.Text
+  requestedAt       DateTime     @default(now())
+  reviewedAt        DateTime?
+  reviewedByUserId  String?
+  completedAt       DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime
+  organization      organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "OrgDeletionRequest_org_fkey")
+
+  @@index([organizationId, status], map: "OrgDeletionRequest_org_status_idx")
+  @@index([status, requestedAt], map: "OrgDeletionRequest_status_requested_idx")
+}
+
+model organizationgeneralsettings {
+  id             String       @id
+  organizationId String       @unique(map: "OrgGeneralSettings_org_key")
+  timeZone       String       @default("Africa/Lagos")
+  language       String       @default("en")
+  dateFormat     String       @default("DD/MM/YYYY")
+  currency       String       @default("NGN")
+  accentColor    String       @default("#2563EB")
+  linkText       String?
+  logoUrl        String?
+  logoFileName   String?
+  logoMimeType   String?
+  logoSize       Int?
+  logoWidth      Int?
+  logoHeight     Int?
+  logoUploadedAt DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "OrgGeneralSettings_org_fkey")
+}
+
+model passwordresetotp {
+  id         String    @id
+  userId     String
+  codeHash   String
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime
+  user       user      @relation(fields: [userId], references: [id], onDelete: Cascade, map: "PasswordResetOtp_userId_fkey")
+
+  @@index([expiresAt], map: "PasswordResetOtp_expiresAt_idx")
+  @@index([userId, createdAt], map: "PasswordResetOtp_userId_createdAt_idx")
+}
+
+model paymentcard {
+  id                String       @id
+  organizationId    String
+  cardHolderName    String
+  brand             String
+  last4             String
+  expMonth          Int
+  expYear           Int
+  provider          String?
+  providerCardToken String?
+  isDefault         Boolean      @default(false)
+  createdByUserId   String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime
+  organization      organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PaymentCard_organizationId_fkey")
+
+  @@index([organizationId, createdAt], map: "PaymentCard_organizationId_createdAt_idx")
+  @@index([organizationId, isDefault], map: "PaymentCard_organizationId_isDefault_idx")
+}
+
+model paymentrequest {
+  id             String                @id
+  organizationId String
+  title          String
+  vendorName     String?
+  amount         Decimal               @db.Decimal(14, 2)
+  currency       String                @default("NGN")
+  status         paymentrequest_status @default(PENDING)
+  requestedBy    String?
+  approvedBy     String?
+  approvedAt     DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime
+  organization   organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PaymentRequest_organizationId_fkey")
+
+  @@index([organizationId, status], map: "PaymentRequest_organizationId_status_idx")
+}
+
+model payrollrun {
+  id             String            @id
+  organizationId String
+  name           String
+  periodStart    DateTime
+  periodEnd      DateTime
+  payDate        DateTime?
+  status         payrollrun_status @default(DRAFT)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime
+  organization   organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollRun_organizationId_fkey")
+  payslip        payslip[]
+
+  @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
+}
+
+model payslip {
+  id             String     @id
+  organizationId String
+  payrollRunId   String
+  employeeId     String
+  grossPay       Decimal    @db.Decimal(14, 2)
+  payeTax        Decimal    @default(0.00) @db.Decimal(14, 2)
+  pension        Decimal    @default(0.00) @db.Decimal(14, 2)
+  deductions     Decimal    @default(0.00) @db.Decimal(14, 2)
+  netPay         Decimal    @db.Decimal(14, 2)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime
+  employee       employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
+  payrollrun     payrollrun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
+
+  @@unique([payrollRunId, employeeId], map: "Payslip_payrollRunId_employeeId_key")
+  @@index([employeeId], map: "Payslip_employeeId_fkey")
+  @@index([organizationId, employeeId], map: "Payslip_organizationId_employeeId_idx")
+}
+
+model permission {
+  id             String           @id
+  key            String           @unique(map: "Permission_key_key")
+  description    String?
+  rolepermission rolepermission[]
+}
+
+model platformannouncement {
+  id                     String                   @id
+  title                  String
+  summary                String                   @db.Text
+  description            String                   @db.LongText
+  type                   String
+  contentFormat          String                   @default("MARKDOWN")
+  learnMoreUrl           String?
+  contentReference       String?
+  publishedAt            DateTime?
+  expiresAt              DateTime?
+  isPublished            Boolean                  @default(false)
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime
+  announcementreadstatus announcementreadstatus[]
+
+  @@index([isPublished, publishedAt], map: "PlatformAnnouncement_isPublished_publishedAt_idx")
+  @@index([type, publishedAt], map: "PlatformAnnouncement_type_publishedAt_idx")
+}
+
+model platformimpersonationsession {
+  id                                                          String       @id
+  organizationId                                              String
+  platformAdminUserId                                         String
+  tenantAdminUserId                                           String
+  status                                                      String       @default("ACTIVE")
+  startedAt                                                   DateTime     @default(now())
+  expiresAt                                                   DateTime
+  endedAt                                                     DateTime?
+  ipAddress                                                   String?
+  userAgent                                                   String?      @db.Text
+  user_platformimpersonationsession_platformAdminUserIdTouser user         @relation("platformimpersonationsession_platformAdminUserIdTouser", fields: [platformAdminUserId], references: [id], onDelete: Cascade, map: "Impersonation_actor_fkey")
+  organization                                                organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Impersonation_org_fkey")
+  user_platformimpersonationsession_tenantAdminUserIdTouser   user         @relation("platformimpersonationsession_tenantAdminUserIdTouser", fields: [tenantAdminUserId], references: [id], onDelete: Cascade, map: "Impersonation_target_fkey")
+
+  @@index([platformAdminUserId, status, expiresAt], map: "Impersonation_admin_status_expiry_idx")
+  @@index([organizationId, startedAt], map: "Impersonation_org_started_idx")
+  @@index([tenantAdminUserId], map: "Impersonation_target_fkey")
+}
+
+model role {
+  id              String            @id
+  organizationId  String
+  name            String
+  description     String?           @db.Text
+  isSystem        Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime
+  agentinvitation agentinvitation[]
+  organization    organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Role_organizationId_fkey")
+  rolepermission  rolepermission[]
+  user            user[]
+
+  @@unique([organizationId, name], map: "Role_organizationId_name_key")
+  @@index([organizationId], map: "Role_organizationId_idx")
+}
+
+model rolepermission {
+  roleId       String
+  permissionId String
+  permission   permission @relation(fields: [permissionId], references: [id], onDelete: Cascade, map: "RolePermission_permissionId_fkey")
+  role         role       @relation(fields: [roleId], references: [id], onDelete: Cascade, map: "RolePermission_roleId_fkey")
+
+  @@id([roleId, permissionId])
+  @@index([permissionId], map: "RolePermission_permissionId_fkey")
+}
+
+model salarystructure {
+  id             String       @id
+  organizationId String
+  employeeId     String
+  title          String
+  basic          Decimal      @db.Decimal(14, 2)
+  housing        Decimal      @default(0.00) @db.Decimal(14, 2)
+  transport      Decimal      @default(0.00) @db.Decimal(14, 2)
+  otherAllowance Decimal      @default(0.00) @db.Decimal(14, 2)
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  employee       employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "SalaryStructure_employeeId_fkey")
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SalaryStructure_organizationId_fkey")
+
+  @@index([employeeId], map: "SalaryStructure_employeeId_fkey")
+  @@index([organizationId, employeeId], map: "SalaryStructure_organizationId_employeeId_idx")
+}
+
+model securitypolicy {
+  id                          String       @id
+  organizationId              String       @unique(map: "SecurityPolicy_organizationId_key")
+  minPasswordLength           Int          @default(8)
+  passwordExpiryDays          Int          @default(90)
+  lockoutMaxAttempts          Int          @default(5)
+  requireUppercase            Boolean      @default(true)
+  requireLowercase            Boolean      @default(true)
+  requireNumber               Boolean      @default(true)
+  requireSpecialCharacter     Boolean      @default(true)
+  twoFactorEnabled            Boolean      @default(false)
+  enforceTwoFactorForAllUsers Boolean      @default(false)
+  allowAuthenticatorApp       Boolean      @default(true)
+  allowSmsOtp                 Boolean      @default(false)
+  allowEmailOtp               Boolean      @default(true)
+  ipAllowlistEnabled          Boolean      @default(false)
+  updatedByUserId             String?
+  createdAt                   DateTime     @default(now())
+  updatedAt                   DateTime
+  organization                organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SecurityPolicy_organizationId_fkey")
+  user                        user?        @relation(fields: [updatedByUserId], references: [id], map: "SecurityPolicy_updatedByUserId_fkey")
+
+  @@index([organizationId, updatedAt], map: "SecurityPolicy_organizationId_updatedAt_idx")
+  @@index([updatedByUserId], map: "SecurityPolicy_updatedByUserId_fkey")
+}
+
+model subscriptionplanchange {
+  id                  String       @id
+  organizationId      String
+  fromPlanKey         String
+  toPlanKey           String
+  billingCycle        String
+  currentMonthlyCost  Decimal      @db.Decimal(14, 2)
+  selectedMonthlyCost Decimal      @db.Decimal(14, 2)
+  billingImpact       Decimal      @db.Decimal(14, 2)
+  proratedCharge      Decimal      @default(0.00) @db.Decimal(14, 2)
+  currency            String       @default("NGN")
+  effectiveAt         DateTime
+  status              String       @default("PENDING")
+  paymentReference    String?
+  automaticRenewal    Boolean      @default(true)
+  confirmedByUserId   String?
+  confirmedAt         DateTime?
+  appliedAt           DateTime?
+  cancelledAt         DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime
+  organization        organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SubscriptionPlanChange_organizationId_fkey")
+
+  @@index([organizationId, status, effectiveAt], map: "SubscriptionPlanChange_organizationId_status_effectiveAt_idx")
+  @@index([status, effectiveAt], map: "SubscriptionPlanChange_status_effectiveAt_idx")
+}
+
+model subscriptionpriceagreement {
+  id                  String               @id
+  organizationId      String
+  planId              String
+  priceVersionId      String?
+  source              String               @default("BASE_PLAN")
+  monthlyPrice        Decimal              @db.Decimal(14, 2)
+  currency            String               @default("NGN")
+  startsAt            DateTime
+  endsAt              DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime
+  organization        organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SubscriptionPriceAgreement_organizationId_fkey")
+  billingproductplan  billingproductplan   @relation(fields: [planId], references: [id], map: "SubscriptionPriceAgreement_planId_fkey")
+  billingpriceversion billingpriceversion? @relation(fields: [priceVersionId], references: [id], map: "SubscriptionPriceAgreement_priceVersionId_fkey")
+
+  @@unique([organizationId, planId, source, startsAt], map: "SubPriceAgreement_org_plan_source_start_key")
+  @@index([organizationId, startsAt, endsAt], map: "SubPriceAgreement_org_start_end_idx")
+  @@index([planId, startsAt, endsAt], map: "SubPriceAgreement_plan_start_end_idx")
+  @@index([priceVersionId], map: "SubscriptionPriceAgreement_priceVersionId_fkey")
+}
+
+model supportticket {
+  id               String       @id
+  organizationId   String
+  ticketNumber     String       @unique(map: "SupportTicket_ticketNumber_key")
+  subject          String
+  description      String?      @db.Text
+  priority         String
+  status           String
+  assignedToUserId String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime
+  user             user?        @relation(fields: [assignedToUserId], references: [id], map: "SupportTicket_assignee_fkey")
+  organization     organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SupportTicket_org_fkey")
+
+  @@index([assignedToUserId], map: "SupportTicket_assignee_fkey")
+  @@index([organizationId, status, priority], map: "SupportTicket_org_status_priority_idx")
+  @@index([organizationId, updatedAt], map: "SupportTicket_org_updated_idx")
+}
+
+model systemalert {
+  id                   String               @id
+  organizationId       String
+  key                  String
+  title                String
+  message              String
+  severity             systemalert_severity @default(INFO)
+  status               systemalert_status   @default(OPEN)
+  isActive             Boolean              @default(true)
+  acknowledgedAt       DateTime?
+  acknowledgedByUserId String?
+  resolvedAt           DateTime?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime
+  user                 user?                @relation(fields: [acknowledgedByUserId], references: [id], map: "SystemAlert_acknowledgedByUserId_fkey")
+  organization         organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SystemAlert_organizationId_fkey")
+
+  @@unique([organizationId, key], map: "SystemAlert_organizationId_key_key")
+  @@index([acknowledgedByUserId], map: "SystemAlert_acknowledgedByUserId_fkey")
+  @@index([organizationId, isActive, severity], map: "SystemAlert_organizationId_isActive_severity_idx")
+  @@index([organizationId, status, updatedAt], map: "SystemAlert_organizationId_status_updatedAt_idx")
+}
+
+model systemconfig {
+  id             String       @id
+  organizationId String
+  key            String
+  value          Json
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SystemConfig_organizationId_fkey")
+
+  @@unique([organizationId, key], map: "SystemConfig_organizationId_key_key")
+  @@index([key], map: "SystemConfig_key_idx")
+}
+
+model taxreport {
+  id             String       @id
+  organizationId String
+  periodStart    DateTime
+  periodEnd      DateTime
+  type           String
+  amount         Decimal      @db.Decimal(14, 2)
+  submittedAt    DateTime?
+  reference      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "TaxReport_organizationId_fkey")
+
+  @@index([organizationId, type], map: "TaxReport_organizationId_type_idx")
+}
+
+model team {
+  id             String       @id
+  organizationId String
+  departmentId   String?
+  name           String
+  description    String?      @db.Text
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  employee       employee[]
+  department     department?  @relation(fields: [departmentId], references: [id], map: "Team_departmentId_fkey")
+  organization   organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Team_organizationId_fkey")
+
+  @@unique([organizationId, name], map: "Team_organizationId_name_key")
+  @@index([departmentId], map: "Team_departmentId_fkey")
+  @@index([organizationId], map: "Team_organizationId_idx")
+}
+
+model tenantnotificationpreference {
+  id                   String               @id
+  organizationId       String
+  channelId            String
+  categoryId           String
+  enabled              Boolean              @default(true)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime
+  notificationcategory notificationcategory @relation(fields: [categoryId], references: [id], onDelete: Cascade, map: "TenantNotificationPreference_categoryId_fkey")
+  notificationchannel  notificationchannel  @relation(fields: [channelId], references: [id], onDelete: Cascade, map: "TenantNotificationPreference_channelId_fkey")
+  organization         organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "TenantNotificationPreference_organizationId_fkey")
+
+  @@unique([organizationId, channelId, categoryId], map: "TenantPref_org_channel_category_uq")
+  @@index([categoryId], map: "TenantNotificationPreference_categoryId_fkey")
+  @@index([channelId], map: "TenantNotificationPreference_channelId_fkey")
+  @@index([organizationId, channelId], map: "TenantPref_org_channel_idx")
+}
+
+model user {
+  id                                                                                  String                         @id
+  organizationId                                                                      String
+  roleId                                                                              String
+  employeeId                                                                          String?                        @unique(map: "User_employeeId_key")
+  email                                                                               String
+  passwordHash                                                                        String
+  firstName                                                                           String
+  lastName                                                                            String
+  isActive                                                                            Boolean                        @default(true)
+  lastLoginAt                                                                         DateTime?
+  createdAt                                                                           DateTime                       @default(now())
+  updatedAt                                                                           DateTime
+  profileImageUrl                                                                     String?
+  failedLoginAttempts                                                                 Int                            @default(0)
+  lockedUntil                                                                         DateTime?
+  passwordChangedAt                                                                   DateTime                       @default(now())
+  isPlatformAdmin                                                                     Boolean                        @default(false)
+  agentinvitation                                                                     agentinvitation[]
+  announcementreadstatus                                                              announcementreadstatus[]
+  auditlog                                                                            auditlog[]
+  authchallenge                                                                       authchallenge[]
+  authevent                                                                           authevent[]
+  ipallowlistentry                                                                    ipallowlistentry[]
+  passwordresetotp                                                                    passwordresetotp[]
+  platformimpersonationsession_platformimpersonationsession_platformAdminUserIdTouser platformimpersonationsession[] @relation("platformimpersonationsession_platformAdminUserIdTouser")
+  platformimpersonationsession_platformimpersonationsession_tenantAdminUserIdTouser   platformimpersonationsession[] @relation("platformimpersonationsession_tenantAdminUserIdTouser")
+  securitypolicy                                                                      securitypolicy[]
+  supportticket                                                                       supportticket[]
+  systemalert                                                                         systemalert[]
+  employee                                                                            employee?                      @relation(fields: [employeeId], references: [id], map: "User_employeeId_fkey")
+  organization                                                                        organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "User_organizationId_fkey")
+  role                                                                                role                           @relation(fields: [roleId], references: [id], map: "User_roleId_fkey")
+  usersession                                                                         usersession[]
+  usertwofactor                                                                       usertwofactor?
+
+  @@unique([organizationId, email], map: "User_organizationId_email_key")
+  @@index([isPlatformAdmin, isActive], map: "User_isPlatformAdmin_isActive_idx")
+  @@index([organizationId], map: "User_organizationId_idx")
+  @@index([roleId], map: "User_roleId_fkey")
+}
+
+model usersession {
+  id               String       @id
+  organizationId   String
+  userId           String
+  refreshTokenHash String
+  deviceName       String?
+  userAgent        String?      @db.Text
+  ipAddress        String?
+  locationState    String?
+  locationCountry  String?
+  isCurrent        Boolean      @default(false)
+  revokedAt        DateTime?
+  revokeReason     String?
+  lastSeenAt       DateTime     @default(now())
+  expiresAt        DateTime
+  createdAt        DateTime     @default(now())
+  organization     organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "UserSession_organizationId_fkey")
+  user             user         @relation(fields: [userId], references: [id], onDelete: Cascade, map: "UserSession_userId_fkey")
+
+  @@index([organizationId, createdAt], map: "UserSession_organizationId_createdAt_idx")
+  @@index([organizationId, revokedAt], map: "UserSession_organizationId_revokedAt_idx")
+  @@index([organizationId, userId, revokedAt], map: "UserSession_organizationId_userId_revokedAt_idx")
+  @@index([userId], map: "UserSession_userId_fkey")
+}
+
+model usertwofactor {
+  id                     String   @id
+  userId                 String   @unique(map: "UserTwoFactor_userId_key")
+  authenticatorSecretEnc String?
+  authenticatorEnabled   Boolean  @default(false)
+  phoneNumber            String?
+  preferredMethod        String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime
+  user                   user     @relation(fields: [userId], references: [id], onDelete: Cascade, map: "UserTwoFactor_userId_fkey")
+
+  @@index([authenticatorEnabled, updatedAt], map: "UserTwoFactor_authenticatorEnabled_updatedAt_idx")
+}
+
+model walletaccount {
+  id                 String               @id
+  organizationId     String
+  name               String
+  balance            Decimal              @default(0.00) @db.Decimal(14, 2)
+  currency           String               @default("NGN")
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime
+  organization       organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletAccount_organizationId_fkey")
+  walletdisbursement walletdisbursement[]
+
+  @@index([organizationId], map: "WalletAccount_organizationId_idx")
+}
+
+model walletdisbursement {
+  id              String                    @id
+  walletAccountId String
+  organizationId  String
+  beneficiaryName String
+  amount          Decimal                   @db.Decimal(14, 2)
+  status          walletdisbursement_status @default(PENDING)
+  reference       String?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime
+  walletaccount   walletaccount             @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletDisbursement_walletAccountId_fkey")
+
+  @@index([organizationId, status], map: "WalletDisbursement_organizationId_status_idx")
+  @@index([walletAccountId], map: "WalletDisbursement_walletAccountId_fkey")
+}
+
+model workschedule {
+  id                   String       @id
+  organizationId       String       @unique(map: "WorkSchedule_organizationId_key")
+  monday               Boolean      @default(true)
+  tuesday              Boolean      @default(true)
+  wednesday            Boolean      @default(true)
+  thursday             Boolean      @default(true)
+  friday               Boolean      @default(true)
+  saturday             Boolean      @default(false)
+  sunday               Boolean      @default(false)
+  workStartTime        String       @default("09:00")
+  workEndTime          String       @default("17:00")
+  breakDurationMinutes Int          @default(60)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime
+  organization         organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WorkSchedule_organizationId_fkey")
+
+  @@index([organizationId], map: "WorkSchedule_organizationId_idx")
+}
+
+enum agentinvitation_status {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum appraisalcycle_status {
+  DRAFT
+  OPEN
+  CLOSED
+  ARCHIVED
+}
+
+enum attendance_source {
+  WEB
+  MOBILE
+  ADMIN
+}
+
+enum systemalert_severity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum walletdisbursement_status {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum invoice_status {
+  DRAFT
+  SENT
+  PAID
+  VOID
+  OVERDUE
+}
+
+enum paymentrequest_status {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum payrollrun_status {
+  DRAFT
+  PROCESSING
+  APPROVED
+  PAID
+  CANCELLED
+}
+
+enum systemalert_status {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+enum leaverequest_status {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum organization_status {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum employee_status {
+  ACTIVE
+  ON_LEAVE
+  SUSPENDED
+  TERMINATED
+}

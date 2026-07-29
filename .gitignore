@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+
+# Compiled output and test coverage
+dist/
+coverage/
+*.tsbuildinfo
+
+# Environment files and local credentials
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+memurai-log.txt
+
+# Runtime data and user uploads
+uploads/
+dump.rdb
+
+# Temporary files and caches
+tmp/
+temp/
+.tmp/
+.tmp-*
+.cache/
+.eslintcache
+
+# Local certificates and private keys
+certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# IDE and editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
