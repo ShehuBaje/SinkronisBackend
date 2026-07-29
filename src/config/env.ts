@@ -11,6 +11,10 @@ const envSchema = z.object({
   REDIS_PORT: z.coerce.number().int().positive().default(6379),
   REDIS_PASSWORD: z.string().optional(),
   REDIS_DB: z.coerce.number().int().min(0).default(0),
+  REDIS_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
+  RATE_LIMIT_STORE: z.enum(["memory", "redis"]).default("memory"),
+  BACKGROUND_JOBS_MODE: z.enum(["inline", "queue"]).default("queue"),
+  CRON_SECRET: z.string().min(16).optional(),
   JWT_ACCESS_SECRET: z.string().min(24),
   JWT_REFRESH_SECRET: z.string().min(24),
   JWT_ACCESS_EXPIRES_IN: z.string().default("30m"),
@@ -33,11 +37,30 @@ const envSchema = z.object({
     .default("true")
     .transform((value) => value === "true"),
   CORS_ORIGIN: z.string().default("*"),
+  STORAGE_PROVIDER: z.enum(["local", "vercel-blob"]).default("local"),
+  BLOB_READ_WRITE_TOKEN: z.string().optional(),
   UPLOAD_DIR: z.string().default("uploads"),
   UPLOAD_PUBLIC_BASE_PATH: z.string().startsWith("/").default("/uploads"),
   UPLOAD_MAX_FILE_SIZE_MB: z.coerce.number().int().positive().default(5),
   DEFAULT_SUPER_ADMIN_EMAIL: z.string().email().default("admin@example.com"),
   DEFAULT_SUPER_ADMIN_PASSWORD: z.string().min(8).default("ChangeMe123!")
+}).superRefine((value, context) => {
+  if (value.NODE_ENV !== "production") return;
+  if (value.CORS_ORIGIN === "*") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["CORS_ORIGIN"], message: "CORS_ORIGIN must be an explicit frontend origin in production" });
+  }
+  if (value.STORAGE_PROVIDER !== "vercel-blob" || !value.BLOB_READ_WRITE_TOKEN) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["BLOB_READ_WRITE_TOKEN"], message: "Vercel Blob storage must be configured in production" });
+  }
+  if (!value.CRON_SECRET) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["CRON_SECRET"], message: "CRON_SECRET is required in production" });
+  }
+  if (value.RATE_LIMIT_STORE !== "redis") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["RATE_LIMIT_STORE"], message: "Distributed Redis rate limiting is required in production" });
+  }
+  if (value.RATE_LIMIT_STORE === "redis" && !value.REDIS_URL && value.REDIS_HOST === "127.0.0.1") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["REDIS_URL"], message: "A remote Redis connection is required for distributed rate limiting" });
+  }
 });
 
 export const env = envSchema.parse(process.env);

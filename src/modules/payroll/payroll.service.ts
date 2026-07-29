@@ -1,4 +1,5 @@
-import { badRequest, notFound, serviceUnavailable } from "../../core/http-error";
+import { badRequest, notFound } from "../../core/http-error";
+import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
 import { getQueueByName, isQueueBackendAvailable, PAYROLL_QUEUE_NAME } from "../../queues";
 import { PAYROLL_GENERATE_PAYSLIPS_JOB } from "../../queues/workers";
@@ -94,8 +95,19 @@ export const generatePayslips = async (organizationId: string, id: string) => {
 };
 
 export const enqueuePayslipGeneration = async (organizationId: string, payrollRunId: string, requestedByUserId?: string) => {
+  if (env.BACKGROUND_JOBS_MODE === "inline") {
+    const result = await generatePayslips(organizationId, payrollRunId);
+    return {
+      queued: false,
+      duplicate: false,
+      executionMode: "inline" as const,
+      payrollRunId,
+      generatedCount: result.count
+    };
+  }
+
   if (!isQueueBackendAvailable()) {
-    throw serviceUnavailable("Payslip generation queue is unavailable because Redis is not connected")
+    throw badRequest("Payslip generation queue is unavailable because Redis is not connected")
   }
 
   const run = await prisma.payrollRun.findFirst({
@@ -139,6 +151,7 @@ export const enqueuePayslipGeneration = async (organizationId: string, payrollRu
   return {
     queued: true,
     duplicate: false,
+    executionMode: "queue" as const,
     jobId: String(job.id),
     state: await job.getState()
   };

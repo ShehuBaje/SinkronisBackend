@@ -2,6 +2,45 @@
 
 Multitenant Express, TypeScript, MySQL, and Prisma API for administration, HRIS, accounting, and payroll.
 
+## Vercel deployment
+
+Vercel detects `src/app.ts` as the Express entry point. `src/server.ts` remains the
+local and long-running worker entry point and is not imported by the Vercel
+function.
+
+Configure these production environment variables in Vercel:
+
+```text
+NODE_ENV=production
+DATABASE_URL=<TiDB connection URL with sslaccept=strict>
+JWT_ACCESS_SECRET=<random secret of at least 24 characters>
+JWT_REFRESH_SECRET=<different random secret of at least 24 characters>
+CORS_ORIGIN=https://<frontend-domain>
+STORAGE_PROVIDER=vercel-blob
+BLOB_READ_WRITE_TOKEN=<Vercel Blob read/write token>
+RATE_LIMIT_STORE=redis
+REDIS_URL=<TLS Redis URL>
+BACKGROUND_JOBS_MODE=inline
+CRON_SECRET=<random secret of at least 16 characters>
+EMAIL_FROM=no-reply@<verified-domain>
+```
+
+`BACKGROUND_JOBS_MODE=inline` keeps payslip generation operational without a
+permanent BullMQ worker. The secured Vercel cron route processes subscription
+lifecycle transitions and renewal notifications once per day. For higher-volume
+payroll processing, deploy `src/server.ts` separately as a persistent worker and
+switch the API to `BACKGROUND_JOBS_MODE=queue`.
+
+Before the first production deployment, apply committed migrations to TiDB from
+a controlled environment:
+
+```bash
+npm run prisma:deploy
+```
+
+Do not run `prisma migrate dev` against production. Prisma Client generation is
+handled by both `postinstall` and the production build.
+
 ## Modules
 
 - Admin: organization profile, departments, teams, roles and permissions, staff management, system config.

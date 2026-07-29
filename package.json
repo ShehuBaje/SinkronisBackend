@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon",
     "dev:tsx": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "prisma generate && tsc",
+    "postinstall": "prisma generate",
     "test": "tsx --test src/**/*.test.ts",
     "start": "node dist/src/server.js",
     "lint": "eslint \"src/**/*.ts\"",
@@ -27,6 +28,7 @@
     "@bull-board/express": "^7.2.1",
     "@prisma/client": "^5.22.0",
     "@types/multer": "^2.1.0",
+    "@vercel/blob": "^2.6.1",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.78.0",
     "compression": "^1.7.4",
@@ -42,6 +44,7 @@
     "mysql2": "^3.22.5",
     "nodemailer": "^9.0.0",
     "otplib": "^13.4.1",
+    "rate-limit-redis": "^4.2.1",
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1",
     "zod": "^3.23.8"

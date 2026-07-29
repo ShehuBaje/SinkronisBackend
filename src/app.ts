@@ -4,6 +4,7 @@ import compression from "compression";
 import cors from "cors";
 import express from "express";
 import rateLimit from "express-rate-limit";
+import { RedisStore } from "rate-limit-redis";
 import helmet from "helmet";
 import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
@@ -22,6 +23,8 @@ import { payrollRouter } from "./modules/payroll/payroll.routes";
 import { mediaRouter } from "./modules/media/media.routes";
 import { platformAdminRouter } from "./modules/platform-admin";
 import { bullBoardAdapter } from "./queues/bull-board";
+import { redis } from "./config/redis";
+import { internalRouter } from "./modules/internal/internal.routes";
 
 export const app = express();
 
@@ -31,13 +34,23 @@ app.use(compression());
 app.use(express.json({ limit: "1mb" }));
 app.use(requestContextMiddleware);
 app.use(morgan(env.NODE_ENV === "production" ? "combined" : "dev"));
-app.use(env.UPLOAD_PUBLIC_BASE_PATH, express.static(path.resolve(process.cwd(), env.UPLOAD_DIR)));
+if (env.STORAGE_PROVIDER === "local") {
+  app.use(env.UPLOAD_PUBLIC_BASE_PATH, express.static(path.resolve(process.cwd(), env.UPLOAD_DIR)));
+}
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 300,
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    ...(env.RATE_LIMIT_STORE === "redis"
+      ? {
+          store: new RedisStore({
+            sendCommand: async (...args: string[]) => redis.call(args[0], ...args.slice(1)) as never,
+            prefix: "sinkronis:rate-limit:"
+          })
+        }
+      : {})
   })
 );
 
@@ -52,7 +65,10 @@ app.get(`${env.API_PREFIX}/docs.json`, (_req, res) => {
 app.use(`${env.API_PREFIX}/docs`, swaggerUi.serve, swaggerUi.setup(openApiSpec, { explorer: true }));
 
 app.use(`${env.API_PREFIX}/media`, mediaRouter);
-app.use(`${env.API_PREFIX}/bull`, bullBoardAdapter.getRouter());
+if (env.NODE_ENV !== "production") {
+  app.use(`${env.API_PREFIX}/bull`, bullBoardAdapter.getRouter());
+}
+app.use(`${env.API_PREFIX}/internal`, internalRouter);
 app.use(`${env.API_PREFIX}/auth`, authRouter);
 app.use(`${env.API_PREFIX}/admin`, authenticate, requireTenant, adminRouter);
 app.use(`${env.API_PREFIX}/platform-admin`, authenticate, platformAdminRouter);
@@ -62,3 +78,5 @@ app.use(`${env.API_PREFIX}/accounting`, authenticate, requireTenant, accountingR
 app.use(`${env.API_PREFIX}/payroll`, authenticate, requireTenant, payrollRouter);
 
 app.use(errorMiddleware);
+
+export default app;

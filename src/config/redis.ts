@@ -10,9 +10,9 @@ export const redisConnectionOptions = {
   lazyConnect: true
 };
 
-export const redis = new Redis({
-  ...redisConnectionOptions
-});
+export const redis = env.REDIS_URL
+  ? new Redis(env.REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: true })
+  : new Redis(redisConnectionOptions);
 
 redis.on("error", () => undefined);
 
