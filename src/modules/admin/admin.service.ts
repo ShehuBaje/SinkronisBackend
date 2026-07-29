@@ -1,11 +1,9 @@
 import type { Request } from "express";
 import type { Prisma } from "@prisma/client";
 import crypto from "crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
 import bcrypt from "bcryptjs";
-import { env } from "../../config/env";
 import { badRequest, notFound } from "../../core/http-error";
+import { deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { getPagination } from "../../core/pagination";
 import { prisma } from "../../core/prisma";
 import { permissions } from "../auth/permissions";
@@ -5058,7 +5056,6 @@ export const markAllPlatformAnnouncementsRead = async (req: Request) => {
 };
 
 const defaultGeneralSettings = { timeZone: "Africa/Lagos", language: "en", dateFormat: "DD/MM/YYYY", currency: "NGN", accentColor: "#2563EB" } as const;
-const generalSettingsStorageRoot = path.resolve(process.cwd(), env.UPLOAD_DIR, "general-settings");
 
 const getOrganizationGeneralSettingsRecord = async (organizationId: string) => {
   const [organization, settings] = await Promise.all([
@@ -5128,21 +5125,24 @@ const inspectBrandingImage = (file: Express.Multer.File) => {
 export const uploadBrandingLogo = async (req: Request) => {
   if (!req.file) throw badRequest("Logo file is required", { errorCode: "LOGO_REQUIRED" });
   const inspected = inspectBrandingImage(req.file); const now = new Date();
-  const directory = path.join(generalSettingsStorageRoot, "branding", req.organizationId!); await fs.mkdir(directory, { recursive: true });
-  const fileName = `${now.getTime()}-${crypto.randomUUID()}${inspected.extension}`; const absolutePath = path.join(directory, fileName);
-  await fs.writeFile(absolutePath, inspected.buffer);
-  const publicPath = `${env.UPLOAD_PUBLIC_BASE_PATH}/general-settings/branding/${req.organizationId!}/${fileName}`;
-  const logoUrl = `${req.protocol}://${req.get("host")}${publicPath}`;
+  const fileName = `${now.getTime()}-${crypto.randomUUID()}${inspected.extension}`;
+  const stored = await uploadObject({
+    key: `general-settings/branding/${req.organizationId!}/${fileName}`,
+    body: inspected.buffer,
+    contentType: req.file.mimetype,
+    publicBaseUrl: `${req.protocol}://${req.get("host")}`
+  });
+  const logoUrl = stored.url;
   const previous = await prisma.organizationGeneralSettings.findUnique({ where: { organizationId: req.organizationId! } });
   try {
     const settings = await prisma.$transaction(async (tx) => {
       await tx.organization.update({ where: { id: req.organizationId! }, data: { profileImageUrl: logoUrl } });
       return tx.organizationGeneralSettings.upsert({ where: { organizationId: req.organizationId! }, create: { organizationId: req.organizationId!, logoUrl, logoFileName: fileName, logoMimeType: req.file!.mimetype, logoSize: inspected.buffer.length, logoWidth: inspected.width || null, logoHeight: inspected.height || null, logoUploadedAt: now }, update: { logoUrl, logoFileName: fileName, logoMimeType: req.file!.mimetype, logoSize: inspected.buffer.length, logoWidth: inspected.width || null, logoHeight: inspected.height || null, logoUploadedAt: now } });
     });
-    if (previous?.logoFileName) await fs.rm(path.join(directory, previous.logoFileName), { force: true }).catch(() => undefined);
+    if (previous?.logoUrl) await deleteObject(previous.logoUrl).catch(() => undefined);
     await createAuditLog({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "GENERAL_BRANDING_LOGO_UPDATED", resource: "ORGANIZATION_SETTINGS", resourceId: settings.id, summary: "Updated organization logo", metadata: { fileName, mimeType: req.file.mimetype, size: inspected.buffer.length, width: inspected.width, height: inspected.height } });
     return { ...mapBrandingSettings({ profileImageUrl: logoUrl }, settings), recommendedDimensionsMet: inspected.width >= 200 && inspected.height >= 200 };
-  } catch (error) { await fs.rm(absolutePath, { force: true }).catch(() => undefined); throw error; }
+  } catch (error) { await deleteObject(stored.key).catch(() => undefined); throw error; }
 };
 
 const jsonBuffer = (value: unknown) => Buffer.from(JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item, 2));
@@ -5170,9 +5170,10 @@ export const requestOrganizationDataExport = async (req: Request) => {
 export const getOrganizationDataExportDownload = async (req: Request) => {
   const record = await prisma.organizationDataExport.findFirst({ where: { id: String(req.params.exportId), organizationId: req.organizationId!, status: "COMPLETED" } });
   if (!record?.fileReference || !record.fileName) throw notFound("Organization data export not found");
-  const absolutePath = path.resolve(process.cwd(), env.UPLOAD_DIR, record.fileReference); const allowedRoot = path.resolve(generalSettingsStorageRoot, "exports", req.organizationId!);
-  if (!absolutePath.startsWith(`${allowedRoot}${path.sep}`)) throw badRequest("Invalid export file reference", { errorCode: "INVALID_FILE_REFERENCE" });
-  try { return { buffer: await fs.readFile(absolutePath), fileName: record.fileName }; } catch { throw notFound("Export file is no longer available"); }
+  if (!record.fileReference.startsWith("https://") && !record.fileReference.startsWith(`general-settings/exports/${req.organizationId!}/`)) {
+    throw badRequest("Invalid export file reference", { errorCode: "INVALID_FILE_REFERENCE" });
+  }
+  return { buffer: await readObject(record.fileReference), fileName: record.fileName };
 };
 
 export const requestOrganizationDeletion = async (req: Request) => {

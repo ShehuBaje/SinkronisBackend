@@ -1,12 +1,12 @@
-import { randomUUID } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { Router } from "express";
 import multer from "multer";
 import { env } from "../../config/env";
 import { badRequest } from "../../core/http-error";
-
-const uploadsRoot = path.resolve(process.cwd(), env.UPLOAD_DIR);
+import { createObjectKey, uploadObject } from "../../core/object-storage";
+import { asyncHandler } from "../../core/async-handler";
+import { authenticate } from "../../middleware/auth.middleware";
+import { requireTenant } from "../../middleware/tenant.middleware";
 
 const allowedMimeTypes = new Set([
   "image/jpeg",
@@ -16,19 +16,8 @@ const allowedMimeTypes = new Set([
   "image/gif"
 ]);
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, callback) => {
-    fs.mkdirSync(uploadsRoot, { recursive: true });
-    callback(null, uploadsRoot);
-  },
-  filename: (_req, file, callback) => {
-    const extension = path.extname(file.originalname).toLowerCase() || ".jpg";
-    callback(null, `${Date.now()}-${randomUUID()}${extension}`);
-  }
-});
-
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: {
     fileSize: env.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024
   },
@@ -43,6 +32,7 @@ const upload = multer({
 });
 
 export const mediaRouter = Router();
+mediaRouter.use(authenticate, requireTenant);
 
 mediaRouter.post("/upload", (req, res, next) => {
   upload.single("file")(req, res, (error) => {
@@ -66,15 +56,20 @@ mediaRouter.post("/upload", (req, res, next) => {
       return;
     }
 
-    const protocol = req.protocol;
-    const host = req.get("host");
-    const publicPath = `${env.UPLOAD_PUBLIC_BASE_PATH}/${req.file.filename}`;
-
-    res.status(201).json({
-      url: `${protocol}://${host}${publicPath}`,
-      path: publicPath,
-      size: req.file.size,
-      mimeType: req.file.mimetype
-    });
+    void asyncHandler(async (uploadReq, uploadRes) => {
+      const extension = path.extname(uploadReq.file!.originalname).toLowerCase() || ".jpg";
+      const key = createObjectKey(`media/${uploadReq.organizationId}`, `upload${extension}`);
+      const stored = await uploadObject({
+        key,
+        body: uploadReq.file!.buffer,
+        contentType: uploadReq.file!.mimetype,
+        publicBaseUrl: `${uploadReq.protocol}://${uploadReq.get("host")}`
+      });
+      uploadRes.status(201).json({
+        success: true,
+        message: "Media uploaded successfully",
+        data: { url: stored.url, path: stored.key, size: stored.size, mimeType: uploadReq.file!.mimetype }
+      });
+    })(req, res, next);
   });
 });
