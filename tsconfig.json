@@ -12,6 +12,6 @@
     "resolveJsonModule": true,
     "noImplicitOverride": true
   },
-  "include": ["index.ts", "src/**/*.ts", "prisma/**/*.ts"],
+  "include": ["src/**/*.ts", "prisma/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
