@@ -2,7 +2,6 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Prisma } from "@prisma/client";
 import crypto from "crypto";
-import { generateSecret, generateURI, verifySync } from "otplib";
 import { env } from "../../config/env";
 import { badRequest, unauthorized } from "../../core/http-error";
 import { prisma } from "../../core/prisma";
@@ -23,6 +22,7 @@ import type {
 import type { z } from "zod";
 
 const prismaAny = prisma as any;
+const loadOtpLibrary = () => import("otplib");
 
 const RESET_OTP_TTL_MINUTES = 10;
 const RESET_OTP_MAX_ATTEMPTS = 5;
@@ -962,6 +962,7 @@ export const beginAuthenticatorSetup = async (
 
   if (!user) throw unauthorized();
 
+  const { generateSecret, generateURI } = await loadOtpLibrary();
   const secret = generateSecret();
   const accountName = input.accountName ?? user.email;
   const issuer = `${env.APP_NAME} (${user.organization.slug})`;
@@ -999,6 +1000,7 @@ export const enableAuthenticator = async (
     throw badRequest("Setup token is invalid or expired");
   }
 
+  const { verifySync } = await loadOtpLibrary();
   const verified = verifySync({ token: input.otp, secret }).valid;
   if (!verified) {
     throw badRequest("Invalid authenticator code");
@@ -1041,6 +1043,7 @@ export const disableAuthenticator = async (
   }
 
   const secret = decryptSecret(record.authenticatorSecretEnc);
+  const { verifySync } = await loadOtpLibrary();
   const verified = verifySync({ token: input.otp, secret }).valid;
   if (!verified) {
     throw badRequest("Invalid authenticator code");
@@ -1172,6 +1175,7 @@ export const verifyLoginTwoFactor = async (
     }
 
     const secret = decryptSecret(twoFactor.authenticatorSecretEnc);
+    const { verifySync } = await loadOtpLibrary();
     valid = verifySync({ token: input.otp, secret }).valid;
   } else {
     valid = await bcrypt.compare(input.otp, challenge.codeHash);
