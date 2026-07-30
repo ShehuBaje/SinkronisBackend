@@ -27,6 +27,10 @@ import { internalRouter } from "./modules/internal/internal.routes";
 
 export const app = express();
 
+if (env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
+
 app.use(helmet());
 app.use(cors({ origin: env.CORS_ORIGIN === "*" ? true : env.CORS_ORIGIN, credentials: true }));
 app.use(compression());
