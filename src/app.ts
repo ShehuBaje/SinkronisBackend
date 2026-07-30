@@ -53,6 +53,18 @@ app.use(
   })
 );
 
+app.get("/", (_req, res) => {
+  res.json({
+    success: true,
+    message: `${env.APP_NAME} API is running`,
+    data: {
+      health: "/health",
+      documentation: `${env.API_PREFIX}/docs`,
+      apiBasePath: env.API_PREFIX
+    }
+  });
+});
+
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
