@@ -83,6 +83,19 @@ app.get(`${env.API_PREFIX}/docs.json`, (_req, res) => {
 
 const swaggerPath = `${env.API_PREFIX}/docs`;
 const swaggerHandler = swaggerUi.setup(openApiSpec, { explorer: true });
+const swaggerContentSecurityPolicy = helmet.contentSecurityPolicy({
+  directives: {
+    defaultSrc: ["'self'"],
+    scriptSrc: ["'self'", "'unsafe-inline'"],
+    styleSrc: ["'self'", "'unsafe-inline'"],
+    imgSrc: ["'self'", "data:"],
+    fontSrc: ["'self'", "data:"],
+    connectSrc: ["'self'"],
+    objectSrc: ["'none'"],
+    frameAncestors: ["'none'"]
+  }
+});
+app.use(swaggerPath, swaggerContentSecurityPolicy);
 app.get([swaggerPath, `${swaggerPath}/`], swaggerHandler);
 app.use(swaggerPath, swaggerUi.serveFiles(openApiSpec));
 
