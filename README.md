@@ -4,7 +4,7 @@ Multitenant Express, TypeScript, MySQL, and Prisma API for administration, HRIS,
 
 ## Vercel deployment
 
-Vercel detects `src/app.ts` as the Express entry point. `src/server.ts` remains the
+Vercel detects `src/app.ts` as the Express entry point. `src/local-server.ts` remains the
 local and long-running worker entry point and is not imported by the Vercel
 function.
 
@@ -28,7 +28,7 @@ EMAIL_FROM=no-reply@<verified-domain>
 `BACKGROUND_JOBS_MODE=inline` keeps payslip generation operational without a
 permanent BullMQ worker. The secured Vercel cron route processes subscription
 lifecycle transitions and renewal notifications once per day. For higher-volume
-payroll processing, deploy `src/server.ts` separately as a persistent worker and
+payroll processing, deploy `src/local-server.ts` separately as a persistent worker and
 switch the API to `BACKGROUND_JOBS_MODE=queue`.
 
 Before the first production deployment, apply committed migrations to TiDB from

@@ -3,24 +3,18 @@ import { prisma } from "./core/prisma";
 import { app } from "./app";
 import { connectRedis, redis } from "./config/redis";
 import { closeQueues, initializeQueues, setQueueBackendAvailability } from "./queues";
-import { bullBoardAdapter, registerBullBoardQueues } from "./queues/bull-board";
 import { closeWorkers, initializeWorkers } from "./queues/workers";
-
-if (env.NODE_ENV !== "production") {
-  app.use(`${env.API_PREFIX}/bull`, bullBoardAdapter.getRouter());
-}
 
 const server = app.listen(env.PORT, async () => {
   console.log(`root here we hare ${new Date()}`);
   console.log(`Server running on port ${env.PORT}`);
   console.log(`Example app listening at http://localhost:${env.PORT}`);
-  console.log(`Bull dashboard live at http://localhost:${env.PORT}${env.API_PREFIX}/bull`);
   console.log(env.APP_TOKEN_NAME);
 
   try {
     await connectRedis();
     setQueueBackendAvailability(true);
-    registerBullBoardQueues(initializeQueues());
+    initializeQueues();
     initializeWorkers();
     console.log("⏩ Connected to redis successfully");
   } catch (error) {
