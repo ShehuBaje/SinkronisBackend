@@ -59,7 +59,7 @@ app.get("/", (_req, res) => {
     message: `${env.APP_NAME} API is running`,
     data: {
       health: "/health",
-      documentation: `${env.API_PREFIX}/docs`,
+      documentation: `${env.API_PREFIX}/docs/`,
       apiBasePath: env.API_PREFIX
     }
   });
@@ -73,7 +73,10 @@ app.get(`${env.API_PREFIX}/docs.json`, (_req, res) => {
   res.json(openApiSpec);
 });
 
-app.use(`${env.API_PREFIX}/docs`, swaggerUi.serve, swaggerUi.setup(openApiSpec, { explorer: true }));
+const swaggerPath = `${env.API_PREFIX}/docs`;
+const swaggerHandler = swaggerUi.setup(openApiSpec, { explorer: true });
+app.get([swaggerPath, `${swaggerPath}/`], swaggerHandler);
+app.use(swaggerPath, swaggerUi.serveFiles(openApiSpec));
 
 app.use(`${env.API_PREFIX}/media`, mediaRouter);
 app.use(`${env.API_PREFIX}/internal`, internalRouter);
