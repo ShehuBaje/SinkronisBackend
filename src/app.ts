@@ -22,7 +22,6 @@ import { accountingRouter } from "./modules/accounting/accounting.routes";
 import { payrollRouter } from "./modules/payroll/payroll.routes";
 import { mediaRouter } from "./modules/media/media.routes";
 import { platformAdminRouter } from "./modules/platform-admin";
-import { bullBoardAdapter } from "./queues/bull-board";
 import { redis } from "./config/redis";
 import { internalRouter } from "./modules/internal/internal.routes";
 
@@ -65,9 +64,6 @@ app.get(`${env.API_PREFIX}/docs.json`, (_req, res) => {
 app.use(`${env.API_PREFIX}/docs`, swaggerUi.serve, swaggerUi.setup(openApiSpec, { explorer: true }));
 
 app.use(`${env.API_PREFIX}/media`, mediaRouter);
-if (env.NODE_ENV !== "production") {
-  app.use(`${env.API_PREFIX}/bull`, bullBoardAdapter.getRouter());
-}
 app.use(`${env.API_PREFIX}/internal`, internalRouter);
 app.use(`${env.API_PREFIX}/auth`, authRouter);
 app.use(`${env.API_PREFIX}/admin`, authenticate, requireTenant, adminRouter);

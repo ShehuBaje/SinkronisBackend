@@ -3,8 +3,12 @@ import { prisma } from "./core/prisma";
 import { app } from "./app";
 import { connectRedis, redis } from "./config/redis";
 import { closeQueues, initializeQueues, setQueueBackendAvailability } from "./queues";
-import { registerBullBoardQueues } from "./queues/bull-board";
+import { bullBoardAdapter, registerBullBoardQueues } from "./queues/bull-board";
 import { closeWorkers, initializeWorkers } from "./queues/workers";
+
+if (env.NODE_ENV !== "production") {
+  app.use(`${env.API_PREFIX}/bull`, bullBoardAdapter.getRouter());
+}
 
 const server = app.listen(env.PORT, async () => {
   console.log(`root here we hare ${new Date()}`);
