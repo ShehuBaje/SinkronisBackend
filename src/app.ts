@@ -82,7 +82,9 @@ app.get(`${env.API_PREFIX}/docs.json`, (_req, res) => {
 });
 
 const swaggerPath = `${env.API_PREFIX}/docs`;
-const swaggerHandler = swaggerUi.setup(openApiSpec, { explorer: true });
+const swaggerHtml = swaggerUi
+  .generateHTML(openApiSpec, { explorer: true })
+  .replace("<head>", `<head><base href="${swaggerPath}/">`);
 const swaggerContentSecurityPolicy = helmet.contentSecurityPolicy({
   directives: {
     defaultSrc: ["'self'"],
@@ -96,8 +98,10 @@ const swaggerContentSecurityPolicy = helmet.contentSecurityPolicy({
   }
 });
 app.use(swaggerPath, swaggerContentSecurityPolicy);
-app.get([swaggerPath, `${swaggerPath}/`], swaggerHandler);
-app.use(swaggerPath, swaggerUi.serveFiles(openApiSpec));
+app.get([swaggerPath, `${swaggerPath}/`], (_req, res) => {
+  res.type("html").send(swaggerHtml);
+});
+app.use(`${swaggerPath}/`, swaggerUi.serveFiles(openApiSpec));
 
 app.use(`${env.API_PREFIX}/media`, mediaRouter);
 app.use(`${env.API_PREFIX}/internal`, internalRouter);
