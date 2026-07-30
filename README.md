@@ -4,9 +4,10 @@ Multitenant Express, TypeScript, MySQL, and Prisma API for administration, HRIS,
 
 ## Vercel deployment
 
-Vercel runs `api/index.ts` as the single Express Serverless Function and rewrites
-all incoming paths to it. `src/local-server.ts` remains the local and long-running
-worker entry point and is not imported by the Vercel function.
+Vercel detects the root `index.ts` as the single Express Serverless Function.
+It exports the application implemented in `src/http-app.ts`. `src/local-server.ts`
+remains the local and long-running worker entry point and is not imported by the
+Vercel function.
 
 Configure these production environment variables in Vercel:
 
