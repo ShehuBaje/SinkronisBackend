@@ -7,7 +7,6 @@ import rateLimit from "express-rate-limit";
 import { RedisStore } from "rate-limit-redis";
 import helmet from "helmet";
 import morgan from "morgan";
-import swaggerUi from "swagger-ui-express";
 import { env } from "./config/env";
 import { requestContextMiddleware } from "./core/request-context";
 import { openApiSpec } from "./config/swagger";
@@ -82,14 +81,40 @@ app.get(`${env.API_PREFIX}/docs.json`, (_req, res) => {
 });
 
 const swaggerPath = `${env.API_PREFIX}/docs`;
-const swaggerHtml = swaggerUi
-  .generateHTML(openApiSpec, { explorer: true })
-  .replace("<head>", `<head><base href="${swaggerPath}/">`);
+const swaggerUiVersion = "5.32.6";
+const swaggerCdnBase = `https://cdn.jsdelivr.net/npm/swagger-ui-dist@${swaggerUiVersion}`;
+const swaggerHtml = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${env.APP_NAME} API Documentation</title>
+    <link rel="stylesheet" href="${swaggerCdnBase}/swagger-ui.css" />
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="${swaggerCdnBase}/swagger-ui-bundle.js"></script>
+    <script src="${swaggerCdnBase}/swagger-ui-standalone-preset.js"></script>
+    <script>
+      window.addEventListener("load", function () {
+        window.ui = SwaggerUIBundle({
+          url: "${env.API_PREFIX}/docs.json",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          displayRequestDuration: true,
+          persistAuthorization: true,
+          presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+          layout: "StandaloneLayout"
+        });
+      });
+    </script>
+  </body>
+</html>`;
 const swaggerContentSecurityPolicy = helmet.contentSecurityPolicy({
   directives: {
     defaultSrc: ["'self'"],
-    scriptSrc: ["'self'", "'unsafe-inline'"],
-    styleSrc: ["'self'", "'unsafe-inline'"],
+    scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+    styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
     imgSrc: ["'self'", "data:"],
     fontSrc: ["'self'", "data:"],
     connectSrc: ["'self'"],
@@ -101,7 +126,6 @@ app.use(swaggerPath, swaggerContentSecurityPolicy);
 app.get([swaggerPath, `${swaggerPath}/`], (_req, res) => {
   res.type("html").send(swaggerHtml);
 });
-app.use(`${swaggerPath}/`, swaggerUi.serveFiles(openApiSpec));
 
 app.use(`${env.API_PREFIX}/media`, mediaRouter);
 app.use(`${env.API_PREFIX}/internal`, internalRouter);
