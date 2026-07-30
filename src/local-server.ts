@@ -1,6 +1,6 @@
 import { env } from "./config/env";
 import { prisma } from "./core/prisma";
-import { app } from "./app";
+import { app } from "./http-app";
 import { connectRedis, redis } from "./config/redis";
 import { closeQueues, initializeQueues, setQueueBackendAvailability } from "./queues";
 import { closeWorkers, initializeWorkers } from "./queues/workers";
