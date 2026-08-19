@@ -39,6 +39,10 @@ const options: swaggerJSDoc.Options = {
       { name: "Telemetry" },
       { name: "Subscriptions" },
       { name: "Media" },
+      { name: "HRIS Dashboard" },
+      { name: "HRIS Employees" },
+      { name: "HRIS Attendance" },
+      { name: "HRIS Leave" },
       { name: "HRIS Appraisals" },
       { name: "HRIS Conduct" }
     ],
@@ -1233,6 +1237,15 @@ const options: swaggerJSDoc.Options = {
       }
     },
     paths: {
+      [`${adminBase}/system-alerts`]: { get: {
+        tags: ["Admin"], summary: "List tenant system alerts", description: "Requires admin:organization:view.", security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Tenant system alerts" }, "401": { description: "Authentication required" }, "403": { description: "Permission required" } }
+      } },
+      [`${adminBase}/system-alerts/{id}/acknowledge`]: { patch: {
+        tags: ["Admin"], summary: "Acknowledge a tenant system alert", description: "Requires admin:organization:update.", security: [{ bearerAuth: [] }],
+        parameters: [{ in: "path", name: "id", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Alert acknowledged" }, "401": { description: "Authentication required" }, "403": { description: "Permission required" }, "404": { description: "Tenant-owned alert not found" } }
+      } },
       [`${hrisBase}/dashboard`]: { get: {
         tags: ["HRIS Dashboard"], summary: "Get the authenticated tenant's consolidated HRIS dashboard",
         description: "Requires hris:employees:view, hris:attendance:view, and hris:leave:view. Every query is scoped from the authenticated tenant context. Dates use the tenant IANA timezone, defaulting to Africa/Lagos. Employees with TERMINATED status are excluded. New hires compare equivalent month-to-date periods. Attendance uses persisted work start/end and grace-period settings. Early arrivals are included in onTime and also reported as earlyClockIn. Holiday exclusion remains NOT_TRACKED; noClockIn is zero because clockInAt is required by the Attendance model.",
@@ -1304,6 +1317,12 @@ const options: swaggerJSDoc.Options = {
         post: { tags: ["HRIS Employees"], summary: "Create a tenant employee", description: "Requires hris:employees:create. Employee number/email are unique per tenant and department/team references are tenant validated.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateEmployeeRequest" } } } }, responses: { "201": { description: "Employee created" }, "400": { description: "Validation error" }, "403": { description: "Permission required" }, "409": { description: "Duplicate employee" } } }
       },
       [`${hrisBase}/employees/lifecycle`]: { get: { tags: ["HRIS Employees"], summary: "List employees by lifecycle status", description: "Thin reuse of employee listing; status is required and limited to PROBATION, CONFIRMED, or EXITED.", security: [{ bearerAuth: [] }], parameters: [{ in: "query", name: "status", required: true, schema: { type: "string", enum: ["PROBATION", "CONFIRMED", "EXITED"] } }], responses: { "200": { description: "Paginated lifecycle employee list" }, "400": { description: "Invalid lifecycle status" } } } },
+      [`${hrisBase}/employees/invite`]: { post: {
+        tags: ["HRIS Employees"], summary: "Invite an employee to the authenticated tenant",
+        description: "Requires hris:employees:create. Reuses the tenant invitation flow; tenant identity and role assignment are server controlled.", security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["email", "roleId", "moduleAccess"], properties: { email: { type: "string", format: "email" }, roleId: { type: "string" }, moduleAccess: { type: "array", minItems: 1, items: { type: "string", enum: ["HRIS", "ACCOUNTING", "PAYROLL"] } } } } } } },
+        responses: { "201": { description: "Employee invitation created and sent" }, "400": { description: "Validation error" }, "403": { description: "Permission required" }, "409": { description: "Existing user or pending invitation" } }
+      } },
       [`${hrisBase}/employees/{employeeId}`]: {
         get: { tags: ["HRIS Employees"], summary: "Get a tenant employee profile", description: "Sensitive bank, salary, next-of-kin, and guarantor fields are permission filtered. Missing leave-balance and employee-appraisal persistence is reported, not fabricated.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "employeeId", required: true, schema: { type: "string" } }], responses: { "200": { description: "Employee profile", content: { "application/json": { schema: { $ref: "#/components/schemas/EmployeeProfile" } } } }, "404": { description: "Tenant-owned employee not found" } } },
         patch: { tags: ["HRIS Employees"], summary: "Partially update a tenant employee", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "employeeId", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/UpdateEmployeeRequest" } } } }, responses: { "200": { description: "Employee updated and audited" }, "400": { description: "Validation error" }, "404": { description: "Employee/department/team not found" } } }
@@ -1326,6 +1345,15 @@ const options: swaggerJSDoc.Options = {
       [`${hrisBase}/employees/{employeeId}/conduct`]: { get: { tags: ["HRIS Employees"], summary: "Get existing employee conduct records", security: [{ bearerAuth: [] }], responses: { "200": { description: "Paginated conduct records" } } } },
       [`${hrisBase}/employees/{employeeId}/activity`]: { get: { tags: ["HRIS Employees"], summary: "Get audited employee activity", security: [{ bearerAuth: [] }], responses: { "200": { description: "Paginated activity" } } } },
       [`${hrisBase}/attendance`]: { get: { tags: ["HRIS Attendance"], summary: "Get daily attendance main-page data", description: "Uses tenant timezone and persisted work schedule/grace/overtime settings.", security: [{ bearerAuth: [] }], parameters: [{ in: "query", name: "date", schema: { type: "string", format: "date" } }], responses: { "200": { description: "Daily analytics and attendance preview" } } } },
+      [`${hrisBase}/attendance/clock-in`]: { post: {
+        tags: ["HRIS Attendance"], summary: "Clock in the authenticated tenant employee", description: "Requires hris:attendance:create and creates the current tenant-local attendance entry.", security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["employeeId"], properties: { employeeId: { type: "string" }, note: { type: "string" } } } } } },
+        responses: { "201": { description: "Clock-in recorded" }, "400": { description: "Invalid request" }, "403": { description: "Permission or linked employee required" }, "409": { description: "Already clocked in" } }
+      } },
+      [`${hrisBase}/attendance/{id}/clock-out`]: { post: {
+        tags: ["HRIS Attendance"], summary: "Clock out of a tenant attendance record", description: "Requires hris:attendance:update. The attendance record is tenant scoped.", security: [{ bearerAuth: [] }],
+        parameters: [{ in: "path", name: "id", required: true, schema: { type: "string" } }], responses: { "200": { description: "Clock-out recorded" }, "403": { description: "Permission required" }, "404": { description: "Tenant-owned attendance not found" }, "409": { description: "Already clocked out" } }
+      } },
       [`${hrisBase}/attendance/daily`]: { get: { tags: ["HRIS Attendance"], summary: "Get daily attendance report", security: [{ bearerAuth: [] }], parameters: [{ in: "query", name: "date", schema: { type: "string", format: "date" } }], responses: { "200": { description: "Daily report" } } } },
       [`${hrisBase}/attendance/me/today`]: { get: { tags: ["HRIS Attendance"], summary: "Get authenticated employee attendance today", security: [{ bearerAuth: [] }], responses: { "200": { description: "Tenant-local clock, shift, and attendance" }, "404": { description: "User has no linked employee" } } } },
       [`${hrisBase}/attendance/logs`]: { get: { tags: ["HRIS Attendance"], summary: "Search, filter, and paginate attendance logs", security: [{ bearerAuth: [] }], responses: { "200": { description: "Paginated attendance" }, "400": { description: "Invalid filter" } } } },
