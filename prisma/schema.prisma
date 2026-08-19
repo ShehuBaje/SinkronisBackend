@@ -49,34 +49,232 @@ model AnnouncementReadStatus {
 }
 
 model AppraisalCycle {
-  id             String                @id @default(cuid())
-  organizationId String
-  title          String
-  periodStart    DateTime
-  periodEnd      DateTime
-  status         appraisalcycle_status @default(DRAFT)
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
+  id               String                @id @default(cuid())
+  organizationId   String
+  title            String
+  description      String?               @db.Text
+  periodStart      DateTime
+  periodEnd        DateTime
+  status           appraisalcycle_status @default(DRAFT)
+  quarter          String?
+  year             Int?
+  deadline         DateTime?
+  templateId       String?
+  templateSnapshot Json?
+  launchedAt       DateTime?
+  launchedById     String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  template         AppraisalTemplate?    @relation(fields: [templateId], references: [id], map: "AppraisalCycle_templateId_fkey")
+  appraisals       EmployeeAppraisal[]
 
   @@index([organizationId, status], map: "AppraisalCycle_organizationId_status_idx")
+  @@index([organizationId, year, quarter], map: "AppraisalCycle_org_year_quarter_idx")
+  @@index([templateId], map: "AppraisalCycle_templateId_idx")
   @@map("AppraisalCycle")
 }
 
+model AppraisalTemplate {
+  id             String              @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?             @db.Text
+  configuration  Json
+  isDefault      Boolean             @default(false)
+  version        Int                 @default(1)
+  archivedAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  cycles         AppraisalCycle[]
+  appraisals     EmployeeAppraisal[]
+
+  @@unique([organizationId, name], map: "AppraisalTemplate_org_name_key")
+  @@index([organizationId], map: "AppraisalTemplate_org_idx")
+  @@index([organizationId, isDefault, archivedAt], map: "AppraisalTemplate_org_default_archived_idx")
+  @@map("AppraisalTemplate")
+}
+
+model EmployeeAppraisal {
+  id                   String                   @id @default(cuid())
+  organizationId       String
+  employeeId           String
+  managerId            String?
+  cycleId              String
+  templateId           String
+  stage                appraisal_workflow_stage @default(GOAL_SETTING)
+  status               appraisal_record_status  @default(IN_PROGRESS)
+  finalScore           Decimal?                 @db.Decimal(6, 2)
+  rating               String?
+  ratingValue          Int?
+  templateSnapshot     Json?
+  acknowledgedResponse String?                  @db.Text
+  acknowledgedAt       DateTime?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  employee             Employee                 @relation("EmployeeAppraisalEmployee", fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeAppraisal_employeeId_fkey")
+  manager              Employee?                @relation("EmployeeAppraisalManager", fields: [managerId], references: [id], map: "EmployeeAppraisal_managerId_fkey")
+  cycle                AppraisalCycle           @relation(fields: [cycleId], references: [id], onDelete: Cascade, map: "EmployeeAppraisal_cycleId_fkey")
+  template             AppraisalTemplate        @relation(fields: [templateId], references: [id], map: "EmployeeAppraisal_templateId_fkey")
+  goals                AppraisalGoal[]
+  selfAssessment       AppraisalSelfAssessment?
+  managerReview        AppraisalManagerReview?
+  hrApproval           AppraisalHRApproval?
+  signOffs             AppraisalSignOff[]
+
+  @@unique([organizationId, employeeId, cycleId], map: "EmployeeAppraisal_org_employee_cycle_key")
+  @@index([organizationId, cycleId, stage], map: "EmployeeAppraisal_org_cycle_stage_idx")
+  @@index([organizationId, status], map: "EmployeeAppraisal_org_status_idx")
+  @@index([managerId, stage], map: "EmployeeAppraisal_manager_stage_idx")
+  @@map("EmployeeAppraisal")
+}
+
+model AppraisalSignOff {
+  id              String            @id @default(cuid())
+  organizationId  String
+  appraisalId     String
+  signatoryUserId String
+  signOffType     String
+  signatoryRole   String
+  signedAt        DateTime          @default(now())
+  appraisal       EmployeeAppraisal @relation(fields: [appraisalId], references: [id], onDelete: Cascade, map: "AppraisalSignOff_appraisalId_fkey")
+  signatory       User              @relation(fields: [signatoryUserId], references: [id], map: "AppraisalSignOff_signatoryUserId_fkey")
+
+  @@unique([appraisalId, signOffType], map: "AppraisalSignOff_appraisal_type_key")
+  @@index([organizationId, signedAt], map: "AppraisalSignOff_org_signed_idx")
+  @@index([signatoryUserId], map: "AppraisalSignOff_signatory_idx")
+  @@map("AppraisalSignOff")
+}
+
+model AppraisalSetting {
+  id                     String                 @id @default(cuid())
+  organizationId         String                 @unique(map: "AppraisalSetting_organizationId_key")
+  defaultReviewFrequency String                 @default("QUARTERLY")
+  updatedById            String?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  organization           Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AppraisalSetting_organizationId_fkey")
+  NotificationCategory   NotificationCategory[]
+
+  @@map("AppraisalSetting")
+}
+
+model AppraisalGoal {
+  id              String                @id @default(cuid())
+  organizationId  String
+  appraisalId     String
+  title           String
+  description     String                @db.Text
+  successCriteria String                @db.Text
+  targetDate      DateTime
+  status          appraisal_goal_status @default(NOT_STARTED)
+  employeeRating  Int?
+  employeeComment String?               @db.Text
+  managerRating   Int?
+  managerComment  String?               @db.Text
+  createdById     String
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  appraisal       EmployeeAppraisal     @relation(fields: [appraisalId], references: [id], onDelete: Cascade, map: "AppraisalGoal_appraisalId_fkey")
+
+  @@index([organizationId, appraisalId], map: "AppraisalGoal_org_appraisal_idx")
+  @@map("AppraisalGoal")
+}
+
+model AppraisalSelfAssessment {
+  id             String                      @id @default(cuid())
+  organizationId String
+  appraisalId    String                      @unique(map: "AppraisalSelfAssessment_appraisalId_key")
+  status         appraisal_submission_status @default(IN_PROGRESS)
+  sections       Json
+  reflections    Json
+  submittedAt    DateTime?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+  appraisal      EmployeeAppraisal           @relation(fields: [appraisalId], references: [id], onDelete: Cascade, map: "AppraisalSelfAssessment_appraisalId_fkey")
+
+  @@index([organizationId, status], map: "AppraisalSelfAssessment_org_status_idx")
+  @@map("AppraisalSelfAssessment")
+}
+
+model AppraisalManagerReview {
+  id              String                      @id @default(cuid())
+  organizationId  String
+  appraisalId     String                      @unique(map: "AppraisalManagerReview_appraisalId_key")
+  managerId       String
+  status          appraisal_submission_status @default(IN_PROGRESS)
+  goalRatings     Json
+  responses       Json
+  overallFeedback String?                     @db.Text
+  recommendation  String?
+  submittedAt     DateTime?
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+  appraisal       EmployeeAppraisal           @relation(fields: [appraisalId], references: [id], onDelete: Cascade, map: "AppraisalManagerReview_appraisalId_fkey")
+
+  @@index([organizationId, status], map: "AppraisalManagerReview_org_status_idx")
+  @@map("AppraisalManagerReview")
+}
+
+model AppraisalHRApproval {
+  id             String                @id @default(cuid())
+  organizationId String
+  appraisalId    String                @unique(map: "AppraisalHRApproval_appraisalId_key")
+  decision       appraisal_hr_decision
+  internalNotes  String?               @db.Text
+  approvedById   String
+  approvedAt     DateTime              @default(now())
+  appraisal      EmployeeAppraisal     @relation(fields: [appraisalId], references: [id], onDelete: Cascade, map: "AppraisalHRApproval_appraisalId_fkey")
+
+  @@index([organizationId, decision], map: "AppraisalHRApproval_org_decision_idx")
+  @@map("AppraisalHRApproval")
+}
+
 model Attendance {
-  id             String            @id @default(cuid())
+  id             String              @id @default(cuid())
   organizationId String
   employeeId     String
   clockInAt      DateTime
   clockOutAt     DateTime?
-  source         attendance_source @default(WEB)
-  note           String?           @db.Text
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  employee       Employee          @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "Attendance_employeeId_fkey")
+  source         attendance_source   @default(WEB)
+  note           String?             @db.Text
+  manualStatus   String?
+  taskCompleted  String?             @db.Text
+  overriddenAt   DateTime?
+  overriddenById String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  employee       Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "Attendance_employeeId_fkey")
+  disputes       AttendanceDispute[]
 
   @@index([employeeId], map: "Attendance_employeeId_fkey")
+  @@index([organizationId, clockInAt], map: "Attendance_organizationId_clockInAt_idx")
   @@index([organizationId, employeeId, clockInAt], map: "Attendance_organizationId_employeeId_clockInAt_idx")
   @@map("Attendance")
+}
+
+model AttendanceDispute {
+  id              String                    @id @default(cuid())
+  disputeNo       String                    @unique(map: "AttendanceDispute_disputeNo_key")
+  organizationId  String
+  attendanceId    String
+  employeeId      String
+  issueType       attendance_dispute_issue
+  description     String                    @db.Text
+  claimedClockIn  DateTime?
+  claimedClockOut DateTime?
+  status          attendance_dispute_status @default(PENDING)
+  resolutionNote  String?                   @db.Text
+  resolvedById    String?
+  resolvedAt      DateTime?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+  attendance      Attendance                @relation(fields: [attendanceId], references: [id], onDelete: Cascade, map: "AttendanceDispute_attendanceId_fkey")
+  employee        Employee                  @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "AttendanceDispute_employeeId_fkey")
+
+  @@index([organizationId, status, createdAt], map: "AttendanceDispute_org_status_created_idx")
+  @@index([organizationId, employeeId], map: "AttendanceDispute_org_employee_idx")
+  @@index([attendanceId], map: "AttendanceDispute_attendanceId_idx")
+  @@map("AttendanceDispute")
 }
 
 model AuditLog {
@@ -315,19 +513,32 @@ model Client {
 }
 
 model ConductLog {
-  id             String   @id @default(cuid())
-  organizationId String
-  employeeId     String
-  category       String
-  summary        String
-  details        String?  @db.Text
-  incidentDate   DateTime
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "ConductLog_employeeId_fkey")
+  id                     String           @id @default(cuid())
+  organizationId         String
+  employeeId             String
+  category               String
+  summary                String
+  details                String?          @db.Text
+  type                   String           @default("QUERY")
+  status                 String           @default("IN_PROGRESS")
+  notes                  String?          @db.Text
+  durationValue          Int?
+  durationUnit           String?
+  startDate              DateTime?
+  endDate                DateTime?
+  previousEmployeeStatus employee_status?
+  createdById            String?
+  resolvedById           String?
+  resolvedAt             DateTime?
+  incidentDate           DateTime
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  employee               Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "ConductLog_employeeId_fkey")
 
   @@index([employeeId], map: "ConductLog_employeeId_fkey")
   @@index([organizationId, employeeId], map: "ConductLog_organizationId_employeeId_idx")
+  @@index([organizationId, type, status], map: "ConductLog_org_type_status_idx")
+  @@index([organizationId, createdAt], map: "ConductLog_org_created_idx")
   @@map("ConductLog")
 }
 
@@ -351,42 +562,112 @@ model Department {
 }
 
 model Employee {
-  id                String            @id @default(cuid())
-  organizationId    String
-  departmentId      String?
-  teamId            String?
-  employeeNo        String
-  firstName         String
-  lastName          String
-  email             String
-  phone             String?
-  jobTitle          String?
-  hireDate          DateTime?
-  status            employee_status   @default(ACTIVE)
-  baseSalary        Decimal?          @db.Decimal(14, 2)
-  bankName          String?
-  bankAccountNumber String?
-  pensionPin        String?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  attendance        Attendance[]
-  conductlog        ConductLog[]
-  headedDepartments Department[]      @relation("department_headEmployeeIdToemployee")
-  department        Department?       @relation("employee_departmentIdTodepartment", fields: [departmentId], references: [id], map: "Employee_departmentId_fkey")
-  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Employee_organizationId_fkey")
-  team              Team?             @relation(fields: [teamId], references: [id], map: "Employee_teamId_fkey")
-  leaverequest      LeaveRequest[]
-  loans             LoanAdvance[]
-  payslip           Payslip[]
-  salaryStructures  SalaryStructure[]
-  user              User?
+  id                    String                    @id @default(cuid())
+  organizationId        String
+  departmentId          String?
+  teamId                String?
+  employeeNo            String
+  firstName             String
+  lastName              String
+  email                 String
+  phone                 String?
+  jobTitle              String?
+  hireDate              DateTime?
+  status                employee_status           @default(ACTIVE)
+  baseSalary            Decimal?                  @db.Decimal(14, 2)
+  bankName              String?
+  bankAccountNumber     String?
+  pensionPin            String?
+  lifecycleStatus       employee_lifecycle_status @default(PROBATION)
+  lifecycleEffectiveAt  DateTime?
+  gender                String?
+  employmentType        String?
+  dateOfBirth           DateTime?
+  address               String?                   @db.Text
+  city                  String?
+  nationality           String?
+  state                 String?
+  workMode              String?
+  maritalStatus         String?
+  taxId                 String?
+  bankCode              String?
+  profileImageUrl       String?
+  nextOfKinName         String?
+  nextOfKinPhone        String?
+  nextOfKinAddress      String?                   @db.Text
+  nextOfKinRelationship String?
+  guarantorFirstName    String?
+  guarantorLastName     String?
+  guarantorRelationship String?
+  guarantorPhone        String?
+  guarantorAddress      String?                   @db.Text
+  managerId             String?
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  attendance            Attendance[]
+  attendanceDisputes    AttendanceDispute[]
+  conductlog            ConductLog[]
+  headedDepartments     Department[]              @relation("department_headEmployeeIdToemployee")
+  department            Department?               @relation("employee_departmentIdTodepartment", fields: [departmentId], references: [id], map: "Employee_departmentId_fkey")
+  organization          Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Employee_organizationId_fkey")
+  team                  Team?                     @relation(fields: [teamId], references: [id], map: "Employee_teamId_fkey")
+  leaverequest          LeaveRequest[]
+  loans                 LoanAdvance[]
+  payslip               Payslip[]
+  salaryStructures      SalaryStructure[]
+  user                  User?
+  documents             EmployeeDocument[]
+  statusHistory         EmployeeStatusHistory[]
+  manager               Employee?                 @relation("EmployeeManager", fields: [managerId], references: [id], map: "Employee_managerId_fkey")
+  directReports         Employee[]                @relation("EmployeeManager")
+  employeeAppraisals    EmployeeAppraisal[]       @relation("EmployeeAppraisalEmployee")
+  managedAppraisals     EmployeeAppraisal[]       @relation("EmployeeAppraisalManager")
 
   @@unique([organizationId, email], map: "Employee_organizationId_email_key")
   @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
   @@index([departmentId], map: "Employee_departmentId_fkey")
   @@index([organizationId], map: "Employee_organizationId_idx")
+  @@index([organizationId, status, hireDate], map: "Employee_organizationId_status_hireDate_idx")
+  @@index([organizationId, lifecycleStatus, hireDate], map: "Employee_org_lifecycle_hireDate_idx")
+  @@index([organizationId, departmentId, status], map: "Employee_org_department_status_idx")
   @@index([teamId], map: "Employee_teamId_fkey")
+  @@index([organizationId, managerId], map: "Employee_org_manager_idx")
   @@map("Employee")
+}
+
+model EmployeeDocument {
+  id             String   @id @default(cuid())
+  organizationId String
+  employeeId     String
+  documentType   String
+  fileReference  String
+  originalName   String
+  mimeType       String
+  size           Int
+  uploadedById   String?
+  createdAt      DateTime @default(now())
+  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDocument_employeeId_fkey")
+
+  @@index([organizationId, employeeId], map: "EmployeeDocument_org_employee_idx")
+  @@index([organizationId, documentType], map: "EmployeeDocument_org_type_idx")
+  @@map("EmployeeDocument")
+}
+
+model EmployeeStatusHistory {
+  id                        String                     @id @default(cuid())
+  organizationId            String
+  employeeId                String
+  previousOperationalStatus employee_status?
+  newOperationalStatus      employee_status?
+  previousLifecycleStatus   employee_lifecycle_status?
+  newLifecycleStatus        employee_lifecycle_status?
+  effectiveDate             DateTime
+  changedById               String
+  createdAt                 DateTime                   @default(now())
+  employee                  Employee                   @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeStatusHistory_employeeId_fkey")
+
+  @@index([organizationId, employeeId, createdAt], map: "EmployeeStatusHistory_org_employee_created_idx")
+  @@map("EmployeeStatusHistory")
 }
 
 model Invoice {
@@ -443,23 +724,59 @@ model IpAllowlistEntry {
 }
 
 model LeaveRequest {
-  id             String              @id @default(cuid())
-  organizationId String
-  employeeId     String
-  type           String
-  startDate      DateTime
-  endDate        DateTime
-  reason         String?             @db.Text
-  status         leaverequest_status @default(PENDING)
-  reviewedBy     String?
-  reviewedAt     DateTime?
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
-  employee       Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LeaveRequest_employeeId_fkey")
+  id              String              @id @default(cuid())
+  organizationId  String
+  employeeId      String
+  type            String
+  startDate       DateTime
+  endDate         DateTime
+  reason          String?             @db.Text
+  status          leaverequest_status @default(PENDING)
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  requestedDays   Decimal?            @db.Decimal(8, 2)
+  submittedAt     DateTime            @default(now())
+  rejectionReason String?             @db.Text
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  employee        Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LeaveRequest_employeeId_fkey")
 
   @@index([employeeId], map: "LeaveRequest_employeeId_fkey")
   @@index([organizationId, employeeId, status], map: "LeaveRequest_organizationId_employeeId_status_idx")
+  @@index([organizationId, status, startDate, endDate], map: "LeaveRequest_org_status_dates_idx")
   @@map("LeaveRequest")
+}
+
+model LeaveType {
+  id              String   @id @default(cuid())
+  organizationId  String
+  code            String
+  name            String
+  annualAllowance Decimal  @default(0) @db.Decimal(8, 2)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([organizationId, code], map: "LeaveType_org_code_key")
+  @@index([organizationId, active], map: "LeaveType_org_active_idx")
+  @@map("LeaveType")
+}
+
+model LeaveBalance {
+  id             String   @id @default(cuid())
+  organizationId String
+  employeeId     String
+  leaveTypeCode  String
+  year           Int
+  entitlement    Decimal  @db.Decimal(8, 2)
+  used           Decimal  @default(0) @db.Decimal(8, 2)
+  pending        Decimal  @default(0) @db.Decimal(8, 2)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId, employeeId, leaveTypeCode, year], map: "LeaveBalance_org_employee_type_year_key")
+  @@index([organizationId, year], map: "LeaveBalance_org_year_idx")
+  @@map("LeaveBalance")
 }
 
 model LoanAdvance {
@@ -491,6 +808,9 @@ model NotificationCategory {
   createdAt                    DateTime                       @default(now())
   updatedAt                    DateTime                       @updatedAt
   tenantnotificationpreference TenantNotificationPreference[]
+  userNotifications            UserNotification[]
+  appraisalSetting             AppraisalSetting?              @relation(fields: [appraisalSettingId], references: [id])
+  appraisalSettingId           String?
 
   @@unique([moduleKey, key], map: "NotificationCategory_moduleKey_key_key")
   @@index([moduleKey, isActive, sortOrder], map: "NotificationCategory_moduleKey_isActive_sortOrder_idx")
@@ -510,6 +830,34 @@ model NotificationChannel {
 
   @@index([isActive, sortOrder], map: "NotificationChannel_isActive_sortOrder_idx")
   @@map("NotificationChannel")
+}
+
+model UserNotification {
+  id              String               @id @default(cuid())
+  organizationId  String
+  recipientUserId String
+  categoryId      String
+  eventKey        String
+  type            String
+  title           String
+  message         String               @db.Text
+  metadata        Json?
+  inAppStatus     String               @default("PENDING")
+  emailStatus     String               @default("PENDING")
+  emailError      String?              @db.Text
+  readAt          DateTime?
+  deliveredAt     DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  organization    Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "UserNotification_organizationId_fkey")
+  recipient       User                 @relation(fields: [recipientUserId], references: [id], onDelete: Cascade, map: "UserNotification_recipientUserId_fkey")
+  category        NotificationCategory @relation(fields: [categoryId], references: [id], map: "UserNotification_categoryId_fkey")
+
+  @@unique([organizationId, recipientUserId, eventKey], map: "UserNotification_org_recipient_event_key")
+  @@index([organizationId, recipientUserId, readAt, createdAt], map: "UserNotification_recipient_inbox_idx")
+  @@index([organizationId, emailStatus, createdAt], map: "UserNotification_email_delivery_idx")
+  @@index([categoryId], map: "UserNotification_categoryId_idx")
+  @@map("UserNotification")
 }
 
 model Organization {
@@ -554,6 +902,10 @@ model Organization {
   generalSettings              OrganizationGeneralSettings?
   paymentcard                  PaymentCard[]
   paymentrequest               PaymentRequest[]
+  platformInvoices             PlatformInvoice[]
+  usageDaily                   TenantUsageDaily[]
+  checkIns                     TenantCheckIn[]
+  moduleSnapshots              TenantModuleDailySnapshot[]
   payrollrun                   PayrollRun[]
   platformimpersonationsession PlatformImpersonationSession[]
   role                         Role[]
@@ -568,12 +920,101 @@ model Organization {
   team                         Team[]
   tenantnotificationpreference TenantNotificationPreference[]
   users                        User[]
+  userNotifications            UserNotification[]
   usersession                  UserSession[]
   walletaccount                WalletAccount[]
   workschedule                 WorkSchedule?
+  AppraisalSetting             AppraisalSetting?
 
   @@index([status, createdAt], map: "Organization_status_createdAt_idx")
   @@map("Organization")
+}
+
+model TenantUsageDaily {
+  id             String       @id @default(cuid())
+  organizationId String
+  usageDate      DateTime     @db.Date
+  pageViews      Int          @default(0)
+  lastActivityAt DateTime
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "TenantUsageDaily_org_fkey")
+
+  @@unique([organizationId, usageDate], map: "TenantUsageDaily_org_date_key")
+  @@index([usageDate, organizationId], map: "TenantUsageDaily_date_org_idx")
+  @@index([organizationId, lastActivityAt], map: "TenantUsageDaily_org_activity_idx")
+  @@map("TenantUsageDaily")
+}
+
+model TenantCheckIn {
+  id                String       @id @default(cuid())
+  organizationId    String
+  checkInDate       DateTime     @db.Date
+  triggeredByUserId String
+  recipientEmail    String
+  status            String       @default("PENDING")
+  attemptedAt       DateTime     @default(now())
+  deliveredAt       DateTime?
+  failedAt          DateTime?
+  errorMessage      String?      @db.Text
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "TenantCheckIn_org_fkey")
+
+  @@unique([organizationId, checkInDate], map: "TenantCheckIn_org_date_key")
+  @@index([status, attemptedAt], map: "TenantCheckIn_status_attempt_idx")
+  @@map("TenantCheckIn")
+}
+
+model TenantModuleDailySnapshot {
+  id             String       @id @default(cuid())
+  organizationId String
+  moduleKey      String
+  snapshotDate   DateTime     @db.Date
+  enabled        Boolean
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "TenantModuleSnapshot_org_fkey")
+
+  @@unique([organizationId, moduleKey, snapshotDate], map: "TenantModuleSnapshot_org_module_date_key")
+  @@index([snapshotDate, moduleKey, enabled], map: "TenantModuleSnapshot_date_module_enabled_idx")
+  @@map("TenantModuleDailySnapshot")
+}
+
+model PlatformInvoice {
+  id               String                    @id @default(cuid())
+  invoiceNumber    String                    @unique(map: "PlatformInvoice_invoiceNumber_key")
+  organizationId   String
+  billingPeriod    String                    @db.Char(7)
+  planKey          String
+  amount           Decimal                   @db.Decimal(14, 2)
+  currency         String                    @default("NGN") @db.Char(3)
+  status           platforminvoice_status    @default(DRAFT)
+  invoiceDate      DateTime                  @default(now())
+  dueDate          DateTime
+  paidAt           DateTime?
+  createdByUserId  String
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  organization     Organization              @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "PlatformInvoice_org_fkey")
+  reminderAttempts PlatformInvoiceReminder[]
+
+  @@unique([organizationId, billingPeriod], map: "PlatformInvoice_org_period_key")
+  @@index([status, dueDate], map: "PlatformInvoice_status_due_idx")
+  @@index([billingPeriod, planKey], map: "PlatformInvoice_period_plan_idx")
+  @@index([organizationId, createdAt], map: "PlatformInvoice_org_created_idx")
+  @@map("PlatformInvoice")
+}
+
+model PlatformInvoiceReminder {
+  id                String          @id @default(cuid())
+  invoiceId         String
+  triggeredByUserId String
+  status            String
+  errorMessage      String?         @db.Text
+  attemptedAt       DateTime        @default(now())
+  deliveredAt       DateTime?
+  invoice           PlatformInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade, map: "PlatformInvoiceReminder_invoice_fkey")
+
+  @@index([invoiceId, attemptedAt], map: "PlatformInvoiceReminder_invoice_attempted_idx")
+  @@map("PlatformInvoiceReminder")
 }
 
 model OrganizationDataExport {
@@ -926,12 +1367,23 @@ model SupportTicket {
   priority         String
   status           String
   assignedToUserId String?
+  resolutionNotes  String?      @db.Text
+  openedAt         DateTime     @default(now())
+  resolvedAt       DateTime?
+  resolvedByUserId String?
+  createdByUserId  String?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
-  assignedTo       User?        @relation(fields: [assignedToUserId], references: [id], map: "SupportTicket_assignee_fkey")
+  assignedTo       User?        @relation("SupportTicketAssignedTo", fields: [assignedToUserId], references: [id], map: "SupportTicket_assignee_fkey")
+  resolvedBy       User?        @relation("SupportTicketResolvedBy", fields: [resolvedByUserId], references: [id], map: "SupportTicket_resolvedBy_fkey")
+  createdBy        User?        @relation("SupportTicketCreatedBy", fields: [createdByUserId], references: [id], map: "SupportTicket_createdBy_fkey")
   organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SupportTicket_org_fkey")
 
   @@index([assignedToUserId], map: "SupportTicket_assignee_fkey")
+  @@index([resolvedByUserId], map: "SupportTicket_resolvedBy_fkey")
+  @@index([createdByUserId], map: "SupportTicket_createdBy_fkey")
+  @@index([status, updatedAt], map: "SupportTicket_status_updated_idx")
+  @@index([priority, updatedAt], map: "SupportTicket_priority_updated_idx")
   @@index([organizationId, status, priority], map: "SupportTicket_org_status_priority_idx")
   @@index([organizationId, updatedAt], map: "SupportTicket_org_updated_idx")
   @@map("SupportTicket")
@@ -962,17 +1414,37 @@ model SystemAlert {
 }
 
 model SystemConfig {
-  id             String       @id @default(cuid())
-  organizationId String
-  key            String
-  value          Json
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SystemConfig_organizationId_fkey")
+  id              String       @id @default(cuid())
+  organizationId  String
+  key             String
+  value           Json
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  updatedByUserId String?
+  updateReason    String?      @db.Text
+  updateSource    String?
+  rowVersion      Int          @default(1)
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SystemConfig_organizationId_fkey")
 
   @@unique([organizationId, key], map: "SystemConfig_organizationId_key_key")
   @@index([key], map: "SystemConfig_key_idx")
+  @@index([organizationId, updatedAt], map: "SystemConfig_org_updated_idx")
   @@map("SystemConfig")
+}
+
+model PlatformSetting {
+  id              String   @id @default(cuid())
+  key             String   @unique(map: "PlatformSetting_key_key")
+  category        String
+  value           Json
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  updatedBy       User?    @relation(fields: [updatedByUserId], references: [id], onDelete: SetNull, map: "PlatformSetting_updatedBy_fkey")
+
+  @@index([category, updatedAt], map: "PlatformSetting_category_updated_idx")
+  @@index([updatedByUserId], map: "PlatformSetting_updatedBy_fkey")
+  @@map("PlatformSetting")
 }
 
 model TaxReport {
@@ -1046,6 +1518,7 @@ model User {
   failedLoginAttempts                                                                 Int                            @default(0)
   lockedUntil                                                                         DateTime?
   passwordChangedAt                                                                   DateTime                       @default(now())
+  passwordResetRequestedAt                                                            DateTime?
   isPlatformAdmin                                                                     Boolean                        @default(false)
   agentinvitation                                                                     AgentInvitation[]
   announcementreadstatus                                                              AnnouncementReadStatus[]
@@ -1057,18 +1530,28 @@ model User {
   platformimpersonationsession_platformimpersonationsession_platformAdminUserIdTouser PlatformImpersonationSession[] @relation("platformimpersonationsession_platformAdminUserIdTouser")
   platformimpersonationsession_platformimpersonationsession_tenantAdminUserIdTouser   PlatformImpersonationSession[] @relation("platformimpersonationsession_tenantAdminUserIdTouser")
   securitypolicy                                                                      SecurityPolicy[]
-  supportticket                                                                       SupportTicket[]
+  assignedSupportTickets                                                              SupportTicket[]                @relation("SupportTicketAssignedTo")
+  resolvedSupportTickets                                                              SupportTicket[]                @relation("SupportTicketResolvedBy")
+  createdSupportTickets                                                               SupportTicket[]                @relation("SupportTicketCreatedBy")
+  platformSettings                                                                    PlatformSetting[]
   systemalert                                                                         SystemAlert[]
   employee                                                                            Employee?                      @relation(fields: [employeeId], references: [id], map: "User_employeeId_fkey")
   organization                                                                        Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "User_organizationId_fkey")
   role                                                                                Role                           @relation(fields: [roleId], references: [id], map: "User_roleId_fkey")
   usersession                                                                         UserSession[]
   twoFactor                                                                           UserTwoFactor?
+  notifications                                                                       UserNotification[]
+  appraisalSignOffs                                                                   AppraisalSignOff[]
 
   @@unique([organizationId, email], map: "User_organizationId_email_key")
   @@index([isPlatformAdmin, isActive], map: "User_isPlatformAdmin_isActive_idx")
   @@index([organizationId], map: "User_organizationId_idx")
   @@index([roleId], map: "User_roleId_fkey")
+  @@index([email], map: "User_email_idx")
+  @@index([firstName, lastName], map: "User_name_idx")
+  @@index([isActive, lastLoginAt], map: "User_status_lastActive_idx")
+  @@index([createdAt], map: "User_createdAt_idx")
+  @@index([passwordResetRequestedAt], map: "User_passwordResetRequestedAt_idx")
   @@map("User")
 }
 
@@ -1158,6 +1641,8 @@ model WorkSchedule {
   workStartTime        String       @default("09:00")
   workEndTime          String       @default("17:00")
   breakDurationMinutes Int          @default(60)
+  gracePeriodMinutes   Int          @default(0)
+  overtimeAfterMinutes Int          @default(0)
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
   organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WorkSchedule_organizationId_fkey")
@@ -1178,6 +1663,37 @@ enum appraisalcycle_status {
   OPEN
   CLOSED
   ARCHIVED
+}
+
+enum appraisal_workflow_stage {
+  GOAL_SETTING
+  SELF_ASSESSMENT
+  MANAGER_REVIEW
+  HR_APPROVAL
+  ACKNOWLEDGMENT
+  COMPLETED
+}
+
+enum appraisal_record_status {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum appraisal_goal_status {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  LOCKED
+}
+
+enum appraisal_submission_status {
+  IN_PROGRESS
+  SUBMITTED
+}
+
+enum appraisal_hr_decision {
+  APPROVED
+  RETURNED_FOR_REVIEW
 }
 
 enum attendance_source {
@@ -1205,6 +1721,12 @@ enum invoice_status {
   PAID
   VOID
   OVERDUE
+}
+
+enum platforminvoice_status {
+  DRAFT
+  OVERDUE
+  PAID
 }
 
 enum paymentrequest_status {
@@ -1248,4 +1770,24 @@ enum employee_status {
   ON_LEAVE
   SUSPENDED
   TERMINATED
+}
+
+enum employee_lifecycle_status {
+  PROBATION
+  CONFIRMED
+  EXITED
+}
+
+enum attendance_dispute_issue {
+  MISSING_CLOCK_IN
+  MISSING_CLOCK_OUT
+  SYSTEM_ERROR
+  WRONG_STATUS
+  OTHER
+}
+
+enum attendance_dispute_status {
+  PENDING
+  APPROVED
+  REJECTED
 }

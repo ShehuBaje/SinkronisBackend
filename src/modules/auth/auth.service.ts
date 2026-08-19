@@ -20,6 +20,7 @@ import type {
   verifyResetOtpSchema
 } from "./auth.schemas";
 import type { z } from "zod";
+import { getGlobalPasswordPolicy } from "../platform-admin/platform-admin.service";
 
 const prismaAny = prisma as any;
 const loadOtpLibrary = () => import("otplib");
@@ -32,8 +33,7 @@ const LOGIN_2FA_MAX_ATTEMPTS = 5;
 const LOGIN_2FA_TOKEN_TTL = "15m";
 const AUTHENTICATOR_SETUP_TOKEN_TTL = "10m";
 
-const twoFactorMethods = ["AUTHENTICATOR_APP", "SMS_OTP", "EMAIL_OTP"] as const;
-type TwoFactorMethod = (typeof twoFactorMethods)[number];
+type TwoFactorMethod = "AUTHENTICATOR_APP" | "SMS_OTP" | "EMAIL_OTP";
 
 const defaultSecurityPolicy = {
   minPasswordLength: 8,
@@ -194,17 +194,29 @@ const validatePasswordAgainstPolicy = (
 };
 
 const getSecurityPolicyForOrganization = async (organizationId: string) => {
-  const policy = await prismaAny.securityPolicy.findUnique({ where: { organizationId } });
-  if (!policy) return defaultSecurityPolicy;
+  const [policy, globalPolicy] = await Promise.all([
+    prismaAny.securityPolicy.findUnique({ where: { organizationId } }),
+    getGlobalPasswordPolicy()
+  ]);
+  if (!policy) return {
+    ...defaultSecurityPolicy,
+    minPasswordLength: globalPolicy.minimumLength,
+    passwordExpiryDays: globalPolicy.passwordExpiryDays,
+    lockoutMaxAttempts: globalPolicy.accountLockoutAttempts,
+    requireUppercase: globalPolicy.requireUppercase,
+    requireLowercase: globalPolicy.requireLowercase,
+    requireNumber: globalPolicy.requireNumber,
+    requireSpecialCharacter: globalPolicy.requireSpecialCharacter
+  };
 
   return {
-    minPasswordLength: policy.minPasswordLength,
-    passwordExpiryDays: policy.passwordExpiryDays,
-    lockoutMaxAttempts: policy.lockoutMaxAttempts,
-    requireUppercase: policy.requireUppercase,
-    requireLowercase: policy.requireLowercase,
-    requireNumber: policy.requireNumber,
-    requireSpecialCharacter: policy.requireSpecialCharacter,
+    minPasswordLength: globalPolicy.minimumLength,
+    passwordExpiryDays: globalPolicy.passwordExpiryDays,
+    lockoutMaxAttempts: globalPolicy.accountLockoutAttempts,
+    requireUppercase: globalPolicy.requireUppercase,
+    requireLowercase: globalPolicy.requireLowercase,
+    requireNumber: globalPolicy.requireNumber,
+    requireSpecialCharacter: globalPolicy.requireSpecialCharacter,
     ipAllowlistEnabled: policy.ipAllowlistEnabled,
     twoFactorEnabled: policy.twoFactorEnabled,
     enforceTwoFactorForAllUsers: policy.enforceTwoFactorForAllUsers,
@@ -465,7 +477,14 @@ const completeLoginSuccess = async (
 };
 
 export const registerOrganization = async (input: z.infer<typeof registerOrganizationSchema>) => {
-  validatePasswordAgainstPolicy(input.admin.password, defaultSecurityPolicy);
+  const globalPasswordPolicy = await getGlobalPasswordPolicy();
+  validatePasswordAgainstPolicy(input.admin.password, {
+    minPasswordLength: globalPasswordPolicy.minimumLength,
+    requireUppercase: globalPasswordPolicy.requireUppercase,
+    requireLowercase: globalPasswordPolicy.requireLowercase,
+    requireNumber: globalPasswordPolicy.requireNumber,
+    requireSpecialCharacter: globalPasswordPolicy.requireSpecialCharacter
+  });
   const passwordHash = await bcrypt.hash(input.admin.password, 12);
   const adminFirstName = input.admin.firstName?.trim() || "Owner";
   const adminLastName = input.admin.lastName?.trim() || "Admin";
@@ -613,7 +632,7 @@ export const login = async (
 
   const passwordAgeMs = Date.now() - new Date((user as any).passwordChangedAt).getTime();
   const passwordAgeDays = Math.floor(passwordAgeMs / (24 * 60 * 60 * 1000));
-  if (passwordAgeDays >= securityPolicy.passwordExpiryDays) {
+  if (securityPolicy.passwordExpiryDays !== null && passwordAgeDays >= securityPolicy.passwordExpiryDays) {
     await logAuthEvent({
       organizationId: user.organizationId,
       userId: user.id,

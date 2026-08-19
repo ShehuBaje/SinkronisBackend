@@ -23,6 +23,10 @@ import { mediaRouter } from "./modules/media/media.routes";
 import { platformAdminRouter } from "./modules/platform-admin";
 import { redis } from "./config/redis";
 import { internalRouter } from "./modules/internal/internal.routes";
+import { restrictImpersonatedSensitiveActions } from "./middleware/impersonation.middleware";
+import { requireEffectiveModuleAccess } from "./middleware/module-access.middleware";
+import { telemetryRouter } from "./modules/telemetry/telemetry.routes";
+import { enforcePlatformMaintenance } from "./middleware/maintenance.middleware";
 
 export const app = express();
 
@@ -31,7 +35,11 @@ if (env.NODE_ENV === "production") {
 }
 
 app.use(helmet());
-app.use(cors({ origin: env.CORS_ORIGIN === "*" ? true : env.CORS_ORIGIN, credentials: true }));
+const allowedCorsOrigins = env.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean);
+app.use(cors({
+  origin: allowedCorsOrigins.includes("*") ? true : (origin, callback) => callback(null, !origin || allowedCorsOrigins.includes(origin)),
+  credentials: true
+}));
 app.use(compression());
 app.use(express.json({ limit: "1mb" }));
 app.use(requestContextMiddleware);
@@ -130,12 +138,14 @@ app.get([swaggerPath, `${swaggerPath}/`], (_req, res) => {
 app.use(`${env.API_PREFIX}/media`, mediaRouter);
 app.use(`${env.API_PREFIX}/internal`, internalRouter);
 app.use(`${env.API_PREFIX}/auth`, authRouter);
-app.use(`${env.API_PREFIX}/admin`, authenticate, requireTenant, adminRouter);
 app.use(`${env.API_PREFIX}/platform-admin`, authenticate, platformAdminRouter);
-app.use(`${env.API_PREFIX}/subscriptions`, authenticate, requireTenant, subscriptionsRouter);
-app.use(`${env.API_PREFIX}/hris`, authenticate, requireTenant, hrisRouter);
-app.use(`${env.API_PREFIX}/accounting`, authenticate, requireTenant, accountingRouter);
-app.use(`${env.API_PREFIX}/payroll`, authenticate, requireTenant, payrollRouter);
+app.use(env.API_PREFIX, authenticate, enforcePlatformMaintenance);
+app.use(`${env.API_PREFIX}/admin`, restrictImpersonatedSensitiveActions, requireTenant, adminRouter);
+app.use(`${env.API_PREFIX}/telemetry`, requireTenant, telemetryRouter);
+app.use(`${env.API_PREFIX}/subscriptions`, restrictImpersonatedSensitiveActions, requireTenant, subscriptionsRouter);
+app.use(`${env.API_PREFIX}/hris`, requireTenant, requireEffectiveModuleAccess("hris"), hrisRouter);
+app.use(`${env.API_PREFIX}/accounting`, restrictImpersonatedSensitiveActions, requireTenant, requireEffectiveModuleAccess("accounting"), accountingRouter);
+app.use(`${env.API_PREFIX}/payroll`, restrictImpersonatedSensitiveActions, requireTenant, requireEffectiveModuleAccess("payroll"), payrollRouter);
 
 app.use(errorMiddleware);
 

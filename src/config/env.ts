@@ -46,7 +46,7 @@ const envSchema = z.object({
   DEFAULT_SUPER_ADMIN_PASSWORD: z.string().min(8).default("ChangeMe123!")
 }).superRefine((value, context) => {
   if (value.NODE_ENV !== "production") return;
-  if (value.CORS_ORIGIN === "*") {
+  if (value.CORS_ORIGIN.split(",").map((origin) => origin.trim()).includes("*")) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["CORS_ORIGIN"], message: "CORS_ORIGIN must be an explicit frontend origin in production" });
   }
   if (value.STORAGE_PROVIDER !== "vercel-blob" || !value.BLOB_READ_WRITE_TOKEN) {

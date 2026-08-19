@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { renderPlatformEmailTemplate } from "../platform-admin/platform-admin.service";
 import { env } from "../../config/env";
 
 type SendPasswordResetOtpInput = {
@@ -151,15 +152,52 @@ export const sendLoginSmsOtp = async (input: SendLoginSmsOtpInput) => {
   }
 };
 
-export const sendSubscriptionRenewalEmail = async (input: { to: string; organizationName: string; renewalDate: Date; amount: number; currency: string }) => {
+export const sendSubscriptionRenewalEmail = async (input: { to: string; organizationName: string; planName: string; renewalDate: Date; amount: number; currency: string }) => {
   const transport = getTransporter();
   const date = input.renewalDate.toISOString().slice(0, 10);
-  const subject = `${env.APP_NAME} subscription renews in 15 days`;
-  const text = `${input.organizationName}'s subscription renews on ${date}. Estimated charge: ${input.currency} ${input.amount.toLocaleString("en-NG")}.`;
+  const rendered = await renderPlatformEmailTemplate("PLAN_EXPIRY_REMINDER", {
+    tenantName: input.organizationName,
+    planName: input.planName,
+    expiryDate: date
+  });
+  const subject = rendered.subject;
+  const html = rendered.body;
+  const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
   if (!transport) {
     if (env.NODE_ENV === "production") throw new Error("SMTP credentials are not configured");
     console.log(`[dev-email] to=${input.to} subscription-renewal=${date}`);
     return;
   }
+  await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html });
+};
+
+export const sendTenantCheckInEmail = async (input: { to: string; contactName: string; organizationName: string }) => {
+  const transport = getTransporter();
+  const subject = `Checking in from ${env.APP_NAME}`;
+  const text = `Hello ${input.contactName}, we noticed ${input.organizationName} has not been active recently. Is there anything the ${env.APP_NAME} team can help you with?`;
+  if (!transport) {
+    if (env.NODE_ENV === "production") throw new Error("SMTP credentials are not configured");
+    console.log(`[dev-email] to=${input.to} tenant-check-in=${input.organizationName}`);
+    return;
+  }
   await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html: `<p>${text}</p>` });
+};
+
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+
+export const sendTransactionalNotificationEmail = async (input: { to: string; recipientName: string; subject: string; message: string }) => {
+  const transport = getTransporter();
+  const text = `Hello ${input.recipientName},\n\n${input.message}`;
+  if (!transport) {
+    if (env.NODE_ENV === "production") throw new Error("SMTP credentials are not configured");
+    console.log(`[dev-email] to=${input.to} notification=${input.subject}`);
+    return;
+  }
+  await transport.sendMail({
+    from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`,
+    to: input.to,
+    subject: input.subject,
+    text,
+    html: `<p>Hello ${escapeHtml(input.recipientName)},</p><p>${escapeHtml(input.message)}</p>`
+  });
 };

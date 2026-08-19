@@ -22,7 +22,6 @@ import {
   departmentUpdateSchema,
   employeeCreateSchema,
   employeeUpdateSchema,
-  organizationUpdateSchema,
   roleCloneSchema,
   roleCreateSchema,
   roleUpdateSchema,
@@ -217,13 +216,11 @@ const quickActions: QuickAction[] = [
 ];
 
 const workDays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
-const appModules = ["HRIS", "ACCOUNTING", "PAYROLL"] as const;
 const invitationTtlDays = 7;
-const roleTemplateKeys = ["SYSTEM_ADMIN", "MANAGER", "ACCOUNTANT", "EMPLOYEE"] as const;
 const managedModuleKeys = ["hris", "accounting", "payroll"] as const;
 
-type AppModule = (typeof appModules)[number];
-type RoleTemplateKey = (typeof roleTemplateKeys)[number];
+type AppModule = "HRIS" | "ACCOUNTING" | "PAYROLL";
+type RoleTemplateKey = "SYSTEM_ADMIN" | "MANAGER" | "ACCOUNTANT" | "EMPLOYEE";
 type ManagedModuleKey = (typeof managedModuleKeys)[number];
 type ManagedModuleStatus = "ACTIVE" | "INACTIVE" | "COMING_SOON";
 
@@ -1598,26 +1595,6 @@ const getBillingAddressState = async (organizationId: string, fallbackEmail?: st
   };
 };
 
-const getModuleStatusMap = async (organizationId: string) => {
-  const configRows = await prisma.systemConfig.findMany({
-    where: {
-      organizationId,
-      key: { in: getManagedModuleStatusConfigKeys() }
-    },
-    select: { key: true, value: true }
-  });
-  const configMap = new Map(configRows.map((row) => [row.key, row.value]));
-
-  return new Map(
-    managedModules.map((module) => {
-      const rawStatus = configMap.get(`module.${module.key}.status`);
-      const rawEnabled = configMap.get(`module.${module.key}.enabled`);
-      const enabled = typeof rawEnabled === "boolean" ? rawEnabled : undefined;
-      return [module.key, parseManagedModuleStatus(rawStatus, enabled, module.defaultStatus)] as const;
-    })
-  );
-};
-
 const getAddOnSubscriptionKey = (moduleKey: ManagedModuleKey) =>
   `${billingConfigKeys.addOnSubscriptionPrefix}.${moduleKey}.subscription`;
 
@@ -2813,7 +2790,7 @@ export const processMyPlanRenewalNotifications = async (asOf = new Date(), chann
       try {
         if (channel === "EMAIL") {
           if (!organization?.email) throw new Error("Organization billing email is not configured");
-          await sendSubscriptionRenewalEmail({ to: organization.email, organizationName: organization.name, renewalDate, amount: plan?.monthlyCost ?? 0, currency: organization.currency });
+          await sendSubscriptionRenewalEmail({ to: organization.email, organizationName: organization.name, planName: plan?.name ?? "Subscription", renewalDate, amount: plan?.monthlyCost ?? 0, currency: organization.currency });
         } else if (channel === "IN_APP") {
           await prisma.systemAlert.upsert({ where: { organizationId_key: { organizationId: row.organizationId, key: `SUBSCRIPTION_RENEWAL_${renewalDate.toISOString().slice(0, 10)}` } },
             create: { organizationId: row.organizationId, key: `SUBSCRIPTION_RENEWAL_${renewalDate.toISOString().slice(0, 10)}`, title: "Subscription renewal in 15 days", message: `Your ${plan?.name ?? "subscription"} renews on ${renewalDate.toISOString().slice(0, 10)}.`, severity: "INFO", status: "OPEN", isActive: true },
@@ -5143,17 +5120,6 @@ export const uploadBrandingLogo = async (req: Request) => {
     await createAuditLog({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "GENERAL_BRANDING_LOGO_UPDATED", resource: "ORGANIZATION_SETTINGS", resourceId: settings.id, summary: "Updated organization logo", metadata: { fileName, mimeType: req.file.mimetype, size: inspected.buffer.length, width: inspected.width, height: inspected.height } });
     return { ...mapBrandingSettings({ profileImageUrl: logoUrl }, settings), recommendedDimensionsMet: inspected.width >= 200 && inspected.height >= 200 };
   } catch (error) { await deleteObject(stored.key).catch(() => undefined); throw error; }
-};
-
-const jsonBuffer = (value: unknown) => Buffer.from(JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item, 2));
-const csvEscape = (value: unknown) => { const text = value == null ? "" : value instanceof Date ? value.toISOString() : String(value); return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; };
-const toCsv = (rows: Array<Record<string, unknown>>) => { if (!rows.length) return Buffer.from(""); const headers = Object.keys(rows[0]); return Buffer.from([headers.join(","), ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","))].join("\n")); };
-const crcTable = Array.from({ length: 256 }, (_, index) => { let value = index; for (let bit = 0; bit < 8; bit++) value = (value & 1) ? 0xedb88320 ^ (value >>> 1) : value >>> 1; return value >>> 0; });
-const crc32 = (buffer: Buffer) => { let crc = 0xffffffff; for (const byte of buffer) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; };
-const createZipArchive = (entries: Array<{ name: string; data: Buffer }>) => {
-  const localParts: Buffer[] = []; const centralParts: Buffer[] = []; let offset = 0;
-  for (const entry of entries) { const name = Buffer.from(entry.name); const checksum = crc32(entry.data); const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt32LE(checksum, 14); local.writeUInt32LE(entry.data.length, 18); local.writeUInt32LE(entry.data.length, 22); local.writeUInt16LE(name.length, 26); localParts.push(local, name, entry.data); const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt32LE(checksum, 16); central.writeUInt32LE(entry.data.length, 20); central.writeUInt32LE(entry.data.length, 24); central.writeUInt16LE(name.length, 28); central.writeUInt32LE(offset, 42); centralParts.push(central, name); offset += local.length + name.length + entry.data.length; }
-  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0); const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(centralSize, 12); end.writeUInt32LE(offset, 16); return Buffer.concat([...localParts, ...centralParts, end]);
 };
 
 export const requestOrganizationDataExport = async (req: Request) => {

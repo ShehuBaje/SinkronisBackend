@@ -15,8 +15,6 @@ const addOnSubscriptionPrefix = "billing.addons";
 
 const subscriptionPlans = sharedBillingPlans.map((plan) => ({ ...plan, includedSeats: null, maxSeats: null, priceLabel: undefined }));
 
-const prismaAny = prisma as any;
-
 const addMonths = (date: Date, months: number) => {
   const next = new Date(date);
   next.setMonth(next.getMonth() + months);

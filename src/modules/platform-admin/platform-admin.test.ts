@@ -13,6 +13,13 @@ import {
   suspendPlatformTenantSchema,
   updatePlatformPriceSchema
 } from "./platform-admin.validation";
+import { billingDateFilterSchema, createPlatformInvoiceSchema, invoiceExportQuerySchema, invoiceListQuerySchema, impersonatePlatformUserSchema, platformUsersQuerySchema, platformModuleBulkUpdateSchema, platformModulesQuerySchema, platformAnalyticsQuerySchema, createSupportTicketSchema, supportTicketListQuerySchema, updateResolutionNotesSchema, updateSupportTicketStatusSchema } from "./platform-admin.validation";
+import { restrictImpersonatedSensitiveActions } from "../../middleware/impersonation.middleware";
+import { sanitizeCsvCell, effectivePlatformUserModules, platformUserRowStatus, moduleUsageTotal, activityScore, calculateDaysInactive, monthKeys, monthlyRecurringEquivalent, isSupportStatusTransitionAllowed } from "./platform-admin.service";
+import { requireEffectiveModuleAccess } from "../../middleware/module-access.middleware";
+import { platformEmailTemplateParamsSchema, platformFeatureFlagParamsSchema, updateMaintenanceModeSchema, updatePlatformConfigurationSchema, updatePlatformEmailTemplateSchema, updatePlatformPasswordPolicySchema } from "./platform-admin.validation";
+import { extractTemplateVariables } from "./platform-admin.service";
+import { enforcePlatformMaintenance } from "../../middleware/maintenance.middleware";
 import type { PlatformSubscriptionSnapshot } from "./platform-admin.interface";
 import { platformAdminRouter } from "./platform-admin.routes";
 import { requirePlatformAdmin } from "../../middleware/platform-admin.middleware";
@@ -54,8 +61,20 @@ test("dashboard limits are bounded and invalid query fields are rejected", () =>
 test("only the consolidated dashboard plus Platform Tenant management routes are active", () => {
   const paths = (platformAdminRouter as any).stack.filter((layer: any) => layer.route).map((layer: any) => layer.route.path);
   assert.deepEqual(paths, [
-    "/impersonation/exit", "/dashboard",
+    "/impersonation/exit", "/impersonation/stop", "/dashboard",
     "/pricing", "/pricing/modules/:moduleId/price", "/pricing/plans",
+    "/billing", "/billing/analytics", "/billing/revenue-by-plan", "/billing/invoices/export", "/billing/invoices", "/billing/invoices", "/billing/invoices/:invoiceId/reminder", "/billing/invoices/:invoiceId/download",
+    "/users", "/users/analytics", "/users/filter-options", "/users/:userId/deactivate", "/users/:userId/reset-password", "/users/:userId/impersonate",
+    "/modules", "/modules/analytics", "/modules/tenants", "/modules/tenants/:tenantId", "/modules/tenants/:tenantId", "/modules/tenants/:tenantId/:module/enable", "/modules/tenants/:tenantId/:module/disable",
+    "/analytics", "/analytics/at-risk/:tenantId/check-in",
+    "/support/tickets", "/support/tickets", "/support/tickets/:ticketId",
+    "/support/tickets/:ticketId/assign", "/support/tickets/:ticketId/resolution-notes",
+    "/support/tickets/:ticketId/status", "/support/tickets/:ticketId/resolve",
+    "/settings", "/settings/configuration", "/settings/configuration",
+    "/settings/password-policy", "/settings/password-policy",
+    "/settings/feature-flags", "/settings/feature-flags/:key",
+    "/settings/email-templates", "/settings/email-templates/:key", "/settings/email-templates/:key",
+    "/settings/maintenance", "/settings/maintenance",
     "/tenants", "/tenants", "/tenants/:tenantId",
     "/tenants/:tenantId/overview", "/tenants/:tenantId/users",
     "/tenants/:tenantId/users/:userId/deactivate", "/tenants/:tenantId/users/:userId/reset-password",
@@ -72,6 +91,183 @@ test("only the consolidated dashboard plus Platform Tenant management routes are
   for (const removed of ["/dashboard/analytics", "/dashboard/revenue-trend", "/dashboard/module-adoption", "/dashboard/recent-activity", "/dashboard/tenant-health"]) {
     assert.equal(paths.includes(removed), false);
   }
+});
+
+test("support ticket queries and creation enforce bounded platform enums and input", () => {
+  const query = supportTicketListQuerySchema.parse({ page: "2", limit: "50", search: "  Bravo  ", status: "in_progress" });
+  assert.deepEqual(query, { page: 2, limit: 50, search: "Bravo", status: "IN_PROGRESS" });
+  assert.equal(supportTicketListQuerySchema.safeParse({ page: 0 }).success, false);
+  assert.equal(supportTicketListQuerySchema.safeParse({ limit: 101 }).success, false);
+  assert.equal(supportTicketListQuerySchema.safeParse({ search: "x" }).success, false);
+  assert.equal(supportTicketListQuerySchema.safeParse({ status: "CLOSED" }).success, false);
+  assert.equal(createSupportTicketSchema.safeParse({ tenantId: "tenant", subject: "PAYE issue", priority: "critical", description: "PAYE calculation produces an incorrect result." }).success, true);
+  assert.equal(createSupportTicketSchema.safeParse({ tenantId: "tenant", subject: "x", priority: "LOW", description: "short" }).success, false);
+  assert.equal(updateResolutionNotesSchema.safeParse({ resolutionNotes: "  Corrected calculation and awaiting confirmation.  " }).success, true);
+});
+
+test("support ticket status transitions allow progression, idempotence, and no reopening", () => {
+  assert.equal(isSupportStatusTransitionAllowed("OPEN", "OPEN"), true);
+  assert.equal(isSupportStatusTransitionAllowed("OPEN", "IN_PROGRESS"), true);
+  assert.equal(isSupportStatusTransitionAllowed("OPEN", "RESOLVED"), true);
+  assert.equal(isSupportStatusTransitionAllowed("IN_PROGRESS", "RESOLVED"), true);
+  assert.equal(isSupportStatusTransitionAllowed("IN_PROGRESS", "OPEN"), false);
+  assert.equal(isSupportStatusTransitionAllowed("RESOLVED", "OPEN"), false);
+  assert.equal(updateSupportTicketStatusSchema.safeParse({ status: "PENDING" }).success, false);
+});
+
+test("platform configuration validates partial updates, currencies, VAT, timezone, and email", () => {
+  const parsed = updatePlatformConfigurationSchema.parse({ defaultCurrency: "GBP", vatRate: "7.5", defaultTimezone: "Africa/Lagos", supportEmail: " SUPPORT@EXAMPLE.COM " });
+  assert.deepEqual(parsed, { defaultCurrency: "GBP", vatRate: 7.5, defaultTimezone: "Africa/Lagos", supportEmail: "support@example.com" });
+  assert.equal(updatePlatformConfigurationSchema.safeParse({}).success, false);
+  assert.equal(updatePlatformConfigurationSchema.safeParse({ defaultCurrency: "EUR" }).success, false);
+  assert.equal(updatePlatformConfigurationSchema.safeParse({ vatRate: -1 }).success, false);
+  assert.equal(updatePlatformConfigurationSchema.safeParse({ vatRate: 101 }).success, false);
+  assert.equal(updatePlatformConfigurationSchema.safeParse({ defaultTimezone: "Lagos" }).success, false);
+  assert.equal(updatePlatformConfigurationSchema.safeParse({ supportEmail: "invalid" }).success, false);
+});
+
+test("global password policy supports never-expire and bounded security values", () => {
+  assert.equal(updatePlatformPasswordPolicySchema.safeParse({ minimumLength: 16, passwordExpiryDays: null, accountLockoutAttempts: 3, requireSpecialCharacter: true }).success, true);
+  assert.equal(updatePlatformPasswordPolicySchema.safeParse({}).success, false);
+  assert.equal(updatePlatformPasswordPolicySchema.safeParse({ minimumLength: 7 }).success, false);
+  assert.equal(updatePlatformPasswordPolicySchema.safeParse({ accountLockoutAttempts: 2 }).success, false);
+});
+
+test("feature and email template keys are closed enums and templates reject unsafe HTML", () => {
+  assert.equal(platformFeatureFlagParamsSchema.safeParse({ key: "AI_POWERED_INSIGHTS" }).success, true);
+  assert.equal(platformFeatureFlagParamsSchema.safeParse({ key: "UNKNOWN_FLAG" }).success, false);
+  assert.equal(platformEmailTemplateParamsSchema.safeParse({ key: "ONBOARDING_WELCOME" }).success, true);
+  assert.equal(updatePlatformEmailTemplateSchema.safeParse({ subject: "Welcome {{tenantName}}", body: "Hello {{adminName}}" }).success, true);
+  assert.equal(updatePlatformEmailTemplateSchema.safeParse({ subject: "Unsafe", body: "<script>alert(1)</script>" }).success, false);
+  assert.deepEqual(extractTemplateVariables("Hello {{ tenantName }} and {{adminName}}"), ["tenantName", "adminName"]);
+  assert.throws(() => extractTemplateVariables("Hello {{tenantName"), /malformed placeholder/);
+});
+
+test("maintenance updates are bounded and Platform Admin requests bypass enforcement", () => {
+  assert.equal(updateMaintenanceModeSchema.safeParse({ enabled: true, message: "Scheduled platform maintenance is in progress." }).success, true);
+  assert.equal(updateMaintenanceModeSchema.safeParse({}).success, false);
+  assert.equal(updateMaintenanceModeSchema.safeParse({ message: "short" }).success, false);
+  let continued = false;
+  enforcePlatformMaintenance({ user: { isPlatformAdmin: true } } as any, {} as any, () => { continued = true; });
+  assert.equal(continued, true);
+});
+
+test("analytics date ranges are UTC, inclusive, bounded, and ordered", () => {
+  const parsed = platformAnalyticsQuerySchema.parse({ from: "2026-01-31", to: "2026-03-01" });
+  assert.equal(parsed.from.toISOString(), "2026-01-31T00:00:00.000Z");
+  assert.equal(parsed.to.toISOString(), "2026-03-01T00:00:00.000Z");
+  assert.equal(platformAnalyticsQuerySchema.safeParse({ from: "2026-03-02", to: "2026-03-01" }).success, false);
+  assert.equal(platformAnalyticsQuerySchema.safeParse({ from: "2020-01-01", to: "2026-01-01" }).success, false);
+  assert.equal(platformAnalyticsQuerySchema.safeParse({ from: "01/01/2026" }).success, false);
+});
+
+test("analytics month series includes continuous zero-value month keys across boundaries", () => {
+  assert.deepEqual(monthKeys(new Date("2025-12-31T00:00:00.000Z"), new Date("2026-03-01T00:00:00.000Z")), ["2025-12", "2026-01", "2026-02", "2026-03"]);
+});
+
+test("MRR normalizes annual recurring charges and preserves monthly charges", () => {
+  assert.equal(monthlyRecurringEquivalent(1_200_000, "YEARLY"), 100_000);
+  assert.equal(monthlyRecurringEquivalent(80_000, "MONTHLY"), 80_000);
+});
+
+test("at-risk detection includes the three-day boundary and never-active tenants", () => {
+  const asOf = new Date("2026-08-17T12:00:00.000Z");
+  assert.equal(calculateDaysInactive(new Date("2026-08-14T12:00:00.000Z"), new Date("2026-01-01"), asOf), 3);
+  assert.equal(calculateDaysInactive(null, new Date("2026-08-10T12:00:00.000Z"), asOf), 7);
+});
+
+test("activity ranking combines measured sessions and available page views", () => {
+  assert.equal(activityScore(12, 30), 42);
+  assert.equal(activityScore(12, null), 12);
+});
+
+test("platform module queries validate supported filters, sorting, and pagination", () => {
+  const parsed = platformModulesQuerySchema.parse({ module: "HRIS", enabled: "true", plan: "ALL_IN_ONE", tenantStatus: "active", sortBy: "usage", sortOrder: "desc" });
+  assert.deepEqual({ module: parsed.module, enabled: parsed.enabled, plan: parsed.plan, tenantStatus: parsed.tenantStatus }, { module: "hris", enabled: true, plan: "all-in-one", tenantStatus: "ACTIVE" });
+  assert.equal(platformModulesQuerySchema.safeParse({ enabled: "true" }).success, false);
+  assert.equal(platformModulesQuerySchema.safeParse({ module: "ALL_IN_ONE" }).success, false);
+  assert.equal(platformModulesQuerySchema.safeParse({ sortBy: "rawSql" }).success, false);
+  assert.equal(platformModulesQuerySchema.safeParse({ limit: 101 }).success, false);
+});
+
+test("bulk module updates reject duplicates and invalid or empty module sets", () => {
+  assert.equal(platformModuleBulkUpdateSchema.safeParse({ modules: [{ module: "HRIS", enabled: true }, { module: "PAYROLL", enabled: false }], reason: "Subscription adjustment" }).success, true);
+  assert.equal(platformModuleBulkUpdateSchema.safeParse({ modules: [{ module: "HRIS", enabled: true }, { module: "hris", enabled: false }], reason: "Duplicate" }).success, false);
+  assert.equal(platformModuleBulkUpdateSchema.safeParse({ modules: [], reason: "Empty update" }).success, false);
+  assert.equal(platformModuleBulkUpdateSchema.safeParse({ modules: [{ module: "ALL_IN_ONE", enabled: true }], reason: "Invalid module" }).success, false);
+});
+
+test("cumulative module usage counts user-module assignments, not unique users", () => {
+  assert.equal(moduleUsageTotal({ hrisUsers: 45, payrollUsers: 28, accountingUsers: 0 }), 73);
+});
+
+test("module access middleware rejects direct Platform Administrator tenant access before querying entitlements", () => {
+  let error: any;
+  requireEffectiveModuleAccess("hris")({ user: { isPlatformAdmin: true } } as any, {} as any, (value?: unknown) => { error = value; });
+  assert.equal(error?.statusCode, 403);
+});
+
+test("platform user listing validates search, filters, sorting, and pagination", () => {
+  const parsed = platformUsersQuerySchema.parse({ page: "2", limit: "50", search: "  Amina Yusuf  ", tenantId: "tenant", roleId: "role", status: "active", sortBy: "tenantName", sortOrder: "asc" });
+  assert.deepEqual({ page: parsed.page, limit: parsed.limit, search: parsed.search, status: parsed.status, sortBy: parsed.sortBy }, { page: 2, limit: 50, search: "Amina Yusuf", status: "ACTIVE", sortBy: "tenantName" });
+  assert.equal(platformUsersQuerySchema.safeParse({ page: 0 }).success, false);
+  assert.equal(platformUsersQuerySchema.safeParse({ limit: 101 }).success, false);
+  assert.equal(platformUsersQuerySchema.safeParse({ search: "x" }).success, false);
+  assert.equal(platformUsersQuerySchema.safeParse({ status: "SUSPENDED" }).success, false);
+  assert.equal(platformUsersQuerySchema.safeParse({ sortBy: "passwordHash" }).success, false);
+});
+
+test("impersonation requires a bounded support reason", () => {
+  assert.equal(impersonatePlatformUserSchema.safeParse({ reason: "Investigating reported access issue" }).success, true);
+  assert.equal(impersonatePlatformUserSchema.safeParse({}).success, false);
+  assert.equal(impersonatePlatformUserSchema.safeParse({ reason: "x" }).success, false);
+});
+
+test("impersonated sessions cannot perform sensitive mutations", () => {
+  let error: any; let continued = false;
+  restrictImpersonatedSensitiveActions({ user: { impersonation: { sessionId: "session", platformAdminUserId: "admin" } }, method: "POST", path: "/security/password-policy" } as any, {} as any, (value?: unknown) => { error = value; });
+  assert.equal(error?.statusCode, 403);
+  restrictImpersonatedSensitiveActions({ user: { impersonation: { sessionId: "session", platformAdminUserId: "admin" } }, method: "GET", path: "/security/policy" } as any, {} as any, () => { continued = true; });
+  assert.equal(continued, true);
+});
+
+test("platform user status keeps inactive, locked, and suspended states distinct", () => {
+  const now = new Date("2026-08-06T12:00:00.000Z");
+  assert.equal(platformUserRowStatus({ isActive: false, lockedUntil: null, organization: { status: "ACTIVE" } }, now), "INACTIVE");
+  assert.equal(platformUserRowStatus({ isActive: true, lockedUntil: new Date("2026-08-06T13:00:00.000Z"), organization: { status: "ACTIVE" } }, now), "LOCKED");
+  assert.equal(platformUserRowStatus({ isActive: true, lockedUntil: null, organization: { status: "SUSPENDED" } }, now), "SUSPENDED");
+  assert.equal(platformUserRowStatus({ isActive: true, lockedUntil: new Date("2026-08-06T11:00:00.000Z"), organization: { status: "ACTIVE" } }, now), "ACTIVE");
+});
+
+test("module access intersects role permissions with active tenant modules", () => {
+  assert.deepEqual(effectivePlatformUserModules(["hris:employees:view", "payroll:runs:view", "admin:roles:view"], new Set(["hris", "accounting"])), ["HRIS"]);
+  assert.deepEqual(effectivePlatformUserModules(["accounting:payments:view"], new Set()), []);
+});
+
+test("platform billing validates dates, pagination, filters, sorting, periods, and money", () => {
+  assert.equal(billingDateFilterSchema.safeParse({ startDate: "2026-08-02", endDate: "2026-08-01" }).success, false);
+  assert.equal(invoiceListQuerySchema.safeParse({ page: 0 }).success, false);
+  assert.equal(invoiceListQuerySchema.safeParse({ status: "SENT" }).success, false);
+  assert.equal(invoiceListQuerySchema.safeParse({ sortBy: "rawSql" }).success, false);
+  assert.equal(invoiceListQuerySchema.safeParse({ billingPeriod: "2026-13" }).success, false);
+  assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 500000.25 }).success, true);
+  assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 0 }).success, false);
+  assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 1.001 }).success, false);
+  assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 10, invoiceNumber: "untrusted" }).success, false);
+});
+
+test("invoice export accepts the listing filters without pagination", () => {
+  const result = invoiceExportQuerySchema.parse({ search: "Acme", status: "OVERDUE", tenantId: "tenant", billingPeriod: "2026-07", sortBy: "tenantName", sortOrder: "asc" });
+  assert.deepEqual({ status: result.status, sortBy: result.sortBy, sortOrder: result.sortOrder }, { status: "OVERDUE", sortBy: "tenantName", sortOrder: "asc" });
+  assert.equal(invoiceExportQuerySchema.safeParse({ page: 1 }).success, false);
+});
+
+test("CSV export neutralizes formulas and escapes quotes and newlines", () => {
+  assert.equal(sanitizeCsvCell("=HYPERLINK(\"https://bad.test\")"), '"\'=HYPERLINK(""https://bad.test"")"');
+  assert.equal(sanitizeCsvCell("+SUM(A1:A2)"), '"\'+SUM(A1:A2)"');
+  assert.equal(sanitizeCsvCell("-10"), '"\'-10"');
+  assert.equal(sanitizeCsvCell("@command"), '"\'@command"');
+  assert.equal(sanitizeCsvCell("Acme\nLimited"), '"Acme Limited"');
 });
 
 test("pricing queries and mutations enforce bounded filters, precision, and effective dates", () => {
