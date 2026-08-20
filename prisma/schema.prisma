@@ -985,6 +985,7 @@ model PlatformInvoice {
   billingPeriod    String                    @db.Char(7)
   planKey          String
   amount           Decimal                   @db.Decimal(14, 2)
+  pricingSnapshot  Json?
   currency         String                    @default("NGN") @db.Char(3)
   status           platforminvoice_status    @default(DRAFT)
   invoiceDate      DateTime                  @default(now())

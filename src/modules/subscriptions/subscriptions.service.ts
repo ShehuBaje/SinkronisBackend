@@ -1,13 +1,10 @@
 import type { Request } from "express";
 import { badRequest, notFound } from "../../core/http-error";
 import { prisma } from "../../core/prisma";
-import { billingPlans as sharedBillingPlans, moduleLabels, modulePrices as addOnPrices, type BillingCycle, type BillingModuleKey as ManagedModuleKey, type BillingPlanKey } from "../billing/billing.catalog";
+import { billingPlans as sharedBillingPlans, moduleLabels, type BillingCycle, type BillingPlanKey } from "../billing/billing.catalog";
 import { getEffectivePlanCatalogue, resolveRecurringPrices } from "../billing/pricing.service";
 
-type SubscriptionPlan = (typeof sharedBillingPlans)[number];
-
 const subscriptionConfigKey = "billing.subscription";
-const addOnSubscriptionPrefix = "billing.addons";
 
 const subscriptionPlans = sharedBillingPlans;
 
@@ -26,7 +23,8 @@ const getPlan = async (planKey: BillingPlanKey, organizationId?: string) => {
     const prices = await resolveRecurringPrices([{ organizationId, planKey, source: "BASE_PLAN", fallbackMonthlyPrice: monthlyCost }]);
     monthlyCost = prices.get(`${organizationId}:${planKey}:BASE_PLAN`) ?? monthlyCost;
   }
-  return { ...plan, monthlyCost, yearlyCost: monthlyCost * 12 };
+  const baseMonthlyPrice = monthlyCost;
+  return { ...plan, baseMonthlyPrice, monthlyCost, yearlyCost: monthlyCost * 12 };
 };
 
 const normalizeBillingCycle = (value: unknown): BillingCycle => (value === "YEARLY" ? "YEARLY" : "MONTHLY");
@@ -58,41 +56,6 @@ const getSubscriptionConfig = async (organizationId: string, currency: string) =
   };
 };
 
-const getActiveAddOnModules = async (organizationId: string, plan: SubscriptionPlan) => {
-  const rows = await prisma.systemConfig.findMany({
-    where: {
-      organizationId,
-      key: {
-        in: (["hris", "accounting", "payroll"] as ManagedModuleKey[]).flatMap((moduleKey) => [
-          `module.${moduleKey}.status`,
-          `${addOnSubscriptionPrefix}.${moduleKey}.subscription`
-        ])
-      }
-    },
-    select: { key: true, value: true }
-  });
-
-  const config = new Map(rows.map((row) => [row.key, row.value]));
-
-  return (["hris", "accounting", "payroll"] as ManagedModuleKey[])
-    .filter((moduleKey) => !plan.includedModules.includes(moduleKey))
-    .filter((moduleKey) => {
-      const moduleStatus = config.get(`module.${moduleKey}.status`);
-      const addOnState = config.get(`${addOnSubscriptionPrefix}.${moduleKey}.subscription`) as Record<string, unknown> | undefined;
-      return moduleStatus === "ACTIVE" || addOnState?.status === "ACTIVE";
-    });
-};
-
-const calculateSubscriptionBilling = (plan: SubscriptionPlan, activeAddOns: ManagedModuleKey[], effectiveAddOnPrices: Partial<Record<ManagedModuleKey, number>> = {}) => {
-  const activeAddOnMonthlyCost = activeAddOns.reduce((sum, moduleKey) => sum + (effectiveAddOnPrices[moduleKey] ?? addOnPrices[moduleKey]), 0);
-
-  return {
-    baseMonthlyCost: plan.monthlyCost,
-    activeAddOnMonthlyCost,
-    totalMonthlyCost: plan.monthlyCost + activeAddOnMonthlyCost
-  };
-};
-
 const buildCurrentSubscription = async (organizationId: string) => {
   const organization = await prisma.organization.findUnique({
     where: { id: organizationId },
@@ -103,33 +66,22 @@ const buildCurrentSubscription = async (organizationId: string) => {
 
   const subscription = await getSubscriptionConfig(organizationId, organization.currency);
   const plan = await getPlan(subscription.planKey, organizationId);
-  const activeAddOns = await getActiveAddOnModules(organizationId, plan);
-  const includedModules = [...plan.includedModules, ...activeAddOns].map((moduleKey) => ({
+  const includedModules = plan.includedModules.map((moduleKey) => ({
     key: moduleKey,
     name: moduleLabels[moduleKey],
-    source: plan.includedModules.includes(moduleKey) ? "plan" : "paid_add_on"
+    source: "plan"
   }));
-  const marketAddOnPrices = Object.fromEntries((await getEffectivePlanCatalogue()).map((item) => [item.key, item.monthlyPrice])) as Partial<Record<ManagedModuleKey, number>>;
-  const agreedAddOnPriceMap = await resolveRecurringPrices(activeAddOns.map((moduleKey) => ({
-    organizationId, planKey: moduleKey, source: "ADD_ON" as const,
-    fallbackMonthlyPrice: marketAddOnPrices[moduleKey] ?? addOnPrices[moduleKey]
-  })));
-  const effectiveAddOnPrices = Object.fromEntries(activeAddOns.map((moduleKey) => [
-    moduleKey,
-    agreedAddOnPriceMap.get(`${organizationId}:${moduleKey}:ADD_ON`) ?? marketAddOnPrices[moduleKey] ?? addOnPrices[moduleKey]
-  ]));
-  const billing = calculateSubscriptionBilling(plan, activeAddOns, effectiveAddOnPrices);
 
   return {
     planName: plan.name,
     planKey: plan.key,
     subscriptionStatus: subscription.status,
     renewalDate: subscription.renewalDate,
-    monthlyCost: billing.totalMonthlyCost,
+    monthlyCost: plan.monthlyCost,
     currency: subscription.currency,
     includedModules,
     packages: plan.features,
-    billing,
+    billing: { baseMonthlyCost: plan.baseMonthlyPrice, totalMonthlyCost: plan.monthlyCost },
     cancellation: {
       scheduled: subscription.cancelAtPeriodEnd,
       effectiveDate: subscription.cancelAtPeriodEnd ? subscription.renewalDate : null

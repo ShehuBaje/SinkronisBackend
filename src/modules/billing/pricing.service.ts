@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../core/prisma";
-import { billingPlans, modulePrices, type BillingModuleKey, type BillingPlanKey } from "./billing.catalog";
+import { billingPlans, type BillingPlanKey } from "./billing.catalog";
 
 export const NGN = "NGN" as const;
 export const toMinorUnits = (amount: number | string | Prisma.Decimal) => Math.round(Number(amount) * 100);
@@ -44,13 +44,12 @@ export const resolveRecurringPrices = async (components: RecurringPriceComponent
 
 export const getFallbackPrice = (key: string) => {
   const plan = billingPlans.find((candidate) => candidate.key === key);
-  if (plan) return plan.monthlyCost;
-  return modulePrices[key as BillingModuleKey] ?? 0;
+  return plan?.monthlyCost ?? 0;
 };
 
 export const getEffectivePlanCatalogue = async (at = new Date()) => {
   const plans = await prisma.billingProductPlan.findMany({
-    where: { status: { not: "ARCHIVED" } },
+    where: { status: { not: "ARCHIVED" }, key: { in: billingPlans.map((plan) => plan.key) } },
     include: {
       modules: { orderBy: { moduleKey: "asc" } },
       features: { include: { feature: true } },

@@ -67,5 +67,5 @@ export interface PlatformSubscriptionSnapshot {
   activeModules: BillingModuleKey[];
   monthlyRecurringRevenue: number;
   baseMonthlyRecurringRevenue: number;
-  revenueComponents: Array<{ key: string; source: "BASE_PLAN" | "ADD_ON"; monthlyRevenue: number }>;
+  revenueComponents: Array<{ key: string; source: "BASE_PLAN"; monthlyRevenue: number }>;
 }

@@ -15,7 +15,6 @@ import {
   getPlatformTenants,
   getPlatformTenantUsers,
   impersonatePlatformTenantAdmin,
-  createPlatformPricingPlan,
   getPlatformPricingOverview,
   overridePlatformTenantPlan,
   resetPlatformTenantUserPassword,
@@ -187,13 +186,7 @@ export const getPlatformPricingOverviewController = async (req: Request, res: Re
   sendSuccess(res, "Pricing and plans retrieved successfully", await getPlatformPricingOverview(req.query, req.user!));
 
 export const updatePlatformModulePriceController = async (req: Request, res: Response) =>
-  sendSuccess(res, "Price change recorded successfully", await updatePlatformModulePrice(String(req.params.moduleId), req.body, req.user!, {
+  sendSuccess(res, "Price change recorded successfully", await updatePlatformModulePrice(String(req.params.moduleId ?? req.params.planCode), req.body, req.user!, {
     ipAddress: req.ip,
     requestId: req.header("x-request-id") ?? null
   }));
-
-export const createPlatformPricingPlanController = async (req: Request, res: Response) =>
-  sendSuccess(res, "Subscription plan created successfully", await createPlatformPricingPlan(req.body, req.user!, {
-    ipAddress: req.ip,
-    requestId: req.header("x-request-id") ?? null
-  }), { status: 201 });

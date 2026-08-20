@@ -744,8 +744,8 @@ const options: swaggerJSDoc.Options = {
           properties: { success: { type: "boolean", example: false }, message: { type: "string", example: "Validation failed" }, data: { nullable: true, example: null }, errorCode: { type: "string", example: "VALIDATION_ERROR" }, validationErrors: { type: "array", nullable: true, items: { type: "object", properties: { field: { type: "string" }, message: { type: "string" }, code: { type: "string" } } } } }
         },
         MyPlanModule: {
-          type: "object", required: ["key", "name", "status", "monthlyCost", "billingFrequency"],
-          properties: { key: { type: "string", enum: ["hris", "payroll", "accounting"] }, name: { type: "string" }, status: { type: "string", enum: ["ACTIVE", "INACTIVE", "CANCELLED"] }, monthlyCost: { type: "number", example: 10000 }, monthlyPrice: { type: "number", example: 10000 }, billingFrequency: { type: "string", example: "MONTHLY" }, activationDate: { type: "string", format: "date-time", nullable: true }, includedInPlan: { type: "boolean" } }
+          type: "object", required: ["key", "name", "status", "includedInPlan"],
+          properties: { key: { type: "string", enum: ["hris", "payroll", "accounting"] }, name: { type: "string" }, status: { type: "string", enum: ["ACTIVE", "INACTIVE"] }, activationDate: { type: "string", format: "date-time", nullable: true }, includedInPlan: { type: "boolean" } }
         },
         MyPlanChangePreview: {
           type: "object", required: ["currentPlan", "currentMonthlyCost", "selectedPlan", "selectedMonthlyCost", "totalMonthlyCostAfterChange", "effectiveDate", "billingImpact", "proratedCharges", "currency"],
@@ -753,14 +753,14 @@ const options: swaggerJSDoc.Options = {
         },
         MyPlanOverviewData: {
           type: "object", required: ["subscription", "analytics", "activeModules", "costBreakdown"],
-          properties: { subscription: { type: "object", properties: { status: { type: "string", enum: ["ACTIVE", "PENDING", "EXPIRED", "CANCELLED"] }, planKey: { type: "string", enum: ["hris", "payroll", "accounting", "all-in-one"] }, planName: { type: "string" }, renewalDate: { type: "string", format: "date-time" }, automaticRenewal: { type: "boolean" } } }, analytics: { type: "object", properties: { currentPlan: { type: "string" }, subscriptionStatus: { type: "string" }, monthlyCost: { type: "number" }, numberOfEmployees: { type: "integer" }, numberOfActiveModules: { type: "integer" } } }, activeModules: { type: "array", items: { $ref: "#/components/schemas/MyPlanModule" } }, costBreakdown: { type: "object", properties: { basePlanCost: { type: "number", example: 80000 }, activeModuleTotal: { type: "number", example: 10000 }, grandMonthlyTotal: { type: "number", example: 90000 } } } }
+          properties: { subscription: { type: "object", properties: { status: { type: "string", enum: ["ACTIVE", "PENDING", "EXPIRED", "CANCELLED"] }, planKey: { type: "string", enum: ["hris", "payroll", "accounting", "all-in-one"] }, planName: { type: "string" }, renewalDate: { type: "string", format: "date-time" }, automaticRenewal: { type: "boolean" } } }, currentPlan: { type: "object", properties: { planCode: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"] }, planName: { type: "string" }, status: { type: "string" }, monthlyCost: { type: "number" }, employeeCount: { type: "integer" }, activeModuleCount: { type: "integer" } } }, renewal: { type: "object", properties: { renewalDate: { type: "string", format: "date-time" }, daysUntilRenewal: { type: "integer" } } }, analytics: { type: "object", properties: { currentPlan: { type: "string" }, subscriptionStatus: { type: "string" }, monthlyCost: { type: "number" }, numberOfEmployees: { type: "integer" }, numberOfActiveModules: { type: "integer" } } }, activeModules: { type: "array", items: { $ref: "#/components/schemas/MyPlanModule" } }, costBreakdown: { type: "object", properties: { items: { type: "array", items: { type: "object", properties: { code: { type: "string" }, description: { type: "string" }, amount: { type: "number" } } } }, totalMonthlyCost: { type: "number", example: 80000 } } } }
         },
         MyPlanOverviewResponse: {
           allOf: [{ $ref: "#/components/schemas/MyPlanGenericResponse" }, { type: "object", properties: { data: { $ref: "#/components/schemas/MyPlanOverviewData" } } }]
         },
         MyPlanPlan: {
           type: "object", required: ["key", "name", "monthlyCost", "yearlyCost", "includedModules", "features"],
-          properties: { key: { type: "string", enum: ["hris", "payroll", "accounting", "all-in-one"] }, name: { type: "string" }, monthlyCost: { type: "number" }, yearlyCost: { type: "number" }, includedModules: { type: "array", items: { type: "string", enum: ["hris", "payroll", "accounting"] } }, description: { type: "string" }, features: { type: "array", items: { type: "string" } }, isCurrent: { type: "boolean" }, canUpgrade: { type: "boolean" }, canDowngrade: { type: "boolean" }, canAdd: { type: "boolean" } }
+          properties: { key: { type: "string", enum: ["hris", "payroll", "accounting", "all-in-one"] }, name: { type: "string" }, monthlyCost: { type: "number" }, yearlyCost: { type: "number" }, includedModules: { type: "array", items: { type: "string", enum: ["hris", "payroll", "accounting"] } }, description: { type: "string" }, features: { type: "array", items: { type: "string" } }, currentPlan: { type: "boolean" }, active: { type: "boolean" }, availableForSwitch: { type: "boolean" } }
         },
         MyPlanPlansResponse: {
           allOf: [{ $ref: "#/components/schemas/MyPlanGenericResponse" }, { type: "object", properties: { data: { type: "object", required: ["currentPlanKey", "currency", "plans"], properties: { currentPlanKey: { type: "string" }, currency: { type: "string" }, plans: { type: "array", items: { $ref: "#/components/schemas/MyPlanPlan" } } } } } }]
@@ -776,7 +776,7 @@ const options: swaggerJSDoc.Options = {
         },
         MyPlanBillingHistoryItem: {
           type: "object", required: ["invoiceId", "date", "description", "amountPaid", "paymentStatus", "invoiceNumber", "downloadUrl"],
-          properties: { invoiceId: { type: "string" }, date: { type: "string", format: "date-time" }, description: { type: "string", example: "Payroll module subscription" }, amountPaid: { type: "number", example: 10000 }, currency: { type: "string", example: "NGN" }, paymentStatus: { type: "string", example: "paid" }, invoiceNumber: { type: "string", example: "INV-20260720120000-A1B2C3" }, downloadUrl: { type: "string" }, pricingComponents: { type: "object", additionalProperties: true, nullable: true } }
+          properties: { invoiceId: { type: "string" }, date: { type: "string", format: "date-time" }, description: { type: "string", example: "Payroll subscription" }, amountPaid: { type: "number", example: 10000 }, currency: { type: "string", example: "NGN" }, paymentStatus: { type: "string", example: "paid" }, invoiceNumber: { type: "string", example: "INV-20260720120000-A1B2C3" }, downloadUrl: { type: "string" }, pricingComponents: { type: "object", additionalProperties: true, nullable: true } }
         },
         MyPlanChangeBody: {
           type: "object",
@@ -797,16 +797,6 @@ const options: swaggerJSDoc.Options = {
             confirmationText: { type: "string", example: "cancel" },
             confirmCancel: { type: "boolean", example: true },
             keepPlan: { type: "boolean", example: false }
-          }
-        },
-        MyPlanAddonUpdateBody: {
-          type: "object",
-          required: ["enabled"],
-          properties: {
-            enabled: { type: "boolean" },
-            confirm: { type: "boolean", default: false, description: "Required to complete a module purchase after preview." },
-            paymentReference: { type: "string" },
-            automaticRenewal: { type: "boolean", default: true }
           }
         },
         MyPlanPaymentMethodBody: {
@@ -1114,37 +1104,21 @@ const options: swaggerJSDoc.Options = {
         PlatformPricingCard: {
           type: "object", properties: {
             id: { type: "string" }, key: { type: "string" }, name: { type: "string" }, description: { type: "string" },
-            activeTenantCount: { type: "integer" }, monthlyPrice: { type: "number", format: "double", description: "Whole Nigerian Naira; persisted as DECIMAL(14,2)." },
+            code: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"] }, activeTenantCount: { type: "integer" }, baseMonthlyPrice: { type: "number", format: "double", description: "Whole Nigerian Naira; Payroll is fixed at NGN 10,000." }, monthlyPrice: { type: "number", format: "double" },
             monthlyRevenue: { type: "number", format: "double" }, currency: { type: "string", enum: ["NGN"] },
-            pricingModel: { type: "string", enum: ["FLAT_MONTHLY"] }, status: { type: "string" },
+            pricingModel: { type: "string", enum: ["FIXED", "FIXED_BUNDLE"] }, status: { type: "string" },
             totalEmployees: { type: "integer" }, revenueContributionPercentage: { type: "number" },
             features: { type: "array", items: { $ref: "#/components/schemas/PlatformPricingFeature" } },
             updatedAt: { type: "string", format: "date-time" }, rowVersion: { type: "integer" }
           }
         },
         PlatformPriceUpdateBody: {
-          type: "object", required: ["monthlyPrice", "reason", "effectiveAt"], additionalProperties: false,
+          type: "object", required: ["baseMonthlyPrice"], additionalProperties: false,
           properties: {
-            monthlyPrice: { type: "number", minimum: 0, maximum: 1000000000, multipleOf: 0.01, example: 90000 },
-            reason: { type: "string", minLength: 3, maxLength: 1000, example: "Annual pricing review" },
-            effectiveAt: { type: "string", format: "date-time", example: "2026-08-01T00:00:00.000Z" },
+            baseMonthlyPrice: { type: "number", minimum: 0, maximum: 1000000000, multipleOf: 0.01, example: 85000 },
+            reason: { type: "string", minLength: 3, maxLength: 1000, default: "Platform Admin price update" },
+            effectiveAt: { type: "string", format: "date-time", description: "Optional effective date; defaults to now." },
             expectedVersion: { type: "integer", minimum: 1, description: "Optional optimistic-lock version from the pricing card." }
-          }
-        },
-        PlatformPlanCreateBody: {
-          type: "object", required: ["name", "monthlyPrice", "description", "features"], additionalProperties: false,
-          properties: {
-            name: { type: "string", minLength: 2, maxLength: 120, example: "Enterprise" },
-            monthlyPrice: { type: "number", minimum: 0, multipleOf: 0.01, example: 250000 },
-            description: { type: "string", minLength: 3, maxLength: 2000 },
-            features: {
-              type: "array", minItems: 1, items: {
-                oneOf: [
-                  { type: "object", required: ["featureId"], additionalProperties: false, properties: { featureId: { type: "string" } } },
-                  { type: "object", required: ["name"], additionalProperties: false, properties: { name: { type: "string" }, description: { type: "string" }, module: { type: "string", enum: ["hris", "payroll", "accounting"] } } }
-                ]
-              }
-            }
           }
         },
         GeneralLocaleSettings: {
@@ -1234,11 +1208,11 @@ const options: swaggerJSDoc.Options = {
             planKey: { type: "string", enum: ["hris", "payroll", "accounting", "all-in-one"] },
             subscriptionStatus: { type: "string" },
             renewalDate: { type: "string", format: "date-time" },
-            monthlyCost: { type: "number", description: "Configured base module/plan price plus active paid module add-ons. It is not seat based." },
+            monthlyCost: { type: "number", description: "The selected plan's recurring monthly price. Included modules are not charged separately.", example: 80000 },
             currency: { type: "string", enum: ["NGN"] },
-            includedModules: { type: "array", items: { type: "object", properties: { key: { type: "string", enum: ["hris", "payroll", "accounting"] }, name: { type: "string" }, source: { type: "string", enum: ["plan", "paid_add_on"] } } } },
+            includedModules: { type: "array", items: { type: "object", properties: { key: { type: "string", enum: ["hris", "payroll", "accounting"] }, name: { type: "string" }, source: { type: "string", enum: ["plan"] } } } },
             packages: { type: "array", items: { type: "string" } },
-            billing: { type: "object", properties: { baseMonthlyCost: { type: "number" }, activeAddOnMonthlyCost: { type: "number" }, totalMonthlyCost: { type: "number" } } },
+            billing: { type: "object", properties: { baseMonthlyCost: { type: "number" }, totalMonthlyCost: { type: "number" } } },
             cancellation: { type: "object", properties: { scheduled: { type: "boolean" }, effectiveDate: { type: "string", format: "date-time", nullable: true } } }
           }
         },
@@ -1422,7 +1396,7 @@ const options: swaggerJSDoc.Options = {
       [`${platformAdminBase}/modules/analytics`]: { get: { tags: ["Platform Module Management"], summary: "Get HRIS, Payroll, and Accounting tenant/user adoption", description: "Counts only active non-deleted tenants with active subscriptions and enabled modules. User counts additionally require an active, unlocked user and matching role permission.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Per-module tenantCount and activeUserCount" }, "403": { description: "Forbidden" } } } },
       [`${platformAdminBase}/modules/tenants`]: { get: { tags: ["Platform Module Management"], summary: "List tenant module configurations", description: "Database-level filtering, aggregate sorting, and pagination. ALL_IN_ONE is treated only as a plan filter.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Tenant configurations with enabled/disabled modules, per-module counts, cumulative usage, actor, timestamp, and version" }, "400": { description: "Invalid query" }, "403": { description: "Forbidden" } } } },
       [`${platformAdminBase}/modules/tenants/{tenantId}`]: { get: { tags: ["Platform Module Management"], summary: "Get one tenant module configuration", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "tenantId", required: true, schema: { type: "string" } }], responses: { "200": { description: "Tenant module configuration" }, "404": { description: "Tenant not found" }, "403": { description: "Forbidden" } } }, patch: { tags: ["Platform Module Management"], summary: "Atomically update multiple tenant modules", description: "Requires platform:modules:manage. Validates all entries, rolls back on failure, supports optimistic expectedVersion, applies immediately, preserves data, and audits changed modules only.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "tenantId", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["modules", "reason"], properties: { modules: { type: "array", minItems: 1, maxItems: 3, items: { type: "object", required: ["module", "enabled"], properties: { module: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING"] }, enabled: { type: "boolean" } } } }, reason: { type: "string", minLength: 3, maxLength: 1000 }, expectedVersion: { type: "integer", minimum: 1 } } } } } }, responses: { "200": { description: "Previous/current states and refreshed configuration" }, "400": { description: "Invalid or duplicate modules" }, "404": { description: "Active tenant not found" }, "409": { description: "Plan restriction, dependency, inactive subscription, or concurrent version conflict" } } } },
-      [`${platformAdminBase}/modules/tenants/{tenantId}/{module}/enable`]: { patch: { tags: ["Platform Module Management"], summary: "Idempotently enable one module", description: "Immediately updates the authoritative entitlement and add-on state. Re-enabling restores access to preserved data.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "tenantId", required: true, schema: { type: "string" } }, { in: "path", name: "module", required: true, schema: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING"] } }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["reason"], properties: { reason: { type: "string" } } } } } }, responses: { "200": { description: "Current module state" }, "404": { description: "Tenant not found" }, "409": { description: "Subscription restriction" } } } },
+      [`${platformAdminBase}/modules/tenants/{tenantId}/{module}/enable`]: { patch: { tags: ["Platform Module Management"], summary: "Synchronize an entitled module as enabled", description: "Module access is derived from the tenant's selected plan. A mismatched request returns 409 and the subscription plan must be changed instead.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "tenantId", required: true, schema: { type: "string" } }, { in: "path", name: "module", required: true, schema: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING"] } }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["reason"], properties: { reason: { type: "string" } } } } } }, responses: { "200": { description: "Current module state" }, "404": { description: "Tenant not found" }, "409": { description: "Requested state conflicts with selected plan" } } } },
       [`${platformAdminBase}/modules/tenants/{tenantId}/{module}/disable`]: { patch: { tags: ["Platform Module Management"], summary: "Idempotently disable one module", description: "New backend requests are denied immediately. Data is retained; no read-only access or exports are granted through module APIs while disabled. Processing payroll, pending finance work, draft/sent invoices, pending leave, and open appraisals block disablement.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "tenantId", required: true, schema: { type: "string" } }, { in: "path", name: "module", required: true, schema: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING"] } }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["reason"], properties: { reason: { type: "string" } } } } } }, responses: { "200": { description: "Current module state" }, "404": { description: "Tenant not found" }, "409": { description: "Included plan module or active dependency" } } } },
       [`${platformAdminBase}/users`]: { get: { tags: ["Platform User Management"], summary: "List and analyze users across all non-deleted tenants", description: "Requires platform:users:read. Search is trimmed, partial, case-insensitive under the configured MySQL collation, and tokenized for full-name matching. ACTIVE means login-eligible; rows may additionally report LOCKED or SUSPENDED.", security: [{ bearerAuth: [] }], parameters: [{ in: "query", name: "page", schema: { type: "integer", minimum: 1 } }, { in: "query", name: "limit", schema: { type: "integer", minimum: 1, maximum: 100 } }, { in: "query", name: "search", schema: { type: "string", minLength: 2, maxLength: 100 } }, { in: "query", name: "tenantId", schema: { type: "string" } }, { in: "query", name: "roleId", schema: { type: "string" } }, { in: "query", name: "status", schema: { type: "string", enum: ["ALL", "ACTIVE", "INACTIVE"] } }, { in: "query", name: "sortBy", schema: { type: "string", enum: ["name", "email", "tenantName", "role", "lastActive", "status", "createdAt"] } }, { in: "query", name: "sortOrder", schema: { type: "string", enum: ["asc", "desc"] } }], responses: { "200": { description: "Analytics, privacy-limited user rows, effective module access, applied filters, and pagination" }, "400": { description: "Invalid query or mismatched tenant/role" }, "403": { description: "Platform Administrator or permission required" }, "404": { description: "Tenant or role not found" } } } },
       [`${platformAdminBase}/users/analytics`]: { get: { tags: ["Platform User Management"], summary: "Get platform-wide user analytics", description: "Total excludes users belonging to archived/deleted tenants. Active users are enabled, unlocked users in active tenants. Inactive includes disabled, locked, and tenant-suspended users.", security: [{ bearerAuth: [] }], responses: { "200": { description: "totalUsers, activeUsers, and inactiveUsers" }, "403": { description: "Forbidden" } } } },
@@ -1431,16 +1405,17 @@ const options: swaggerJSDoc.Options = {
       [`${platformAdminBase}/users/{userId}/reset-password`]: { post: { tags: ["Platform User Management"], summary: "Initiate the existing secure OTP password-reset flow", description: "Requires platform:users:reset-password. Uses an atomic five-minute cooldown, invalidates older OTPs, returns no OTP/token/password, revokes active sessions after successful delivery, and is rate limited.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "userId", required: true, schema: { type: "string" } }], responses: { "200": { description: "Reset instructions delivered" }, "403": { description: "Forbidden" }, "404": { description: "User not found" }, "409": { description: "Ineligible account or cooldown active" }, "503": { description: "Email delivery failed" } } } },
       [`${platformAdminBase}/users/{userId}/impersonate`]: { post: { tags: ["Platform User Management"], summary: "Start a privileged and audited short-lived user impersonation", description: "Requires platform:users:impersonate. Platform Administrator targets, nested/concurrent sessions, and ineligible users are blocked. The dedicated access token expires after 15 minutes and sensitive mutations are restricted.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "userId", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["reason"], properties: { reason: { type: "string", minLength: 3, maxLength: 500 } } } } } }, responses: { "200": { description: "Dedicated impersonation session, access token, expiry, identities, and banner text" }, "400": { description: "Invalid reason" }, "403": { description: "Forbidden" }, "404": { description: "User not found" }, "409": { description: "Protected/ineligible target or active impersonation exists" } } } },
       [`${platformAdminBase}/impersonation/stop`]: { post: { tags: ["Platform User Management"], summary: "Stop the current impersonation and restore the original Platform Administrator", description: "Validates and atomically ends the dedicated impersonation session, then returns a fresh short-lived Platform Administrator access token.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Impersonation ended and administrator token restored" }, "403": { description: "No valid active impersonation session" } } } },
-      [`${platformAdminBase}/billing`]: { get: { tags: ["Platform Billing & Revenue"], summary: "Get consolidated billing analytics, revenue by plan, and paginated invoices", description: "Platform Administrator only. Monetary values are NGN decimal amounts.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Consolidated billing response" }, "400": { description: "Invalid filter or pagination" }, "403": { description: "Platform Administrator access required" } } } },
+      [`${platformAdminBase}/billing`]: { get: { tags: ["Platform Billing & Revenue"], summary: "Get consolidated billing analytics, revenue by plan, and paginated invoices", description: "Platform Administrator only. MRR uses the same effective, versioned fixed plan prices as Tenant Admin My Plan and Platform Pricing. Payroll is NGN 10,000/month; All-in-One is NGN 150,000 without additional module charges.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Consolidated billing response" }, "400": { description: "Invalid filter or pagination" }, "403": { description: "Platform Administrator access required" } } } },
       [`${platformAdminBase}/billing/analytics`]: { get: { tags: ["Platform Billing & Revenue"], summary: "Get MRR, ARR, overdue amount, and churn rate", description: "MRR is active recurring monthly revenue; ARR is MRR × 12; overdue is the sum of OVERDUE invoices; churn is period cancellations/expiries divided by active subscriptions at period start.", security: [{ bearerAuth: [] }], parameters: [{ in: "query", name: "year", schema: { type: "integer" } }, { in: "query", name: "month", schema: { type: "integer", minimum: 1, maximum: 12 } }, { in: "query", name: "startDate", schema: { type: "string", format: "date" } }, { in: "query", name: "endDate", schema: { type: "string", format: "date" } }], responses: { "200": { description: "Analytics with documented formulas" }, "400": { description: "Invalid date range" }, "403": { description: "Forbidden" } } } },
       [`${platformAdminBase}/billing/revenue-by-plan`]: { get: { tags: ["Platform Billing & Revenue"], summary: "Get monthly paid revenue grouped by subscription plan", description: "Returns zero-filled months suitable for stacked charts. Plans: HRIS, PAYROLL, ACCOUNTING, ALL_IN_ONE.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Monthly stacked-chart dataset" }, "400": { description: "Invalid filters" }, "403": { description: "Forbidden" } } } },
       [`${platformAdminBase}/billing/invoices`]: {
         get: { tags: ["Platform Billing & Revenue"], summary: "Search, filter, sort, and paginate all platform invoices", security: [{ bearerAuth: [] }], parameters: [{ in: "query", name: "page", schema: { type: "integer", minimum: 1 } }, { in: "query", name: "limit", schema: { type: "integer", minimum: 1, maximum: 100 } }, { in: "query", name: "search", schema: { type: "string" } }, { in: "query", name: "status", schema: { type: "string", enum: ["PAID", "OVERDUE", "DRAFT"] } }, { in: "query", name: "billingPeriod", schema: { type: "string", pattern: "^\\d{4}-\\d{2}$" } }, { in: "query", name: "sortBy", schema: { type: "string", enum: ["dueDate", "amount", "createdAt", "tenantName"] } }], responses: { "200": { description: "Invoices plus page, limit, total, totalPages, hasNextPage, and hasPreviousPage" }, "400": { description: "Invalid query" }, "403": { description: "Forbidden" } } },
-        post: { tags: ["Platform Billing & Revenue"], summary: "Generate a tenant platform invoice", description: "Server generates invoice number, derives plan, defaults status to DRAFT, and rejects duplicate tenant/billing periods.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["tenantId", "billingPeriod", "amount"], properties: { tenantId: { type: "string" }, billingPeriod: { type: "string", example: "2026-07" }, amount: { type: "number", exclusiveMinimum: true, maximum: 1000000000 }, currency: { type: "string", enum: ["NGN"] }, dueDate: { type: "string", format: "date" } } } } } }, responses: { "201": { description: "Complete created invoice" }, "400": { description: "Validation or eligibility failure" }, "404": { description: "Tenant not found" }, "409": { description: "Duplicate invoice" }, "403": { description: "Forbidden" } } }
+        post: { tags: ["Platform Billing & Revenue"], summary: "Generate a tenant platform invoice", description: "Server generates a collision-safe invoice number, preserves the Platform Admin-supplied amount, snapshots the plan/pricing context, defaults status to DRAFT, and rejects duplicate tenant/period invoices.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["tenantId", "period", "amount"], properties: { tenantId: { type: "string" }, period: { type: "string", example: "2026-07" }, amount: { type: "number", exclusiveMinimum: true, maximum: 1000000000 }, currency: { type: "string", enum: ["NGN"] }, dueDate: { type: "string", format: "date" } } } } } }, responses: { "201": { description: "Complete created immutable invoice snapshot" }, "400": { description: "Validation or eligibility failure" }, "404": { description: "Tenant not found" }, "409": { description: "Duplicate invoice" }, "403": { description: "Forbidden" } } }
       },
-      [`${platformAdminBase}/billing/invoices/{invoiceId}/reminder`]: { post: { tags: ["Platform Billing & Revenue"], summary: "Send a payment reminder for a DRAFT or OVERDUE invoice", description: "A 24-hour per-invoice cooldown applies and every attempt is recorded.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "invoiceId", required: true, schema: { type: "string" } }], responses: { "200": { description: "Reminder delivered" }, "404": { description: "Invoice or tenant not found" }, "409": { description: "Paid invoice or cooldown active" }, "503": { description: "Notification delivery failed" } } } },
+      [`${platformAdminBase}/billing/invoices/{invoiceId}/reminder`]: { post: { tags: ["Platform Billing & Revenue"], summary: "Send a payment reminder for an overdue invoice", description: "Only OVERDUE invoices qualify. A 24-hour per-invoice cooldown applies and every attempt is recorded.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "invoiceId", required: true, schema: { type: "string" } }], responses: { "200": { description: "Reminder delivered" }, "404": { description: "Invoice or tenant not found" }, "409": { description: "Invoice is paid/not overdue or cooldown active" }, "503": { description: "Notification delivery failed" } } } },
       [`${platformAdminBase}/billing/invoices/{invoiceId}/download`]: { get: { tags: ["Platform Billing & Revenue"], summary: "Download a sanitized server-generated invoice PDF", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "invoiceId", required: true, schema: { type: "string" } }], responses: { "200": { description: "Invoice PDF", content: { "application/pdf": { schema: { type: "string", format: "binary" } } } }, "404": { description: "Invoice not found" }, "403": { description: "Forbidden" } } } },
       [`${platformAdminBase}/billing/invoices/export`]: { get: { tags: ["Platform Billing & Revenue"], summary: "Export all or filtered invoice records as CSV", description: "Streams cursor-paginated 500-row batches using the listing filters and sort allowlist; dangerous spreadsheet formula prefixes are neutralized.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Streamed UTF-8 CSV export", content: { "text/csv": { schema: { type: "string", format: "binary" } } } }, "400": { description: "Invalid filter" }, "403": { description: "Forbidden" }, "500": { description: "Export failure before streaming begins" } } } },
+      [`${platformAdminBase}/billing/export`]: { get: { tags: ["Platform Billing & Revenue"], summary: "Export all or filtered billing invoices as CSV", description: "UI-aligned alias. Includes paid date where available and uses the same streaming, filtering, sorting, and formula-injection protection as /billing/invoices/export.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Streamed UTF-8 CSV export", content: { "text/csv": { schema: { type: "string", format: "binary" } } } }, "400": { description: "Invalid filter" }, "403": { description: "Forbidden" } } } },
       "/health": {
         get: {
           tags: ["Health"],
@@ -1850,14 +1825,14 @@ const options: swaggerJSDoc.Options = {
       [`${platformAdminBase}/pricing`]: {
         get: {
           tags: ["Platform Pricing & Plans"], summary: "Get consolidated Pricing and Plans page",
-          description: "Requires platform:pricing:view. Returns confirmed current MRR, module/plan pricing cards, and paginated subscription distribution. Active All-in-One revenue is classified only under All-in-One, while adoption may still include its modules. Amounts are whole Nigerian Naira at the API boundary and DECIMAL(14,2) in storage.",
+          description: "Requires platform:pricing:view. Returns current recurring revenue, four plan cards, and subscription distribution from the same effective-dated database prices used by Tenant Admin My Plan and Billing MRR. HRIS is NGN 80,000, Payroll is fixed at NGN 10,000, Accounting is NGN 80,000, and All-in-One is a single NGN 150,000 bundle. Included modules are never charged separately.",
           security: [{ bearerAuth: [] }],
           parameters: [
             { in: "query", name: "page", schema: { type: "integer", minimum: 1, default: 1 } },
             { in: "query", name: "limit", schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
             { in: "query", name: "search", schema: { type: "string", maxLength: 100 } },
             { in: "query", name: "status", schema: { type: "string", enum: ["ALL", "ACTIVE", "INACTIVE", "ARCHIVED"] } },
-            { in: "query", name: "pricingModel", schema: { type: "string", enum: ["ALL", "FLAT_MONTHLY"] } },
+            { in: "query", name: "pricingModel", schema: { type: "string", enum: ["ALL", "FIXED", "FIXED_BUNDLE"] } },
             { in: "query", name: "sortBy", schema: { type: "string", enum: ["name", "activeTenantCount", "monthlyRevenue", "basePrice", "totalEmployees"] } },
             { in: "query", name: "sortOrder", schema: { type: "string", enum: ["asc", "desc"] } }
           ],
@@ -1877,12 +1852,13 @@ const options: swaggerJSDoc.Options = {
           responses: { "200": { description: "Price version created" }, "400": { description: "Invalid amount, date, duplicate price, or optimistic-lock conflict" }, "401": { description: "Unauthorized" }, "403": { description: "Pricing-management permission required" }, "404": { description: "Module or plan not found" }, "409": { description: "Concurrent price update conflict" } }
         }
       },
-      [`${platformAdminBase}/pricing/plans`]: {
-        post: {
-          tags: ["Platform Pricing & Plans"], summary: "Create subscription plan",
-          description: "Requires platform:pricing:manage. Creates the normalized plan, initial DECIMAL price version, and validated feature relationships atomically. Existing subscriptions are unchanged.",
-          security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/PlatformPlanCreateBody" } } } },
-          responses: { "201": { description: "Plan created" }, "400": { description: "Invalid or duplicate feature request" }, "403": { description: "Pricing-management permission required" }, "409": { description: "Normalized plan name already exists" } }
+      [`${platformAdminBase}/pricing/{planCode}`]: {
+        patch: {
+          tags: ["Platform Pricing & Plans"], summary: "Edit a supported plan's effective base monthly price",
+          description: "UI-aligned endpoint for HRIS, PAYROLL, ACCOUNTING, or ALL_IN_ONE. Creates an immutable effective-dated price version and never rewrites historical invoices.",
+          security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "planCode", required: true, schema: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"] } }],
+          requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/PlatformPriceUpdateBody" } } } },
+          responses: { "200": { description: "Price version recorded" }, "400": { description: "Invalid price or effective date" }, "403": { description: "Pricing-management permission required" }, "404": { description: "Plan not found" }, "409": { description: "Concurrent or duplicate price update" } }
         }
       },
       [`${platformAdminBase}/tenants`]: {
@@ -2170,8 +2146,8 @@ const options: swaggerJSDoc.Options = {
       [`${adminBase}/my-plan/subscription/plan`]: {
         patch: {
           tags: ["My Plan"],
-          summary: "Preview or confirm an upgrade to All-in-One",
-          description: "confirm=false returns Review Plan Change without mutation. confirm=true validates eligibility and payment before applying. Individual modules must be purchased via module-add-ons.",
+          summary: "Preview or confirm a subscription plan switch",
+          description: "Switches between HRIS, Payroll, Accounting, and All-in-One. The target plan replaces the current recurring plan; included modules are never added as separate charges.",
           security: [{ bearerAuth: [] }],
           requestBody: {
             required: true,
@@ -2211,34 +2187,16 @@ const options: swaggerJSDoc.Options = {
           responses: { "200": { description: "Scheduled change cancelled" }, "404": { description: "Owned pending change not found" } }
         }
       },
-      [`${adminBase}/my-plan/module-add-ons`]: {
+      [`${adminBase}/my-plan/active-modules`]: {
         get: {
           tags: ["My Plan"],
-          summary: "Get active and eligible available modules",
+          summary: "Get plan-derived module access",
+          description: "Returns HRIS, Payroll, and Accounting state derived from the selected plan. To activate another module, switch plans; modules included in a plan cannot be toggled independently.",
           security: [{ bearerAuth: [] }],
           responses: {
-            "200": { description: "Module add-ons payload", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanGenericResponse" } } } },
+            "200": { description: "Active module payload", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanGenericResponse" } } } },
             "401": { description: "Unauthorized" },
             "403": { description: "Forbidden" }
-          }
-        }
-      },
-      [`${adminBase}/my-plan/module-add-ons/{moduleKey}`]: {
-        patch: {
-          tags: ["My Plan"],
-          summary: "Preview/confirm a module purchase or cancel an add-on",
-          security: [{ bearerAuth: [] }],
-          parameters: [{ in: "path", name: "moduleKey", required: true, schema: { type: "string", enum: ["hris", "accounting", "payroll"] } }],
-          requestBody: {
-            required: true,
-            content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanAddonUpdateBody" } } }
-          },
-          responses: {
-            "200": { description: "Add-on updated", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanGenericResponse" } } } },
-            "400": { description: "Validation or business rule error" },
-            "401": { description: "Unauthorized" },
-            "403": { description: "Forbidden" },
-            "404": { description: "Module not found" }
           }
         }
       },

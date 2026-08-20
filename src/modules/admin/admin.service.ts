@@ -10,8 +10,8 @@ import { permissions } from "../auth/permissions";
 import type { PermissionKey } from "../auth/permissions";
 import { createAuditLog, extractEntityId } from "./admin.audit";
 import { deriveActiveModules, syncSystemAlerts } from "./admin.dashboard";
-import { billingPlans as sharedBillingPlans, calculateBillingAmount, modulePrices, type BillingCycle, type BillingPlanDefinition, type BillingPlanKey } from "../billing/billing.catalog";
-import { getEffectivePlanCatalogue, resolveRecurringPrices, sumMoney } from "../billing/pricing.service";
+import { billingPlans as sharedBillingPlans, calculateBillingAmount, type BillingCycle, type BillingPlanDefinition, type BillingPlanKey } from "../billing/billing.catalog";
+import { getEffectivePlanCatalogue, resolveRecurringPrices } from "../billing/pricing.service";
 import { sendSubscriptionRenewalEmail } from "../auth/auth.mailer";
 import { deriveSubscriptionStatus, isRenewalReminderDue } from "../billing/billing.rules";
 import { supportedCurrencies, supportedDateFormats, supportedLanguages, type AdminAuditLogInput, type AuditLogRow, type BrandingSettingsResponse, type LocaleSettingsResponse, type NotificationChannelPreferences, type PlatformAnnouncementResponse, type QuickAction, type SystemAlertRow, type TenantNotificationChannelKey } from "./admin.interface";
@@ -34,7 +34,6 @@ import {
   ipAllowlistEntryCreateSchema,
   loginActivityQuerySchema,
   auditLogQuerySchema,
-  myPlanAddonUpdateSchema,
   myPlanAddCardSchema,
   myPlanBillingAddressSchema,
   myPlanBillingAnalyticsQuerySchema,
@@ -283,32 +282,11 @@ const managedModules: ManagedModuleDefinition[] = [
 
 type BillingSubscriptionStatus = "ACTIVE" | "PENDING" | "EXPIRED" | "CANCELLED" | "TRIALING" | "PAST_DUE";
 const billingPlans = sharedBillingPlans;
-const moduleAddOnPrices = modulePrices;
-
-const moduleAddOnDefinitions: Partial<
-  Record<
-    ManagedModuleKey,
-    {
-      title: string;
-      badge: string;
-      description: string;
-      infoMessage: string;
-      icon: string;
-      billingCycle: BillingCycle;
-    }
-  >
-> = Object.fromEntries(["hris", "payroll", "accounting"].map((key) => [key, {
-  title: `${key === "hris" ? "HRIS" : key[0].toUpperCase() + key.slice(1)} Module`, badge: "Individual module",
-  description: "An independent monthly module subscription.", infoMessage: "Added modules are billed monthly.",
-  icon: "module", billingCycle: "MONTHLY"
-}])) as any;
-
 const billingConfigKeys = {
   subscription: "billing.subscription",
   paymentMethod: "billing.paymentMethod",
   billingAddress: "billing.address",
-  invoices: "billing.invoices",
-  addOnSubscriptionPrefix: "billing.addons"
+  invoices: "billing.invoices"
 } as const;
 
 const countryCodes = [
@@ -1347,12 +1325,13 @@ const getBillingPlan = async (planKey: BillingPlanKey, organizationId?: string) 
   const plan = billingPlans.find((item) => item.key === planKey);
   if (!plan) throw badRequest("Billing plan not found");
   const managed = (await getEffectivePlanCatalogue()).find((item) => item.key === planKey);
-  let monthlyCost = managed?.monthlyPrice ?? plan.monthlyCost;
+  const baseMonthlyPrice = managed?.monthlyPrice ?? plan.monthlyCost;
+  let monthlyCost = baseMonthlyPrice;
   if (organizationId) {
     const resolved = await resolveRecurringPrices([{ organizationId, planKey, source: "BASE_PLAN", fallbackMonthlyPrice: monthlyCost }]);
     monthlyCost = resolved.get(`${organizationId}:${planKey}:BASE_PLAN`) ?? monthlyCost;
   }
-  return { ...plan, monthlyCost, yearlyCost: monthlyCost * 12 };
+  return { ...plan, baseMonthlyPrice, monthlyCost, yearlyCost: monthlyCost * 12 };
 };
 
 const normalizeBillingCycle = (value: unknown): BillingCycle => {
@@ -1477,9 +1456,10 @@ const applyDuePlanChanges = async (organizationId?: string) => {
         create: { organizationId: change.organizationId, key: billingConfigKeys.subscription, value: { planKey: plan.key, status: "ACTIVE", billingCycle: change.billingCycle, currency: change.currency, renewalDate: addMonths(change.effectiveAt, change.billingCycle === "YEARLY" ? 12 : 1).toISOString(), automaticRenewal: change.automaticRenewal, activatedAt: change.effectiveAt.toISOString(), paymentVerifiedAt: change.confirmedAt?.toISOString() } },
         update: { value: { ...value, planKey: plan.key, status: "ACTIVE", billingCycle: change.billingCycle, currency: change.currency, renewalDate: addMonths(change.effectiveAt, change.billingCycle === "YEARLY" ? 12 : 1).toISOString(), cancelAtPeriodEnd: false, automaticRenewal: change.automaticRenewal, activatedAt: change.effectiveAt.toISOString(), paymentVerifiedAt: change.confirmedAt?.toISOString() } }
       });
-      for (const moduleKey of plan.includedModules) {
-        await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: change.organizationId, key: `module.${moduleKey}.status` } }, create: { organizationId: change.organizationId, key: `module.${moduleKey}.status`, value: "ACTIVE" }, update: { value: "ACTIVE" } });
-        await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: change.organizationId, key: `module.${moduleKey}.enabled` } }, create: { organizationId: change.organizationId, key: `module.${moduleKey}.enabled`, value: true }, update: { value: true } });
+      for (const moduleKey of managedModuleKeys) {
+        const enabled = plan.includedModules.includes(moduleKey);
+        await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: change.organizationId, key: `module.${moduleKey}.status` } }, create: { organizationId: change.organizationId, key: `module.${moduleKey}.status`, value: enabled ? "ACTIVE" : "INACTIVE" }, update: { value: enabled ? "ACTIVE" : "INACTIVE" } });
+        await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: change.organizationId, key: `module.${moduleKey}.enabled` } }, create: { organizationId: change.organizationId, key: `module.${moduleKey}.enabled`, value: enabled }, update: { value: enabled } });
       }
       await tx.subscriptionPlanChange.update({ where: { id: change.id }, data: { status: "APPLIED", appliedAt: now } });
     });
@@ -1595,41 +1575,6 @@ const getBillingAddressState = async (organizationId: string, fallbackEmail?: st
   };
 };
 
-const getAddOnSubscriptionKey = (moduleKey: ManagedModuleKey) =>
-  `${billingConfigKeys.addOnSubscriptionPrefix}.${moduleKey}.subscription`;
-
-const getAddOnSubscriptionState = async (organizationId: string, moduleKey: ManagedModuleKey) => {
-  const configured = await getConfiguredBillingValue<Record<string, unknown>>(organizationId, getAddOnSubscriptionKey(moduleKey));
-  const renewalDate = typeof configured?.renewalDate === "string" ? new Date(configured.renewalDate) : null;
-
-  return {
-    status: typeof configured?.status === "string" ? configured.status : "INACTIVE",
-    billingCycle: normalizeBillingCycle(configured?.billingCycle),
-    renewalDate: renewalDate && !Number.isNaN(renewalDate.getTime()) ? renewalDate : null,
-    cancelAtPeriodEnd: configured?.cancelAtPeriodEnd === true,
-    subscribedAt: typeof configured?.subscribedAt === "string" ? configured.subscribedAt : null,
-    cancelledAt: typeof configured?.cancelledAt === "string" ? configured.cancelledAt : null
-  };
-};
-
-const buildIncludedModuleFeature = (feature: string) => ({
-  name: feature,
-  status: "ACTIVE" as const,
-  badge: {
-    label: "Active",
-    tone: "success" as const
-  },
-  label: "Included in Plan",
-  isIncludedInPlan: true,
-  isPurchasable: false,
-  control: {
-    type: "toggle" as const,
-    disabled: true,
-    checked: true,
-    label: "Already available"
-  }
-});
-
 const resolveActiveBillingModules = async (organizationId: string, plan: BillingPlanDefinition) => {
   const [subscriptionConfig, organization] = await Promise.all([
     prisma.systemConfig.findUnique({ where: { organizationId_key: { organizationId, key: billingConfigKeys.subscription } }, select: { createdAt: true, value: true } }),
@@ -1637,34 +1582,22 @@ const resolveActiveBillingModules = async (organizationId: string, plan: Billing
   ]);
   const configuredActivation = (subscriptionConfig?.value as Record<string, unknown> | undefined)?.activatedAt;
   const planActivationDate = typeof configuredActivation === "string" ? configuredActivation : (subscriptionConfig?.createdAt ?? organization?.createdAt)?.toISOString() ?? null;
-  const managedPrices = new Map((await getEffectivePlanCatalogue()).map((item) => [item.key, item.monthlyPrice]));
-  const resolvedAddOnPrices = await resolveRecurringPrices(managedModules.map((module) => ({
-    organizationId, planKey: module.key, source: "ADD_ON" as const,
-    fallbackMonthlyPrice: managedPrices.get(module.key) ?? moduleAddOnPrices[module.key]
-  })));
-  const modules = await Promise.all(
-    managedModules.map(async (module) => {
+  const modules = managedModules.map((module) => {
       const includedInPlan = plan.includedModules.includes(module.key);
-      const addOnSubscription = includedInPlan ? null : await getAddOnSubscriptionState(organizationId, module.key);
-      const addOnIsActive = addOnSubscription?.status === "ACTIVE";
-      const isActive = includedInPlan || addOnIsActive;
-      const modulePrice = resolvedAddOnPrices.get(`${organizationId}:${module.key}:ADD_ON`) ?? managedPrices.get(module.key) ?? moduleAddOnPrices[module.key];
-      const monthlyCost = includedInPlan ? 0 : modulePrice;
 
       return {
         key: module.key,
         name: module.name,
-        status: isActive ? "ACTIVE" : module.defaultStatus,
+        status: includedInPlan ? "ACTIVE" : "INACTIVE",
         includedInPlan,
-        monthlyCost,
-        monthlyPrice: modulePrice,
+        monthlyCost: 0,
+        monthlyPrice: 0,
         billingFrequency: "MONTHLY" as const,
-        activationDate: includedInPlan ? planActivationDate : addOnSubscription?.subscribedAt ?? null,
-        canManage: module.defaultStatus !== "COMING_SOON",
+        activationDate: includedInPlan ? planActivationDate : null,
+        canManage: false,
         description: module.description
       };
-    })
-  );
+    });
 
   return modules.filter((module) => module.status === "ACTIVE");
 };
@@ -1672,31 +1605,16 @@ const resolveActiveBillingModules = async (organizationId: string, plan: Billing
 const buildCostBreakdown = (
   plan: BillingPlanDefinition,
   billingCycle: BillingCycle,
-  activeModules: Array<{ key: ManagedModuleKey; name: string; includedInPlan: boolean; monthlyCost: number }>
+  _activeModules: Array<{ key: ManagedModuleKey; name: string; includedInPlan: boolean; monthlyCost: number }>
 ) => {
-  const addOns = activeModules.filter((module) => !module.includedInPlan);
-  const activeModuleTotal = sumMoney(addOns.map((module) => module.monthlyCost));
-  const pricing = {
-    basePlanCost: plan.monthlyCost,
-    activeModuleTotal,
-    grandMonthlyTotal: sumMoney([plan.monthlyCost, activeModuleTotal]),
-    addOns: addOns.map((module) => ({ key: module.key, name: module.name, monthlyCost: module.monthlyCost }))
-  };
-  const planCost = calculateBillingAmount(pricing.basePlanCost, billingCycle);
-  const addOnsCost = calculateBillingAmount(pricing.activeModuleTotal, billingCycle);
+  const planCost = calculateBillingAmount(plan.monthlyCost, billingCycle);
 
   return {
-    plan: {
-      label: `${plan.name} plan`,
-      amount: planCost
-    },
-    addOns: pricing.addOns.map((module) => ({ key: module.key, label: module.name, amount: calculateBillingAmount(module.monthlyCost, billingCycle) })),
-    discount: 0,
-    subtotal: planCost + addOnsCost,
-    total: planCost + addOnsCost,
-    basePlanCost: pricing.basePlanCost,
-    activeModuleTotal: pricing.activeModuleTotal,
-    grandMonthlyTotal: pricing.grandMonthlyTotal
+    items: [{ code: plan.key.toUpperCase().replaceAll("-", "_"), description: plan.name, amount: planCost }],
+    totalMonthlyCost: plan.monthlyCost,
+    total: planCost,
+    basePlanCost: plan.monthlyCost,
+    grandMonthlyTotal: plan.monthlyCost
   };
 };
 
@@ -1959,6 +1877,7 @@ export const getMyPlanOverview = async (req: Request) => {
   const paymentMethod = await getPaymentMethodState(req.organizationId!, organization.email);
   const reminderDate = addDays(subscription.renewalDate, -15);
   const numberOfEmployees = await prisma.employee.count({ where: { organizationId: req.organizationId! } });
+  const daysUntilRenewal = Math.max(0, Math.ceil((subscription.renewalDate.getTime() - Date.now()) / 86400000));
   const planIndex = billingPlans.findIndex((item) => item.key === plan.key);
   const hasLowerPlan = planIndex > 0;
   const hasHigherPlan = planIndex >= 0 && planIndex < billingPlans.length - 1;
@@ -1984,6 +1903,19 @@ export const getMyPlanOverview = async (req: Request) => {
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
       automaticRenewal: subscription.automaticRenewal
     },
+    currentPlan: {
+      planId: plan.key,
+      planCode: plan.key.toUpperCase().replaceAll("-", "_"),
+      planName: plan.name,
+      status: subscription.status,
+      monthlyCost: plan.monthlyCost,
+      renewalDate: subscription.renewalDate,
+      employeeCount: numberOfEmployees,
+      activeModuleCount: activeModules.length,
+      includedModules: plan.includedModules,
+      features: plan.features
+    },
+    renewal: { renewalDate: subscription.renewalDate, daysUntilRenewal },
     activeModules,
     activeModuleCount: activeModules.length,
     analytics: {
@@ -2012,8 +1944,8 @@ export const getMyPlanOverview = async (req: Request) => {
       {
         key: "add-module",
         label: "Add module",
-        method: "PATCH",
-        href: "/admin/my-plan/module-add-ons/{moduleKey}"
+        method: "GET",
+        href: "/admin/my-plan/plans"
       },
       {
         key: "download-invoice",
@@ -2051,14 +1983,38 @@ export const getMyPlanPlans = async (req: Request) => {
       return {
       ...plan,
       isCurrent: plan.key === subscription.planKey,
+      currentPlan: plan.key === subscription.planKey,
+      active: plan.key === subscription.planKey,
+      availableForSwitch: plan.key !== subscription.planKey,
       monthlyEquivalentOnYearly: Math.round(plan.yearlyCost / 12),
       annualSavings: plan.monthlyCost * 12 - plan.yearlyCost,
       annualDiscountPercent: 0,
-      canUpgrade: plan.key === "all-in-one" && subscription.planKey !== "all-in-one",
-      canDowngrade: false,
-      canAdd: plan.key !== "all-in-one" && !plan.includedModules.some((key) => key === subscription.planKey)
+      canUpgrade: plan.key !== subscription.planKey,
+      canDowngrade: plan.key !== subscription.planKey
     };
     })
+  };
+};
+
+export const getMyPlanActiveModules = async (req: Request) => {
+  const organization = await prisma.organization.findUnique({ where: { id: req.organizationId! }, select: { currency: true } });
+  if (!organization) throw notFound("Organization not found");
+  const subscription = await getSubscriptionState(req.organizationId!, organization.currency);
+  const plan = await getBillingPlan(subscription.planKey, req.organizationId!);
+  const prices = new Map((await getEffectivePlanCatalogue()).map((item) => [item.key, item.monthlyPrice]));
+  const entitled = subscription.status === "ACTIVE" || subscription.status === "TRIALING" ? plan.includedModules : [];
+  return {
+    currentPlan: { code: plan.key.toUpperCase().replaceAll("-", "_"), name: plan.name },
+    modules: managedModules.map((module) => ({
+      code: module.key.toUpperCase(),
+      name: module.name,
+      description: module.description,
+      active: entitled.includes(module.key),
+      includedInCurrentPlan: plan.includedModules.includes(module.key),
+      canDisable: false,
+      standalonePlanPrice: prices.get(module.key) ?? billingPlans.find((candidate) => candidate.key === module.key)!.monthlyCost,
+      currency: subscription.currency
+    }))
   };
 };
 
@@ -2069,15 +2025,11 @@ export const changeMyPlan = async (req: Request) => {
     select: { currency: true }
   });
   const existing = await getSubscriptionState(req.organizationId!, organization?.currency ?? "NGN");
-  const nextPlan = await getBillingPlan(payload.planKey);
+  const nextPlan = await getBillingPlan(payload.planKey, req.organizationId!);
   const currentPlan = await getBillingPlan(existing.planKey, req.organizationId!);
-  if (existing.status !== "ACTIVE" && existing.status !== "TRIALING") throw badRequest("Only an active subscription can be upgraded", { errorCode: "INVALID_SUBSCRIPTION_STATE" });
+  if (existing.status !== "ACTIVE" && existing.status !== "TRIALING") throw badRequest("Only an active subscription can be changed", { errorCode: "INVALID_SUBSCRIPTION_STATE" });
   if (nextPlan.key === currentPlan.key) throw badRequest("Organization is already subscribed to this plan", { errorCode: "DUPLICATE_SUBSCRIPTION" });
-  if (nextPlan.key !== "all-in-one") {
-    throw badRequest("Plan upgrades are only supported to the All-in-One Suite; use Add Plan to purchase another module", { errorCode: "UPGRADE_NOT_ELIGIBLE" });
-  }
-  const activeModules = await resolveActiveBillingModules(req.organizationId!, currentPlan);
-  const currentMonthlyCost = buildCostBreakdown(currentPlan, "MONTHLY", activeModules).grandMonthlyTotal ?? 0;
+  const currentMonthlyCost = currentPlan.monthlyCost;
   const preview = {
     currentPlan: { key: currentPlan.key, name: currentPlan.name }, currentMonthlyCost,
     selectedPlan: { key: nextPlan.key, name: nextPlan.name }, selectedMonthlyCost: nextPlan.monthlyCost,
@@ -2106,7 +2058,7 @@ export const changeMyPlan = async (req: Request) => {
     prismaAny.billingHistory.create({ data: {
       organizationId: req.organizationId!, description: `${nextPlan.name} subscription`, amount: billingAmount,
       currency: existing.currency, status: "paid", billedAt: confirmedAt, providerRef: payload.paymentReference ?? createInvoiceNumber(),
-      metadata: { type: "PLAN_UPGRADE", fromPlanKey: currentPlan.key, planKey: nextPlan.key, billingCycle, effectiveAt: existing.renewalDate.toISOString(), basePlanCost: nextPlan.monthlyCost }
+      metadata: { type: "PLAN_CHANGE", fromPlanKey: currentPlan.key, planKey: nextPlan.key, billingCycle, effectiveAt: existing.renewalDate.toISOString(), basePlanCost: nextPlan.baseMonthlyPrice, recurringMonthlyCost: nextPlan.monthlyCost }
     } })
   ]);
 
@@ -2120,16 +2072,16 @@ export const changeMyPlan = async (req: Request) => {
     metadata: { ...payload, effectiveAt: existing.renewalDate, scheduledChangeId: scheduledChange.id, billingHistoryId: billingRecord.id }
   });
 
-  return { message: "Plan upgrade confirmed and scheduled for the current billing period end.", preview, scheduledChange, billingRecord };
+  return { message: "Plan change confirmed and scheduled for the current billing period end.", preview, scheduledChange, billingRecord };
 };
 
 export const purchaseMyPlan = async (req: Request) => {
   const payload = myPlanPurchaseSchema.parse(req.body);
   const existing = await prisma.systemConfig.findUnique({ where: { organizationId_key: { organizationId: req.organizationId!, key: billingConfigKeys.subscription } } });
-  if (existing) throw badRequest("Organization already has a subscription; add a module or upgrade to All-in-One", { errorCode: "DUPLICATE_SUBSCRIPTION" });
+  if (existing) throw badRequest("Organization already has a subscription; use the plan change endpoint", { errorCode: "DUPLICATE_SUBSCRIPTION" });
   const organization = await prisma.organization.findUnique({ where: { id: req.organizationId! }, select: { currency: true } });
   if (!organization) throw notFound("Organization not found");
-  const plan = await getBillingPlan(payload.planKey);
+  const plan = await getBillingPlan(payload.planKey, req.organizationId!);
   const billingCycle = payload.billingCycle ?? "MONTHLY";
   const effectiveDate = new Date();
   const preview = { currentPlan: null, currentMonthlyCost: 0, selectedPlan: { key: plan.key, name: plan.name }, selectedMonthlyCost: plan.monthlyCost, totalMonthlyCostAfterChange: plan.monthlyCost, effectiveDate, billingImpact: plan.monthlyCost, proratedCharges: 0, currency: organization.currency };
@@ -2140,11 +2092,11 @@ export const purchaseMyPlan = async (req: Request) => {
   const amount = billingCycle === "YEARLY" ? plan.yearlyCost : plan.monthlyCost;
   const purchaseOperations: any[] = [
     prisma.systemConfig.create({ data: { organizationId: req.organizationId!, key: billingConfigKeys.subscription, value: { planKey: plan.key, status: "PENDING", billingCycle, currency: organization.currency, renewalDate: renewalDate.toISOString(), cancelAtPeriodEnd: false, automaticRenewal: payload.automaticRenewal, activatedAt: effectiveDate.toISOString(), paymentVerifiedAt: effectiveDate.toISOString() } } }),
-    prisma.billingHistory.create({ data: { organizationId: req.organizationId!, description: `${plan.name} subscription`, amount, currency: organization.currency, status: "paid", billedAt: effectiveDate, providerRef: payload.paymentReference ?? createInvoiceNumber(), metadata: { type: "PLAN_PURCHASE", planKey: plan.key, billingCycle, basePlanCost: plan.monthlyCost } } })
+    prisma.billingHistory.create({ data: { organizationId: req.organizationId!, description: `${plan.name} subscription`, amount, currency: organization.currency, status: "paid", billedAt: effectiveDate, providerRef: payload.paymentReference ?? createInvoiceNumber(), metadata: { type: "PLAN_PURCHASE", planKey: plan.key, billingCycle, basePlanCost: plan.baseMonthlyPrice, recurringMonthlyCost: plan.monthlyCost } } })
   ];
-  for (const moduleKey of plan.includedModules) purchaseOperations.push(
-    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: req.organizationId!, key: `module.${moduleKey}.status` } }, create: { organizationId: req.organizationId!, key: `module.${moduleKey}.status`, value: "ACTIVE" }, update: { value: "ACTIVE" } }),
-    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: req.organizationId!, key: `module.${moduleKey}.enabled` } }, create: { organizationId: req.organizationId!, key: `module.${moduleKey}.enabled`, value: true }, update: { value: true } })
+  for (const moduleKey of managedModuleKeys) purchaseOperations.push(
+    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: req.organizationId!, key: `module.${moduleKey}.status` } }, create: { organizationId: req.organizationId!, key: `module.${moduleKey}.status`, value: plan.includedModules.includes(moduleKey) ? "ACTIVE" : "INACTIVE" }, update: { value: plan.includedModules.includes(moduleKey) ? "ACTIVE" : "INACTIVE" } }),
+    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: req.organizationId!, key: `module.${moduleKey}.enabled` } }, create: { organizationId: req.organizationId!, key: `module.${moduleKey}.enabled`, value: plan.includedModules.includes(moduleKey) }, update: { value: plan.includedModules.includes(moduleKey) } })
   );
   const purchaseResults = await prisma.$transaction(purchaseOperations);
   const billingRecord = purchaseResults[1] as any;
@@ -2159,249 +2111,6 @@ export const cancelMyPlanChange = async (req: Request) => {
   const cancelled = await prismaAny.subscriptionPlanChange.update({ where: { id: change.id }, data: { status: "CANCELLED", cancelledAt: new Date() } });
   await logAdminActivity({ organizationId: req.organizationId, actorUserId: req.user?.id, action: "BILLING_PLAN_CHANGE_CANCELLED", resource: "BILLING_SUBSCRIPTION", resourceId: change.id, summary: `Cancelled scheduled change to ${change.toPlanKey}` });
   return cancelled;
-};
-
-export const getMyPlanModuleAddOns = async (req: Request) => {
-  const organization = await prisma.organization.findUnique({
-    where: { id: req.organizationId! },
-    select: { currency: true }
-  });
-  const subscription = await getSubscriptionState(req.organizationId!, organization?.currency ?? "NGN");
-  const plan = await getBillingPlan(subscription.planKey, req.organizationId!);
-  const effectivePrices = new Map((await getEffectivePlanCatalogue()).map((item) => [item.key, item.monthlyPrice]));
-  const agreedAddOnPrices = await resolveRecurringPrices(managedModules.map((module) => ({
-    organizationId: req.organizationId!, planKey: module.key, source: "ADD_ON" as const,
-    fallbackMonthlyPrice: effectivePrices.get(module.key) ?? moduleAddOnPrices[module.key]
-  })));
-  const includedModules = managedModules.filter((module) => plan.includedModules.includes(module.key));
-  const optionalModules = managedModules.filter((module) => !plan.includedModules.includes(module.key));
-  const optionalAddOns = await Promise.all(
-    optionalModules
-      .filter((module) => moduleAddOnDefinitions[module.key])
-      .map(async (module) => {
-        const addOnDefinition = moduleAddOnDefinitions[module.key]!;
-        const addOnSubscription = await getAddOnSubscriptionState(req.organizationId!, module.key);
-        const isActive = addOnSubscription.status === "ACTIVE";
-        const isLocked = !isActive;
-
-        return {
-          key: module.key,
-          title: addOnDefinition.title,
-          name: module.name,
-          description: module.description,
-          badge: addOnDefinition.badge,
-          status: isActive ? "ACTIVE" : "INACTIVE",
-          lockStatus: isLocked ? "LOCKED" : "UNLOCKED",
-          isLocked,
-          isIncludedInPlan: false,
-          isPurchasable: true,
-          independentSubscription: true,
-          billingImpact: "Purchasing this add-on does not change the user's current plan.",
-          monthlyCost: agreedAddOnPrices.get(`${req.organizationId!}:${module.key}:ADD_ON`) ?? effectivePrices.get(module.key) ?? moduleAddOnPrices[module.key],
-          currency: subscription.currency,
-          billingCycle: addOnDefinition.billingCycle,
-          priceLabel: `₦${(agreedAddOnPrices.get(`${req.organizationId!}:${module.key}:ADD_ON`) ?? effectivePrices.get(module.key) ?? moduleAddOnPrices[module.key]).toLocaleString("en-NG")}/month`,
-          features: module.tabs,
-          icon: addOnDefinition.icon,
-          infoMessage: addOnDefinition.infoMessage,
-          subscription: addOnSubscription,
-          action: {
-            label: isActive ? "Cancel add-on" : "Subscribe",
-            method: "PATCH",
-            href: `/admin/my-plan/module-add-ons/${module.key}`,
-            body: { enabled: !isActive }
-          }
-        };
-      })
-  );
-  const resolvedModules = await resolveActiveBillingModules(req.organizationId!, plan);
-  const activeModules = subscription.status === "ACTIVE" || subscription.status === "TRIALING" ? resolvedModules : [];
-  const availableModules = optionalAddOns
-    .filter((module) => module.status !== "ACTIVE")
-    .map((module) => ({
-      moduleId: module.key, moduleName: module.name, monthlyPrice: module.monthlyCost,
-      currency: subscription.currency, alreadyIncluded: false, eligibilityStatus: "ELIGIBLE",
-      canAddImmediately: subscription.status === "ACTIVE"
-    }));
-
-  return {
-    section: "module-add-ons",
-    title: "Module Add-ons",
-    currency: subscription.currency,
-    activePlan: {
-      key: plan.key,
-      name: plan.name
-    },
-    currentActiveModules: activeModules.map((module) => ({
-      moduleId: module.key, moduleName: module.name, monthlyPrice: module.monthlyPrice,
-      billingFrequency: module.billingFrequency, status: module.status,
-      activationDate: module.activationDate, includedInCurrentSubscription: module.includedInPlan
-    })),
-    availableModules,
-    includedInYourPlan: {
-      title: "Included in Your Plan",
-      description: "Modules included in the selected plan are active, included in plan, and cannot be purchased separately.",
-      visualTreatment: "included-card",
-      modules: includedModules.map((module) => ({
-        key: module.key,
-        title: `${module.name} Modules`,
-        name: module.name,
-        status: "ACTIVE",
-        badge: {
-          label: "Active",
-          tone: "success"
-        },
-        label: "Included in Plan",
-        isIncludedInPlan: true,
-        isPurchasable: false,
-        canDisable: false,
-        monthlyCost: 0,
-        control: {
-          type: "button",
-          disabled: true,
-          label: "Already available"
-        },
-        features: module.tabs.map(buildIncludedModuleFeature)
-      })),
-      infoMessage: "Upgrade your subscription plan to access additional HR modules."
-    },
-    optionalAddOns: {
-      title: "Optional Add-ons",
-      description:
-        "These modules are not included in the current plan and require an independent recurring subscription.",
-      visualTreatment: "premium-addon-section",
-      modules: optionalAddOns
-    },
-    businessRules: [
-      "Modules included in a plan are always active and cannot be disabled or purchased separately.",
-      "Add-on modules are independent subscriptions.",
-      "Each add-on has its own monthly billing cycle, separate from the active plan.",
-      "Purchasing an add-on does not change the user's active plan.",
-      "Cancelling an add-on subscription does not affect access to modules included in the active plan."
-    ]
-  };
-};
-
-export const updateMyPlanModuleAddOn = async (req: Request) => {
-  const moduleKey = String(req.params.moduleKey).toLowerCase() as ManagedModuleKey;
-  const payload = myPlanAddonUpdateSchema.parse(req.body);
-  const organization = await prisma.organization.findUnique({
-    where: { id: req.organizationId! },
-    select: { currency: true }
-  });
-  const subscription = await getSubscriptionState(req.organizationId!, organization?.currency ?? "NGN");
-  const plan = await getBillingPlan(subscription.planKey, req.organizationId!);
-  const effectiveModulePrice = (await getEffectivePlanCatalogue()).find((item) => item.key === moduleKey)?.monthlyPrice ?? moduleAddOnPrices[moduleKey];
-  const moduleDefinition = managedModules.find((module) => module.key === moduleKey);
-
-  if (!moduleDefinition) throw notFound("Module not found");
-  if (plan.includedModules.includes(moduleKey)) {
-    throw badRequest("Modules included in the current plan cannot be removed as add-ons");
-  }
-  const addOnDefinition = moduleAddOnDefinitions[moduleKey];
-  if (!addOnDefinition) {
-    throw badRequest("This module is not available as an add-on");
-  }
-
-  const statusValue: ManagedModuleStatus = payload.enabled ? "ACTIVE" : "INACTIVE";
-  const now = new Date();
-  const existingAddOn = await getAddOnSubscriptionState(req.organizationId!, moduleKey);
-  if (payload.enabled && existingAddOn.status === "ACTIVE") {
-    throw badRequest("Module is already active", { errorCode: "DUPLICATE_MODULE_PURCHASE" });
-  }
-  if (payload.enabled && subscription.status !== "ACTIVE") {
-    throw badRequest("Modules can only be added to an active subscription", { errorCode: "INVALID_SUBSCRIPTION_STATE" });
-  }
-  if (payload.enabled && !payload.confirm) {
-    const currentModules = await resolveActiveBillingModules(req.organizationId!, plan);
-    const currentMonthlyCost = buildCostBreakdown(plan, "MONTHLY", currentModules).grandMonthlyTotal ?? 0;
-    return {
-      message: "Review module addition before confirmation.", confirmationRequired: true,
-      preview: {
-        currentPlan: { key: plan.key, name: plan.name }, currentMonthlyCost,
-        selectedPlan: { key: moduleKey, name: moduleDefinition.name }, selectedMonthlyCost: effectiveModulePrice,
-        totalMonthlyCostAfterChange: currentMonthlyCost + effectiveModulePrice, effectiveDate: now,
-        billingImpact: effectiveModulePrice, proratedCharges: 0, currency: subscription.currency
-      }
-    };
-  }
-  if (payload.enabled) {
-    const paymentMethod = await getPaymentMethodState(req.organizationId!, undefined);
-    if (!paymentMethod.hasDefaultCard && !payload.paymentReference) {
-      throw badRequest("A verified payment method or payment reference is required", { errorCode: "PAYMENT_VERIFICATION_REQUIRED" });
-    }
-  }
-  const nextRenewalDate = existingAddOn.renewalDate ?? addMonths(now, 1);
-  const addOnSubscription = payload.enabled
-    ? {
-        moduleKey,
-        status: "ACTIVE",
-        monthlyCost: effectiveModulePrice,
-        currency: subscription.currency,
-        billingCycle: addOnDefinition.billingCycle,
-        renewalDate: nextRenewalDate.toISOString(),
-        cancelAtPeriodEnd: false,
-        automaticRenewal: payload.automaticRenewal,
-        independentSubscription: true,
-        parentPlanKey: plan.key,
-        subscribedAt: existingAddOn.subscribedAt ?? now.toISOString(),
-        updatedAt: now.toISOString()
-      }
-    : {
-        moduleKey,
-        status: "CANCELLED",
-        monthlyCost: effectiveModulePrice,
-        currency: subscription.currency,
-        billingCycle: addOnDefinition.billingCycle,
-        renewalDate: existingAddOn.renewalDate?.toISOString() ?? null,
-        cancelAtPeriodEnd: false,
-        independentSubscription: true,
-        parentPlanKey: plan.key,
-        subscribedAt: existingAddOn.subscribedAt,
-        cancelledAt: now.toISOString(),
-        updatedAt: now.toISOString()
-      };
-
-  const transactionOperations: any[] = [
-    prisma.systemConfig.upsert({
-      where: { organizationId_key: { organizationId: req.organizationId!, key: `module.${moduleKey}.status` } },
-      create: { organizationId: req.organizationId!, key: `module.${moduleKey}.status`, value: statusValue },
-      update: { value: statusValue }
-    }),
-    prisma.systemConfig.upsert({
-      where: { organizationId_key: { organizationId: req.organizationId!, key: `module.${moduleKey}.enabled` } },
-      create: { organizationId: req.organizationId!, key: `module.${moduleKey}.enabled`, value: payload.enabled },
-      update: { value: payload.enabled }
-    }),
-    prisma.systemConfig.upsert({
-      where: { organizationId_key: { organizationId: req.organizationId!, key: getAddOnSubscriptionKey(moduleKey) } },
-      create: {
-        organizationId: req.organizationId!,
-        key: getAddOnSubscriptionKey(moduleKey),
-        value: addOnSubscription
-      },
-      update: { value: addOnSubscription }
-    })
-  ];
-  if (payload.enabled) transactionOperations.push(prisma.billingHistory.create({ data: {
-    organizationId: req.organizationId!, description: `${moduleDefinition.name} module subscription`,
-    amount: effectiveModulePrice, currency: subscription.currency, status: "paid", billedAt: now,
-    providerRef: payload.paymentReference ?? createInvoiceNumber(),
-    metadata: { type: "MODULE_PURCHASE", moduleKey, parentPlanKey: plan.key, billingCycle: "MONTHLY", monthlyCost: effectiveModulePrice }
-  } }));
-  await prisma.$transaction(transactionOperations);
-
-  await logAdminActivity({
-    organizationId: req.organizationId,
-    actorUserId: req.user?.id,
-    action: payload.enabled ? "BILLING_ADDON_ENABLED" : "BILLING_ADDON_DISABLED",
-    resource: "BILLING_ADD_ON",
-    resourceId: moduleKey,
-    summary: `${payload.enabled ? "Enabled" : "Disabled"} ${moduleDefinition.name} add-on`,
-    metadata: { moduleKey, enabled: payload.enabled, monthlyCost: effectiveModulePrice, billingCycle: addOnDefinition.billingCycle }
-  });
-
-  return getMyPlanModuleAddOns(req);
 };
 
 export const getMyPlanPaymentMethod = async (req: Request) => {
@@ -2739,7 +2448,7 @@ export const getMyPlanBillingAnalytics = async (req: Request) => {
     rules: {
       totalPaidYearly: "Successful payments within the selected year.",
       monthlyPaid: "Successful payments within the current month.",
-      annualEstimate: "Current active monthly subscription and active add-ons multiplied by 12."
+      annualEstimate: "Current selected plan monthly price multiplied by 12. Included modules are not charged separately."
     }
   };
 };

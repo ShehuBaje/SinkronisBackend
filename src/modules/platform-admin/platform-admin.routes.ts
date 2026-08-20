@@ -10,7 +10,6 @@ import {
   deactivatePlatformTenantUserController,
   exitPlatformTenantImpersonationController,
   getPlatformDashboardController,
-  createPlatformPricingPlanController,
   getPlatformPricingOverviewController,
   getPlatformTenantActivityController,
   getPlatformTenantBillingController,
@@ -35,11 +34,11 @@ import {
 } from "./platform-admin.controller";
 import {
   createPlatformTenantSchema,
-  createPlatformPricingPlanSchema,
   overridePlatformTenantPlanSchema,
   platformDashboardQuerySchema,
   platformModuleToggleSchema,
   platformPricingModuleParamsSchema,
+  platformPricingPlanParamsSchema,
   platformPricingQuerySchema,
   platformTenantActivityQuerySchema,
   platformTenantBillingQuerySchema,
@@ -71,7 +70,7 @@ platformAdminRouter.use(requirePlatformAdmin);
 platformAdminRouter.get("/dashboard", dashboardPermission, validate({ query: platformDashboardQuerySchema }), asyncHandler(getPlatformDashboardController));
 platformAdminRouter.get("/pricing", authorize("platform:pricing:view"), validate({ query: platformPricingQuerySchema }), asyncHandler(getPlatformPricingOverviewController));
 platformAdminRouter.patch("/pricing/modules/:moduleId/price", authorize("platform:pricing:manage"), validate({ params: platformPricingModuleParamsSchema, body: updatePlatformPriceSchema }), asyncHandler(updatePlatformModulePriceController));
-platformAdminRouter.post("/pricing/plans", authorize("platform:pricing:manage"), validate({ body: createPlatformPricingPlanSchema }), asyncHandler(createPlatformPricingPlanController));
+platformAdminRouter.patch("/pricing/:planCode", authorize("platform:pricing:manage"), validate({ params: platformPricingPlanParamsSchema, body: updatePlatformPriceSchema }), asyncHandler(updatePlatformModulePriceController));
 const billingRead = authorize("platform:dashboard:view");
 const billingManage = authorize("platform:tenants:billing:manage");
 const sensitiveBillingLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
@@ -79,6 +78,7 @@ platformAdminRouter.get("/billing", billingRead, validate({ query: invoiceListQu
 platformAdminRouter.get("/billing/analytics", billingRead, validate({ query: billingDateFilterSchema }), asyncHandler(getBillingAnalyticsController));
 platformAdminRouter.get("/billing/revenue-by-plan", billingRead, validate({ query: billingDateFilterSchema }), asyncHandler(getRevenueByPlanController));
 platformAdminRouter.get("/billing/invoices/export", billingRead, sensitiveBillingLimit, validate({ query: invoiceExportQuerySchema }), asyncHandler(exportPlatformInvoicesController));
+platformAdminRouter.get("/billing/export", billingRead, sensitiveBillingLimit, validate({ query: invoiceExportQuerySchema }), asyncHandler(exportPlatformInvoicesController));
 platformAdminRouter.get("/billing/invoices", billingRead, validate({ query: invoiceListQuerySchema }), asyncHandler(listPlatformInvoicesController));
 platformAdminRouter.post("/billing/invoices", billingManage, validate({ body: createPlatformInvoiceSchema }), asyncHandler(createPlatformInvoiceController));
 platformAdminRouter.post("/billing/invoices/:invoiceId/reminder", billingManage, sensitiveBillingLimit, validate({ params: invoiceParamsSchema }), asyncHandler(sendInvoiceReminderController));

@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { lastSixCalendarMonths, moduleAdoptionFromSnapshot } from "./platform-admin.service";
 import {
   createPlatformTenantSchema,
-  createPlatformPricingPlanSchema,
   overridePlatformTenantPlanSchema,
   platformDashboardQuerySchema,
   platformModuleToggleSchema,
@@ -15,7 +14,7 @@ import {
 } from "./platform-admin.validation";
 import { billingDateFilterSchema, createPlatformInvoiceSchema, invoiceExportQuerySchema, invoiceListQuerySchema, impersonatePlatformUserSchema, platformUsersQuerySchema, platformModuleBulkUpdateSchema, platformModulesQuerySchema, platformAnalyticsQuerySchema, createSupportTicketSchema, supportTicketListQuerySchema, updateResolutionNotesSchema, updateSupportTicketStatusSchema } from "./platform-admin.validation";
 import { restrictImpersonatedSensitiveActions } from "../../middleware/impersonation.middleware";
-import { sanitizeCsvCell, effectivePlatformUserModules, platformUserRowStatus, moduleUsageTotal, activityScore, calculateDaysInactive, monthKeys, monthlyRecurringEquivalent, isSupportStatusTransitionAllowed } from "./platform-admin.service";
+import { annualRecurringRevenue, churnRatePercentage, createPlatformInvoiceNumber, invoiceReminderEligible, sanitizeCsvCell, effectivePlatformUserModules, platformUserRowStatus, moduleUsageTotal, activityScore, calculateDaysInactive, monthKeys, monthlyRecurringEquivalent, isSupportStatusTransitionAllowed } from "./platform-admin.service";
 import { requireEffectiveModuleAccess } from "../../middleware/module-access.middleware";
 import { platformEmailTemplateParamsSchema, platformFeatureFlagParamsSchema, updateMaintenanceModeSchema, updatePlatformConfigurationSchema, updatePlatformEmailTemplateSchema, updatePlatformPasswordPolicySchema } from "./platform-admin.validation";
 import { extractTemplateVariables } from "./platform-admin.service";
@@ -62,8 +61,8 @@ test("only the consolidated dashboard plus Platform Tenant management routes are
   const paths = (platformAdminRouter as any).stack.filter((layer: any) => layer.route).map((layer: any) => layer.route.path);
   assert.deepEqual(paths, [
     "/impersonation/exit", "/impersonation/stop", "/dashboard",
-    "/pricing", "/pricing/modules/:moduleId/price", "/pricing/plans",
-    "/billing", "/billing/analytics", "/billing/revenue-by-plan", "/billing/invoices/export", "/billing/invoices", "/billing/invoices", "/billing/invoices/:invoiceId/reminder", "/billing/invoices/:invoiceId/download",
+    "/pricing", "/pricing/modules/:moduleId/price", "/pricing/:planCode",
+    "/billing", "/billing/analytics", "/billing/revenue-by-plan", "/billing/invoices/export", "/billing/export", "/billing/invoices", "/billing/invoices", "/billing/invoices/:invoiceId/reminder", "/billing/invoices/:invoiceId/download",
     "/users", "/users/analytics", "/users/filter-options", "/users/:userId/deactivate", "/users/:userId/reset-password", "/users/:userId/impersonate",
     "/modules", "/modules/analytics", "/modules/tenants", "/modules/tenants/:tenantId", "/modules/tenants/:tenantId", "/modules/tenants/:tenantId/:module/enable", "/modules/tenants/:tenantId/:module/disable",
     "/analytics", "/analytics/at-risk/:tenantId/check-in",
@@ -86,8 +85,7 @@ test("only the consolidated dashboard plus Platform Tenant management routes are
   for (const removed of ["/pricing/modules", "/pricing/subscription-distribution", "/pricing/plans/:planId"]) {
     assert.equal(paths.includes(removed), false);
   }
-  const pricingPlanRoute = (platformAdminRouter as any).stack.find((layer: any) => layer.route?.path === "/pricing/plans");
-  assert.deepEqual(Object.keys(pricingPlanRoute.route.methods), ["post"]);
+  assert.equal(paths.includes("/pricing/plans"), false);
   for (const removed of ["/dashboard/analytics", "/dashboard/revenue-trend", "/dashboard/module-adoption", "/dashboard/recent-activity", "/dashboard/tenant-health"]) {
     assert.equal(paths.includes(removed), false);
   }
@@ -251,9 +249,22 @@ test("platform billing validates dates, pagination, filters, sorting, periods, a
   assert.equal(invoiceListQuerySchema.safeParse({ sortBy: "rawSql" }).success, false);
   assert.equal(invoiceListQuerySchema.safeParse({ billingPeriod: "2026-13" }).success, false);
   assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 500000.25 }).success, true);
+  assert.equal(createPlatformInvoiceSchema.parse({ tenantId: "tenant", period: "2026-08", amount: 185000 }).billingPeriod, "2026-08");
   assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 0 }).success, false);
   assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 1.001 }).success, false);
   assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 10, invoiceNumber: "untrusted" }).success, false);
+});
+
+test("billing formulas and reminder eligibility follow the fixed-price model", () => {
+  assert.equal(annualRecurringRevenue(320000), 3840000);
+  assert.equal(churnRatePercentage(20, 3), 15);
+  assert.equal(churnRatePercentage(0, 3), 0);
+  assert.equal(invoiceReminderEligible("OVERDUE"), true);
+  assert.equal(invoiceReminderEligible("DRAFT"), false);
+  assert.equal(invoiceReminderEligible("PAID"), false);
+  const numbers = new Set(Array.from({ length: 100 }, () => createPlatformInvoiceNumber("2026-08")));
+  assert.equal(numbers.size, 100);
+  for (const number of numbers) assert.match(number, /^SINV-202608-[A-F0-9]{10}$/);
 });
 
 test("invoice export accepts the listing filters without pagination", () => {
@@ -272,20 +283,10 @@ test("CSV export neutralizes formulas and escapes quotes and newlines", () => {
 
 test("pricing queries and mutations enforce bounded filters, precision, and effective dates", () => {
   assert.equal(platformPricingQuerySchema.safeParse({ page: 1, limit: 20, sortBy: "monthlyRevenue", sortOrder: "desc" }).success, true);
+  assert.equal(platformPricingQuerySchema.safeParse({ pricingModel: "BASE_PLUS_PER_EMPLOYEE" }).success, false);
   assert.equal(platformPricingQuerySchema.safeParse({ limit: 101 }).success, false);
-  assert.equal(updatePlatformPriceSchema.safeParse({ monthlyPrice: 90000.25, reason: "Annual pricing review", effectiveAt: "2026-08-01T00:00:00.000Z" }).success, true);
+  assert.equal(updatePlatformPriceSchema.safeParse({ baseMonthlyPrice: 90000.25 }).success, true);
   assert.equal(updatePlatformPriceSchema.safeParse({ monthlyPrice: 1.001, reason: "Invalid precision", effectiveAt: "2026-08-01T00:00:00.000Z" }).success, false);
-});
-
-test("plan creation rejects duplicate features and accepts references or normalized feature input", () => {
-  assert.equal(createPlatformPricingPlanSchema.safeParse({
-    name: "Enterprise", monthlyPrice: 250000, description: "Large organization plan",
-    features: [{ featureId: "feature_hris_employee" }, { name: "Dedicated Account Manager", description: "Assigned specialist" }]
-  }).success, true);
-  assert.equal(createPlatformPricingPlanSchema.safeParse({
-    name: "Enterprise", monthlyPrice: 250000, description: "Large organization plan",
-    features: [{ featureId: "same" }, { featureId: "same" }]
-  }).success, false);
 });
 
 test("tenant creation validates modular plans, email, country, and strict fields", () => {

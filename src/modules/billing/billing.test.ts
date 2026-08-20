@@ -1,18 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { billingPlans, calculateMonthlyPricing, getBillingPlanDefinition } from "./billing.catalog";
+import { billingPlans, getBillingPlanDefinition } from "./billing.catalog";
 import { deriveSubscriptionStatus, isRenewalReminderDue, passesLuhn } from "./billing.rules";
 
 test("catalog exposes only the four modular plans at authoritative prices", () => {
   assert.deepEqual(billingPlans.map(({ key, monthlyCost }) => [key, monthlyCost]), [["hris", 80000], ["payroll", 10000], ["accounting", 80000], ["all-in-one", 150000]]);
+  assert.deepEqual(billingPlans.map(({ key, pricingModel }) => [key, pricingModel]), [["hris", "FIXED"], ["payroll", "FIXED"], ["accounting", "FIXED"], ["all-in-one", "FIXED_BUNDLE"]]);
 });
 
-test("pricing de-duplicates add-ons and excludes modules included by the base plan", () => {
-  const plan = getBillingPlanDefinition("hris")!;
-  assert.deepEqual(calculateMonthlyPricing(plan, ["hris", "payroll", "payroll", "accounting"]), {
-    basePlanCost: 80000, activeModuleTotal: 90000, grandMonthlyTotal: 170000,
-    addOns: [{ key: "payroll", name: "Payroll", monthlyCost: 10000 }, { key: "accounting", name: "Accounting", monthlyCost: 80000 }]
-  });
+test("each selected plan has one recurring price and plan-derived entitlements", () => {
+  assert.deepEqual(getBillingPlanDefinition("hris")?.includedModules, ["hris"]);
+  assert.deepEqual(getBillingPlanDefinition("payroll")?.includedModules, ["payroll"]);
+  assert.deepEqual(getBillingPlanDefinition("accounting")?.includedModules, ["accounting"]);
+  const bundle = getBillingPlanDefinition("all-in-one")!;
+  assert.equal(bundle.monthlyCost, 150000);
+  assert.deepEqual(bundle.includedModules, ["hris", "payroll", "accounting"]);
 });
 
 test("subscription lifecycle applies verified activation, expiration and period-end cancellation", () => {

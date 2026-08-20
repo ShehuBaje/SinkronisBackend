@@ -44,7 +44,6 @@ import {
   platformTenantUsersQuerySchema,
   platformPricingQuerySchema,
   updatePlatformPriceSchema,
-  createPlatformPricingPlanSchema,
   suspendPlatformTenantSchema,
   platformEmailTemplateKeys,
   platformFeatureFlagKeys,
@@ -70,7 +69,6 @@ import {
 } from "./platform-admin.validation";
 
 const subscriptionKey = "billing.subscription";
-const addOnPrefix = "billing.addons";
 const excludedTenantWhere: Prisma.OrganizationWhereInput = {
   status: { not: "ARCHIVED" },
   deletionRequests: { none: { status: "PENDING_PLATFORM_APPROVAL" } },
@@ -395,24 +393,16 @@ const dateValue = (value: unknown) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
-const isActiveAddOn = (value: Prisma.JsonValue) => {
-  if (typeof value === "string") return value.toUpperCase() === "ACTIVE";
-  return String(objectValue(value).status ?? "").toUpperCase() === "ACTIVE";
-};
-
 export const buildSubscriptionSnapshots = async (organizationIds: string[]) => {
   if (!organizationIds.length) return new Map<string, PlatformSubscriptionSnapshot>();
-  const configs = await prisma.systemConfig.findMany({
-    where: {
-      organizationId: { in: organizationIds },
-      OR: [
-        { key: subscriptionKey },
-        { key: { startsWith: `${addOnPrefix}.` } },
-        { key: { startsWith: "module." } }
-      ]
-    },
-    select: { organizationId: true, key: true, value: true }
-  });
+  const [configs, catalogue] = await Promise.all([
+    prisma.systemConfig.findMany({
+      where: { organizationId: { in: organizationIds }, key: subscriptionKey },
+      select: { organizationId: true, key: true, value: true }
+    }),
+    getEffectivePlanCatalogue()
+  ]);
+  const pricingByPlan = new Map(catalogue.map((plan) => [plan.key, plan]));
   const configsByOrganization = new Map<string, typeof configs>();
   for (const config of configs) {
     configsByOrganization.set(config.organizationId, [...(configsByOrganization.get(config.organizationId) ?? []), config]);
@@ -422,22 +412,7 @@ export const buildSubscriptionSnapshots = async (organizationIds: string[]) => {
     const subscription = objectValue(rows.find((row) => row.key === subscriptionKey)?.value);
     const rawPlanKey = typeof subscription.planKey === "string" ? subscription.planKey : "hris";
     const plan = getBillingPlanDefinition(rawPlanKey as BillingPlanKey) ?? billingPlans[0];
-    const addOns = billingModuleKeys.filter((moduleKey) => {
-      if (plan.includedModules.includes(moduleKey)) return false;
-      const addOn = rows.find((row) => row.key === `${addOnPrefix}.${moduleKey}.subscription`);
-      const moduleStatus = rows.find((row) => row.key === `module.${moduleKey}.status`);
-      return Boolean(addOn && isActiveAddOn(addOn.value)) || Boolean(moduleStatus && isActiveAddOn(moduleStatus.value));
-    });
-    return [
-      { organizationId, planKey: plan.key, source: "BASE_PLAN" as const, fallbackMonthlyPrice: plan.monthlyCost },
-      ...addOns.map((moduleKey) => {
-        const configured = objectValue(rows.find((row) => row.key === `${addOnPrefix}.${moduleKey}.subscription`)?.value);
-        return {
-          organizationId, planKey: moduleKey, source: "ADD_ON" as const,
-          fallbackMonthlyPrice: typeof configured.monthlyCost === "number" ? configured.monthlyCost : getBillingPlanDefinition(moduleKey)!.monthlyCost
-        };
-      })
-    ];
+    return [{ organizationId, planKey: plan.key, source: "BASE_PLAN" as const, fallbackMonthlyPrice: plan.monthlyCost }];
   });
   const resolvedPrices = await resolveRecurringPrices(priceComponents);
 
@@ -453,19 +428,11 @@ export const buildSubscriptionSnapshots = async (organizationIds: string[]) => {
     const renewalDate = dateValue(subscription.renewalDate);
     if (status === "ACTIVE" && renewalDate && renewalDate < new Date() && subscription.cancelAtPeriodEnd === true) status = "CANCELLED";
     else if (status === "ACTIVE" && renewalDate && renewalDate < new Date()) status = "EXPIRED";
-    const addOns = billingModuleKeys.filter((moduleKey) => {
-      if (plan.includedModules.includes(moduleKey)) return false;
-      const addOn = rows.find((row) => row.key === `${addOnPrefix}.${moduleKey}.subscription`);
-      const moduleStatus = rows.find((row) => row.key === `module.${moduleKey}.status`);
-      return Boolean(addOn && isActiveAddOn(addOn.value)) || Boolean(moduleStatus && isActiveAddOn(moduleStatus.value));
-    });
-    const activeModules = [...new Set([...plan.includedModules, ...addOns])] as BillingModuleKey[];
-    const basePrice = resolvedPrices.get(`${organizationId}:${plan.key}:BASE_PLAN`) ?? plan.monthlyCost;
-    const revenueComponents = [
-      { key: plan.key, source: "BASE_PLAN" as const, monthlyRevenue: basePrice },
-      ...addOns.map((key) => ({ key, source: "ADD_ON" as const, monthlyRevenue: resolvedPrices.get(`${organizationId}:${key}:ADD_ON`) ?? getBillingPlanDefinition(key)!.monthlyCost }))
-    ];
-    const monthlyRecurringRevenue = status === "ACTIVE" ? sumMoney(revenueComponents.map((component) => component.monthlyRevenue)) : 0;
+    const activeModules = [...plan.includedModules] as BillingModuleKey[];
+    const configuredPlan = pricingByPlan.get(plan.key);
+    const basePrice = resolvedPrices.get(`${organizationId}:${plan.key}:BASE_PLAN`) ?? configuredPlan?.monthlyPrice ?? plan.monthlyCost;
+    const revenueComponents = [{ key: plan.key, source: "BASE_PLAN" as const, monthlyRevenue: basePrice }];
+    const monthlyRecurringRevenue = status === "ACTIVE" ? basePrice : 0;
     snapshots.set(organizationId, {
       organizationId,
       planKey: plan.key,
@@ -1012,8 +979,6 @@ export const exitPlatformTenantImpersonation = async (currentUser: AuthUser) => 
 };
 
 type PricingRequestMeta = { ipAddress?: string | null; requestId?: string | null };
-const normalizePlanName = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-const planKeyFromName = (value: string) => normalizePlanName(value).replace(/\s+/g, "-");
 const loadPricingAnalytics = async () => {
   const [snapshot, catalogue] = await Promise.all([
     loadPlatformTenantSnapshot(excludedTenantWhere),
@@ -1036,7 +1001,7 @@ const loadPricingAnalytics = async () => {
     const totalEmployees = subscribers.reduce((total, subscription) => total + (employeesByOrganization.get(subscription.organizationId) ?? 0), 0);
     return {
       id: plan.id, key: plan.key, name: plan.name, description: plan.description,
-      activeTenantCount: subscribers.length, monthlyPrice: plan.monthlyPrice,
+      activeTenantCount: subscribers.length, monthlyPrice: plan.monthlyPrice, baseMonthlyPrice: plan.monthlyPrice,
       features: plan.features, monthlyRevenue, currency: "NGN", pricingModel: plan.pricingModel,
       status: plan.status, updatedAt: plan.updatedAt, totalEmployees,
       revenueContributionPercentage: revenueContributionPercentage(monthlyRevenue, totalRevenue),
@@ -1077,7 +1042,7 @@ export const getPlatformPricingOverview = async (queryInput: unknown, platformAd
   });
   const total = distribution.length; const start = (query.page - 1) * query.limit;
   const items = distribution.slice(start, start + query.limit).map((row) => ({
-    id: row.id, key: row.key, name: row.name, basePricePerMonth: row.monthlyPrice,
+    id: row.id, code: row.key.toUpperCase().replaceAll("-", "_"), key: row.key, name: row.name, basePrice: row.baseMonthlyPrice, basePricePerMonth: row.baseMonthlyPrice,
     totalEmployees: row.totalEmployees, activeTenants: row.activeTenantCount,
     activeTenantTotal: row.activeTenantCount, monthlyRevenue: row.monthlyRevenue,
     monthlyRevenueTotal: row.monthlyRevenue, revenueContributionPercentage: row.revenueContributionPercentage,
@@ -1101,7 +1066,9 @@ export const getPlatformPricingOverview = async (queryInput: unknown, platformAd
       planId: plan.id,
       key: plan.key,
       planName: plan.name,
+      code: plan.key.toUpperCase().replaceAll("-", "_"),
       monthlyPrice: plan.monthlyPrice,
+      baseMonthlyPrice: plan.monthlyPrice,
       currency: "NGN",
       description: plan.description,
       features: plan.features,
@@ -1117,16 +1084,13 @@ export const getPlatformPricingOverview = async (queryInput: unknown, platformAd
 
 const identifySubscribedComponents = async (planKey: string) => {
   const configs = await prisma.systemConfig.findMany({
-    where: { OR: [{ key: subscriptionKey }, { key: `${addOnPrefix}.${planKey}.subscription` }] },
+    where: { key: subscriptionKey },
     select: { organizationId: true, key: true, value: true }
   });
   return configs.flatMap((config) => {
     const value = objectValue(config.value);
     if (config.key === subscriptionKey && value.planKey === planKey && normalizeStatus(value.status) === "ACTIVE") {
       return [{ organizationId: config.organizationId, source: "BASE_PLAN", renewalDate: dateValue(value.renewalDate) }];
-    }
-    if (config.key !== subscriptionKey && isActiveAddOn(config.value)) {
-      return [{ organizationId: config.organizationId, source: "ADD_ON", renewalDate: dateValue(value.renewalDate) }];
     }
     return [];
   });
@@ -1135,7 +1099,7 @@ const identifySubscribedComponents = async (planKey: string) => {
 export const updatePlatformModulePrice = async (moduleId: string, body: unknown, platformAdmin: AuthUser, requestMeta?: PricingRequestMeta) => {
   assertPlatformAdmin(platformAdmin);
   const payload = updatePlatformPriceSchema.parse(body);
-  const plan = await prisma.billingProductPlan.findFirst({ where: { OR: [{ id: moduleId }, { key: moduleId }] }, include: { prices: { orderBy: { version: "desc" }, take: 1 } } });
+  const plan = await prisma.billingProductPlan.findFirst({ where: { key: { in: [...billingPlanKeys] }, OR: [{ id: moduleId }, { key: moduleId }] }, include: { prices: { orderBy: { version: "desc" }, take: 1 } } });
   if (!plan) throw notFound("Module or plan not found");
   const latest = plan.prices[0];
   if (!latest) throw badRequest("Plan has no price history", { errorCode: "PRICE_HISTORY_MISSING" });
@@ -1197,60 +1161,6 @@ export const updatePlatformModulePrice = async (moduleId: string, body: unknown,
   };
 };
 
-export const createPlatformPricingPlan = async (body: unknown, platformAdmin: AuthUser, requestMeta?: PricingRequestMeta) => {
-  assertPlatformAdmin(platformAdmin);
-  const payload = createPlatformPricingPlanSchema.parse(body);
-  const normalizedName = normalizePlanName(payload.name);
-  const planKey = planKeyFromName(payload.name);
-  if (await prisma.billingProductPlan.findFirst({ where: { OR: [{ normalizedName }, { key: planKey }] }, select: { id: true } })) {
-    throw conflict("Plan name already exists", { errorCode: "DUPLICATE_PLAN_NAME" });
-  }
-  const requestedIds = payload.features.flatMap((feature) => "featureId" in feature ? [feature.featureId] : []);
-  const existingFeatures = requestedIds.length ? await prisma.billingFeature.findMany({ where: { id: { in: requestedIds }, status: "ACTIVE" } }) : [];
-  if (existingFeatures.length !== requestedIds.length) throw badRequest("One or more referenced features do not exist", { errorCode: "FEATURE_NOT_FOUND" });
-  const created = await prisma.$transaction(async (tx) => {
-    const plan = await tx.billingProductPlan.create({
-      data: {
-        key: planKey, name: payload.name.trim(), normalizedName,
-        description: payload.description, status: "ACTIVE", pricingModel: "FLAT_MONTHLY",
-        isSystem: false, createdByUserId: platformAdmin.id
-      }
-    });
-    const featureIds = [...requestedIds];
-    for (const feature of payload.features) {
-      if (!("name" in feature)) continue;
-      const featureNormalizedName = normalizePlanName(feature.name);
-      const existing = await tx.billingFeature.findFirst({ where: { moduleKey: feature.module ?? null, normalizedName: featureNormalizedName } });
-      const record = existing ?? await tx.billingFeature.create({
-        data: {
-          key: `${plan.key}-${planKeyFromName(feature.name)}`, name: feature.name.trim(),
-          normalizedName: featureNormalizedName, description: feature.description,
-          moduleKey: feature.module ?? null, status: "ACTIVE"
-        }
-      });
-      featureIds.push(record.id);
-    }
-    await tx.billingPlanFeature.createMany({ data: featureIds.map((featureId) => ({ planId: plan.id, featureId })), skipDuplicates: false });
-    const price = await tx.billingPriceVersion.create({
-      data: {
-        planId: plan.id, monthlyPrice: new Prisma.Decimal(payload.monthlyPrice), currency: "NGN",
-        effectiveAt: new Date(), reason: "Initial plan price", changedByUserId: platformAdmin.id, version: 1
-      }
-    });
-    return { plan, price, featureIds };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-  await createAuditLog({
-    organizationId: platformAdmin.organizationId, actorUserId: platformAdmin.id,
-    action: "PLAN_CREATED", resource: "BILLING_PRODUCT_PLAN", resourceId: created.plan.id,
-    summary: `Created subscription plan ${created.plan.name}`,
-    metadata: {
-      monthlyPrice: payload.monthlyPrice, currency: "NGN", featureIds: created.featureIds,
-      ipAddress: requestMeta?.ipAddress ?? null, requestId: requestMeta?.requestId ?? null
-    }
-  });
-  return (await getEffectivePlanCatalogue()).find((plan) => plan.id === created.plan.id)!;
-};
-
 export const getPlatformDashboard = async (queryInput: unknown, platformAdmin: AuthUser) => {
   const query = platformDashboardQuerySchema.parse(queryInput);
   if (!platformAdmin.isPlatformAdmin) throw forbidden("Platform Admin access is required");
@@ -1277,8 +1187,12 @@ const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const assertAdmin = (user: AuthUser) => { if (!user.isPlatformAdmin) throw forbidden("Platform Admin access is required"); };
 const endExclusive = (date: Date) => new Date(date.getTime() + 86_400_000);
 const planLabel = (key: string) => ({ hris: "HRIS", payroll: "PAYROLL", accounting: "ACCOUNTING", "all-in-one": "ALL_IN_ONE" }[key] ?? key.toUpperCase());
-const toInvoice = (row: any) => ({ id: row.id, invoiceNumber: row.invoiceNumber, tenantId: row.organizationId, tenantName: row.organization.name, billingPeriod: row.billingPeriod, amount: Number(row.amount), currency: row.currency, status: row.status, invoiceDate: row.invoiceDate, dueDate: row.dueDate, createdAt: row.createdAt, updatedAt: row.updatedAt });
+const toInvoice = (row: any) => ({ id: row.id, invoiceId: row.invoiceNumber, invoiceNumber: row.invoiceNumber, tenantId: row.organizationId, tenantName: row.organization.name, tenant: { id: row.organizationId, name: row.organization.name }, billingPeriod: row.billingPeriod, period: row.billingPeriod, amount: Number(row.amount), currency: row.currency, status: row.status, invoiceDate: row.invoiceDate, dueDate: row.dueDate, paidAt: row.paidAt, pricingSnapshot: row.pricingSnapshot ?? null, actions: { canDownload: true, canSendReminder: row.status === "OVERDUE" }, createdAt: row.createdAt, updatedAt: row.updatedAt });
 const refreshOverdueInvoices = () => prisma.platformInvoice.updateMany({ where: { status: "DRAFT", dueDate: { lt: new Date() } }, data: { status: "OVERDUE" } });
+export const annualRecurringRevenue = (mrr: number) => sumMoney([mrr * 12]);
+export const churnRatePercentage = (activeAtStart: number, churned: number) => activeAtStart > 0 ? Number(((churned / activeAtStart) * 100).toFixed(2)) : 0;
+export const invoiceReminderEligible = (status: string) => status === "OVERDUE";
+export const createInvoiceNumber = (billingPeriod: string) => `SINV-${billingPeriod.replace("-", "")}-${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
 
 const periodBounds = (query: { year?: number; month?: number; startDate?: Date; endDate?: Date }) => {
   if (query.startDate || query.endDate) return { start: query.startDate, end: query.endDate ? endExclusive(query.endDate) : undefined };
@@ -1327,7 +1241,7 @@ export const getBillingAnalytics = async (input: unknown, user: AuthUser) => {
     if (activatedAt < periodStart && (!endedAt || endedAt >= periodStart)) starting++;
     if (endedAt && endedAt >= periodStart && endedAt < periodEnd) churned++;
   }
-  return { mrr, arr: mrr * 12, totalOverdueAmount: Number(overdue._sum.amount ?? 0), churnRate: starting ? Number(((churned / starting) * 100).toFixed(2)) : 0, currency: "NGN", period: { startDate: periodStart, endDateExclusive: periodEnd }, formulas: { mrr: "Sum of monthly recurring revenue for ACTIVE eligible tenant subscriptions", arr: "MRR Ã— 12", totalOverdueAmount: "Sum of OVERDUE platform invoice amounts", churnRate: "Subscriptions cancelled or expired during period Ã· active subscribed tenants at period start Ã— 100" } };
+  return { mrr, arr: annualRecurringRevenue(mrr), totalOverdueAmount: Number(overdue._sum.amount ?? 0), churnRate: churnRatePercentage(starting, churned), currency: "NGN", period: { startDate: periodStart, endDateExclusive: periodEnd }, formulas: { mrr: "Sum of the current fixed recurring monthly price for ACTIVE eligible subscriptions. Payroll is fixed at NGN 10,000; All-in-One uses only its NGN 150,000 bundle price.", arr: "MRR multiplied by 12", totalOverdueAmount: "Sum of overdue invoice amounts. Partial payments are not currently modelled, so the immutable invoice amount is the outstanding amount.", churnRate: "Subscriptions cancelled or expired during period divided by active subscribed tenants at period start, multiplied by 100" } };
 };
 
 export const getRevenueByPlan = async (input: unknown, user: AuthUser) => {
@@ -1346,19 +1260,23 @@ export const createPlatformInvoice = async (input: unknown, user: AuthUser) => {
   assertAdmin(user); const body = createPlatformInvoiceSchema.parse(input);
   const tenant = await prisma.organization.findFirst({ where: { id: body.tenantId, status: { in: ["ACTIVE", "SUSPENDED"] }, users: { none: { isPlatformAdmin: true } }, deletionRequests: { none: { status: "PENDING_PLATFORM_APPROVAL" } } }, select: { id: true, name: true } });
   if (!tenant) throw notFound("Tenant not found or is not eligible for invoicing");
-  const snapshots = await buildSubscriptionSnapshots([tenant.id]); const planKey = snapshots.get(tenant.id)?.planKey;
-  if (!planKey) throw badRequest("Tenant has no valid subscription plan", { errorCode: "INVALID_SUBSCRIPTION" });
+  const snapshots = await buildSubscriptionSnapshots([tenant.id]); const subscriptionSnapshot = snapshots.get(tenant.id); const planKey = subscriptionSnapshot?.planKey;
+  if (!planKey || !subscriptionSnapshot) throw badRequest("Tenant has no valid subscription plan", { errorCode: "INVALID_SUBSCRIPTION" });
+  const plan = await getEffectivePlanCatalogue().then((plans) => plans.find((candidate) => candidate.key === planKey));
+  if (!plan) throw badRequest("Tenant subscription pricing is unavailable", { errorCode: "INVALID_SUBSCRIPTION_PRICING" });
+  const pricingSnapshot = { planCode: planKey.toUpperCase().replaceAll("-", "_"), pricingModel: plan.pricingModel, baseMonthlyPrice: plan.monthlyPrice, calculatedRecurringAmount: subscriptionSnapshot.monthlyRecurringRevenue, manuallyEnteredAmount: body.amount };
   const dueDate = body.dueDate ?? new Date(`${body.billingPeriod}-01T00:00:00.000Z`); if (!body.dueDate) dueDate.setUTCMonth(dueDate.getUTCMonth() + 1, 7);
   try {
-    const row = await prisma.platformInvoice.create({ data: { invoiceNumber: `SINV-${body.billingPeriod.replace("-", "")}-${crypto.randomBytes(5).toString("hex").toUpperCase()}`, organizationId: tenant.id, billingPeriod: body.billingPeriod, planKey, amount: new Prisma.Decimal(body.amount), currency: "NGN", dueDate, createdByUserId: user.id }, include: { organization: { select: { name: true } } } });
+    const row = await prisma.platformInvoice.create({ data: { invoiceNumber: createInvoiceNumber(body.billingPeriod), organizationId: tenant.id, billingPeriod: body.billingPeriod, planKey, amount: new Prisma.Decimal(body.amount), pricingSnapshot, currency: "NGN", dueDate, createdByUserId: user.id }, include: { organization: { select: { name: true } } } });
     await createAuditLog({ organizationId: tenant.id, actorUserId: user.id, action: "PLATFORM_INVOICE_CREATED", resource: "PLATFORM_INVOICE", resourceId: row.id, summary: `Created platform invoice ${row.invoiceNumber}` });
     return toInvoice(row);
   } catch (error) { if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw conflict("An invoice already exists for this tenant and billing period", { errorCode: "DUPLICATE_INVOICE" }); throw error; }
 };
 
 export const sendInvoiceReminder = async (id: string, user: AuthUser) => {
-  assertAdmin(user); const invoice = await prisma.platformInvoice.findUnique({ where: { id }, include: { organization: { select: { id: true, name: true, email: true } }, reminderAttempts: { orderBy: { attemptedAt: "desc" }, take: 1 } } });
+  assertAdmin(user); await refreshOverdueInvoices(); const invoice = await prisma.platformInvoice.findUnique({ where: { id }, include: { organization: { select: { id: true, name: true, email: true } }, reminderAttempts: { orderBy: { attemptedAt: "desc" }, take: 1 } } });
   if (!invoice) throw notFound("Invoice not found"); if (!invoice.organization) throw notFound("Tenant not found"); if (invoice.status === "PAID") throw conflict("Invoice is already paid", { errorCode: "INVOICE_PAID" });
+  if (!invoiceReminderEligible(invoice.status)) throw conflict("Payment reminders are only available for overdue invoices", { errorCode: "INVOICE_NOT_OVERDUE" });
   const latest = invoice.reminderAttempts[0]; if (latest && latest.attemptedAt > new Date(Date.now() - REMINDER_COOLDOWN_MS)) throw conflict("Reminder cooldown is still active", { errorCode: "REMINDER_COOLDOWN", retryAfter: new Date(latest.attemptedAt.getTime() + REMINDER_COOLDOWN_MS) });
   if (!invoice.organization.email) throw badRequest("Tenant has no billing email", { errorCode: "TENANT_EMAIL_MISSING" });
   const attempt = await prisma.platformInvoiceReminder.create({ data: { invoiceId: id, triggeredByUserId: user.id, status: "PENDING" } });
@@ -1376,7 +1294,7 @@ export const downloadPlatformInvoice = async (id: string, user: AuthUser) => {
 };
 
 const CSV_EXPORT_BATCH_SIZE = 500;
-const CSV_HEADERS = ["Invoice ID", "Invoice number", "Tenant", "Billing period", "Amount", "Currency", "Status", "Due date", "Created date"];
+const CSV_HEADERS = ["Invoice ID", "Invoice number", "Tenant", "Billing period", "Amount", "Currency", "Status", "Due date", "Paid date", "Created date"];
 
 export const sanitizeCsvCell = (value: unknown) => {
   let text = String(value ?? "").replace(/\r?\n/g, " ");
@@ -1397,7 +1315,7 @@ export const exportPlatformInvoices = async (input: unknown, user: AuthUser) => 
   const orderBy: Prisma.PlatformInvoiceOrderByWithRelationInput[] = [primaryOrder, { id: query.sortOrder }];
   const select = {
     id: true, invoiceNumber: true, billingPeriod: true, amount: true, currency: true,
-    status: true, dueDate: true, createdAt: true, organization: { select: { name: true } }
+    status: true, dueDate: true, paidAt: true, createdAt: true, organization: { select: { name: true } }
   } satisfies Prisma.PlatformInvoiceSelect;
 
   // Fetch the first batch before response headers are committed so initial
@@ -1411,7 +1329,7 @@ export const exportPlatformInvoices = async (input: unknown, user: AuthUser) => 
       yield rows.map((row) => csvLine([
         row.id, row.invoiceNumber, row.organization.name, row.billingPeriod,
         Number(row.amount).toFixed(2), row.currency, row.status,
-        row.dueDate.toISOString(), row.createdAt.toISOString()
+        row.dueDate.toISOString(), row.paidAt?.toISOString() ?? "", row.createdAt.toISOString()
       ])).join("");
       recordCount += rows.length;
       if (rows.length < CSV_EXPORT_BATCH_SIZE) break;
@@ -1726,7 +1644,10 @@ export const updatePlatformTenantModules = async (tenantId: string, input: unkno
   const plan = getBillingPlanDefinition(String(subscription.planKey ?? "") as BillingPlanKey); if (!plan) throw conflict("Tenant subscription plan is invalid", { errorCode: "INVALID_SUBSCRIPTION_PLAN" });
   const previous = await prisma.systemConfig.findMany({ where: { organizationId: tenantId, key: { in: billingModuleKeys.map((module) => `module.${module}.status`) } }, select: { key: true, value: true, rowVersion: true } }); const prior = new Map(previous.map((row) => [row.key.split(".")[1] as BillingModuleKey, { enabled: row.value === "ACTIVE", version: row.rowVersion }]));
   if (payload.expectedVersion !== undefined && Math.max(1, ...previous.map((row) => row.rowVersion)) !== payload.expectedVersion) throw conflict("Module configuration was changed by another administrator", { errorCode: "MODULE_VERSION_CONFLICT" });
-  for (const item of payload.modules) if (!item.enabled && plan.includedModules.includes(item.module)) throw conflict(`${moduleLabels[item.module]} is included in the current plan; change the plan before disabling it`, { errorCode: "MODULE_INCLUDED_IN_PLAN", module: item.module });
+  for (const item of payload.modules) {
+    const requiredState = plan.includedModules.includes(item.module);
+    if (item.enabled !== requiredState) throw conflict(`${moduleLabels[item.module]} access is derived from the tenant's selected plan; change the plan instead`, { errorCode: "MODULE_STATE_DERIVED_FROM_PLAN", module: item.module, requiredState });
+  }
   const changed = payload.modules.filter((item) => (prior.get(item.module)?.enabled ?? false) !== item.enabled);
   if (!changed.length) return { changed: false, previous: payload.modules.map((item) => ({ ...item, enabled: prior.get(item.module)?.enabled ?? false })), current: payload.modules, effectiveAt: now };
   try {
@@ -1736,7 +1657,6 @@ export const updatePlatformTenantModules = async (tenantId: string, input: unkno
         const status = item.enabled ? "ACTIVE" : "INACTIVE"; const key = `module.${item.module}.status`;
         await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key } }, create: { organizationId: tenantId, key, value: status, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN" }, update: { value: status, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN", rowVersion: { increment: 1 } } });
         await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: `module.${item.module}.enabled` } }, create: { organizationId: tenantId, key: `module.${item.module}.enabled`, value: item.enabled, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN" }, update: { value: item.enabled, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN", rowVersion: { increment: 1 } } });
-        await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: `billing.addons.${item.module}.subscription` } }, create: { organizationId: tenantId, key: `billing.addons.${item.module}.subscription`, value: { status, activatedAt: item.enabled ? now.toISOString() : null, disabledAt: item.enabled ? null : now.toISOString(), source: "PLATFORM_ADMIN" } }, update: { value: { status, activatedAt: item.enabled ? now.toISOString() : null, disabledAt: item.enabled ? null : now.toISOString(), source: "PLATFORM_ADMIN" }, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN", rowVersion: { increment: 1 } } });
       }
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
@@ -2045,6 +1965,10 @@ export const downloadPlatformInvoice = PlatformBillingService.downloadPlatformIn
 export const sanitizeCsvCell = PlatformBillingService.sanitizeCsvCell;
 export const exportPlatformInvoices = PlatformBillingService.exportPlatformInvoices;
 export const getBillingOverview = PlatformBillingService.getBillingOverview;
+export const annualRecurringRevenue = PlatformBillingService.annualRecurringRevenue;
+export const churnRatePercentage = PlatformBillingService.churnRatePercentage;
+export const invoiceReminderEligible = PlatformBillingService.invoiceReminderEligible;
+export const createPlatformInvoiceNumber = PlatformBillingService.createInvoiceNumber;
 export const platformUserRowStatus = PlatformUsersService.platformUserRowStatus;
 export const effectivePlatformUserModules = PlatformUsersService.effectivePlatformUserModules;
 export const getPlatformUserAnalytics = PlatformUsersService.getPlatformUserAnalytics;

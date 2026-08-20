@@ -183,38 +183,24 @@ export const platformPricingQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().trim().max(100).optional(),
   status: z.enum(["ALL", "ACTIVE", "INACTIVE", "ARCHIVED"]).default("ALL"),
-  pricingModel: z.enum(["ALL", "FLAT_MONTHLY"]).default("ALL"),
+  pricingModel: z.enum(["ALL", "FIXED", "FIXED_BUNDLE"]).default("ALL"),
   sortBy: z.enum(["name", "activeTenantCount", "monthlyRevenue", "basePrice", "totalEmployees"]).default("name"),
   sortOrder: z.enum(["asc", "desc"]).default("asc")
 }).strict();
 
 export const platformPricingModuleParamsSchema = z.object({ moduleId: z.string().trim().min(1).max(191) }).strict();
+export const platformPricingPlanParamsSchema = z.object({ planCode: z.enum(["hris", "payroll", "accounting", "all-in-one", "HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"]).transform((value) => value.toLowerCase().replaceAll("_", "-")) }).strict();
 
 export const updatePlatformPriceSchema = z.object({
-  monthlyPrice: moneyAmount,
-  reason: z.string().trim().min(3).max(1000),
-  effectiveAt: z.string().datetime({ offset: true }).transform((value) => new Date(value)),
+  baseMonthlyPrice: moneyAmount.optional(),
+  monthlyPrice: moneyAmount.optional(),
+  reason: z.string().trim().min(3).max(1000).default("Platform Admin price update"),
+  effectiveAt: z.string().datetime({ offset: true }).transform((value) => new Date(value)).optional(),
   expectedVersion: z.coerce.number().int().min(1).optional()
-}).strict();
-
-const existingFeature = z.object({ featureId: z.string().trim().min(1).max(191) }).strict();
-const newFeature = z.object({
-  name: z.string().trim().min(2).max(120),
-  description: z.string().trim().max(1000).optional(),
-  module: z.enum(["hris", "payroll", "accounting"]).optional()
-}).strict();
-
-export const createPlatformPricingPlanSchema = z.object({
-  name: z.string().trim().min(2).max(120),
-  monthlyPrice: moneyAmount,
-  description: z.string().trim().min(3).max(2000),
-  features: z.array(z.union([existingFeature, newFeature])).min(1).max(100)
 }).strict().superRefine((value, context) => {
-  const featureIds = value.features.flatMap((feature) => "featureId" in feature ? [feature.featureId] : []);
-  if (new Set(featureIds).size !== featureIds.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ["features"], message: "Duplicate feature assignments are not allowed" });
-  const names = value.features.flatMap((feature) => "name" in feature ? [feature.name.toLowerCase().replace(/\s+/g, " ")] : []);
-  if (new Set(names).size !== names.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ["features"], message: "Duplicate feature names are not allowed" });
-});
+  if (value.baseMonthlyPrice === undefined && value.monthlyPrice === undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: ["baseMonthlyPrice"], message: "baseMonthlyPrice is required" });
+  if (value.baseMonthlyPrice !== undefined && value.monthlyPrice !== undefined && value.baseMonthlyPrice !== value.monthlyPrice) context.addIssue({ code: z.ZodIssueCode.custom, path: ["baseMonthlyPrice"], message: "Provide only one price value" });
+}).transform((value) => ({ ...value, monthlyPrice: value.baseMonthlyPrice ?? value.monthlyPrice!, effectiveAt: value.effectiveAt ?? new Date() }));
 
 namespace PlatformUsersValidation {
 export const platformUserStatuses = ["ALL", "ACTIVE", "INACTIVE"] as const;
@@ -308,10 +294,13 @@ export const invoiceListQuerySchema = invoiceListObjectSchema.superRefine(valida
 export const invoiceExportQuerySchema = invoiceListObjectSchema.omit({ page: true, limit: true }).superRefine(validateDateRange);
 export const invoiceParamsSchema = z.object({ invoiceId: z.string().trim().min(1).max(191) }).strict();
 export const createPlatformInvoiceSchema = z.object({
-  tenantId: z.string().trim().min(1).max(191), billingPeriod: period,
+  tenantId: z.string().trim().min(1).max(191), billingPeriod: period.optional(), period: period.optional(),
   amount: z.coerce.number().positive().max(1_000_000_000).refine((v) => Number.isSafeInteger(Math.round(v * 100)) && Math.abs(v * 100 - Math.round(v * 100)) < 1e-8, "Amount supports at most two decimal places"),
   currency: z.literal("NGN").default("NGN"), dueDate: isoDate.optional()
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (!value.billingPeriod && !value.period) context.addIssue({ code: z.ZodIssueCode.custom, path: ["period"], message: "period is required" });
+  if (value.billingPeriod && value.period && value.billingPeriod !== value.period) context.addIssue({ code: z.ZodIssueCode.custom, path: ["period"], message: "Provide only one billing period" });
+}).transform((value) => ({ ...value, billingPeriod: value.billingPeriod ?? value.period! }));
 
 export type InvoiceListQuery = z.infer<typeof invoiceListQuerySchema>;
 

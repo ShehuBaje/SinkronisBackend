@@ -45,15 +45,6 @@ export const myPlanChangeSchema = z.object({
 });
 export const myPlanPurchaseSchema = myPlanChangeSchema;
 
-export const myPlanAddonParamsSchema = z.object({ moduleKey: z.enum(["hris", "accounting", "payroll"]) });
-
-export const myPlanAddonUpdateSchema = z.object({
-  enabled: z.boolean(),
-  confirm: z.boolean().default(false),
-  paymentReference: z.string().min(3).max(200).optional(),
-  automaticRenewal: z.boolean().default(true)
-});
-
 export const myPlanInvoiceParamsSchema = z.object({ invoiceId: z.string().min(1) });
 export const myPlanChangeParamsSchema = z.object({ changeId: z.string().min(1) });
 

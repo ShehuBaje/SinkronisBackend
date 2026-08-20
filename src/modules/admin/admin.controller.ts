@@ -18,7 +18,7 @@ import {
   getModuleSectionData,
   getMyPlanBillingHistory,
   getMyPlanBillingAnalytics,
-  getMyPlanModuleAddOns,
+  getMyPlanActiveModules,
   getMyPlanOverview,
   getMyPlanPaymentLocationOptions,
   getMyPlanPaymentMethod,
@@ -62,7 +62,6 @@ import {
   updateOrganization,
   updateRole,
   updateModuleStatus,
-  updateMyPlanModuleAddOn,
   updateMyPlanBillingAddress,
   updateMyPlanPaymentMethod,
   updateUserAccess,
@@ -210,14 +209,9 @@ export const cancelMyPlanChangeController = async (req: any, res: any) => {
   sendSuccess(res, "Scheduled plan change cancelled.", data);
 };
 
-export const getMyPlanModuleAddOnsController = async (req: any, res: any) => {
-  const data = await getMyPlanModuleAddOns(req);
-  sendSuccess(res, "Modules retrieved.", data);
-};
-
-export const updateMyPlanModuleAddOnController = async (req: any, res: any) => {
-  const data = await updateMyPlanModuleAddOn(req);
-  sendSuccess(res, "Module change processed.", data);
+export const getMyPlanActiveModulesController = async (req: any, res: any) => {
+  const data = await getMyPlanActiveModules(req);
+  sendSuccess(res, "Active modules retrieved.", data);
 };
 
 export const getMyPlanPaymentMethodController = async (req: any, res: any) => {

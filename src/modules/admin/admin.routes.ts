@@ -28,7 +28,7 @@ import {
   getModuleSectionController,
   getMyPlanBillingHistoryController,
   getMyPlanBillingAnalyticsController,
-  getMyPlanModuleAddOnsController,
+  getMyPlanActiveModulesController,
   getMyPlanOverviewController,
   getMyPlanPaymentLocationOptionsController,
   getMyPlanPaymentMethodController,
@@ -65,7 +65,6 @@ import {
   saveWorkScheduleController,
   updateBranchController,
   updateModuleStatusController,
-  updateMyPlanModuleAddOnController,
   updateMyPlanBillingAddressController,
   updateMyPlanPaymentMethodController,
   updateSecurityPasswordPolicyController,
@@ -110,8 +109,6 @@ import {
   departmentsTableQuerySchema,
   moduleParamsSchema,
   moduleStatusUpdateSchema,
-  myPlanAddonParamsSchema,
-  myPlanAddonUpdateSchema,
   myPlanAddCardSchema,
   myPlanBillingAddressSchema,
   myPlanBillingAnalyticsQuerySchema,
@@ -307,16 +304,9 @@ adminRouter.post(
 );
 
 adminRouter.get(
-  "/my-plan/module-add-ons",
+  "/my-plan/active-modules",
   authorize("admin:organization:view"),
-  asyncHandler(getMyPlanModuleAddOnsController)
-);
-
-adminRouter.patch(
-  "/my-plan/module-add-ons/:moduleKey",
-  authorize("admin:organization:update"),
-  validate({ params: myPlanAddonParamsSchema, body: myPlanAddonUpdateSchema }),
-  asyncHandler(updateMyPlanModuleAddOnController)
+  asyncHandler(getMyPlanActiveModulesController)
 );
 
 adminRouter.get(
