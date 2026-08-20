@@ -132,8 +132,7 @@ export const createPlatformTenantSchema = z.object({
   adminEmail: z.string().trim().toLowerCase().email(),
   subscriptionPlan: z.preprocess(normalizeKey, z.enum(billingPlanKeys)),
   country: supportedCountry,
-  industry: z.string().trim().max(100).optional(),
-  seatAllocation: z.coerce.number().int().min(1).max(1_000_000).optional()
+  industry: z.string().trim().max(100).optional()
 }).strict();
 
 export const platformTenantUserParamsSchema = platformTenantParamsSchema.extend({ userId: z.string().min(1) });
@@ -156,7 +155,6 @@ export const platformTenantBillingQuerySchema = z.object({
 
 export const overridePlatformTenantPlanSchema = z.object({
   plan: z.preprocess(normalizeKey, z.enum(billingPlanKeys)),
-  seatAllocation: z.coerce.number().int().min(1).max(1_000_000).optional(),
   effectiveDate: z.string().datetime({ offset: true }).transform((value) => new Date(value)).optional(),
   reason: z.string().trim().min(3).max(1000).optional()
 }).strict();

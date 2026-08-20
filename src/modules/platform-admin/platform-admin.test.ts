@@ -36,8 +36,8 @@ test("revenue trend always returns six chronological calendar months", () => {
 
 test("All-in-One contributes to each included module adoption", () => {
   const subscriptions: PlatformSubscriptionSnapshot[] = [
-    { organizationId: "one", planKey: "all-in-one", planName: "All-in-One Suite", status: "ACTIVE", renewalDate: null, billingCycle: "MONTHLY", activeModules: ["hris", "payroll", "accounting"], monthlyRecurringRevenue: 150000, baseMonthlyRecurringRevenue: 150000, revenueComponents: [{ key: "all-in-one", source: "BASE_PLAN", monthlyRevenue: 150000 }], seatAllocation: null },
-    { organizationId: "two", planKey: "payroll", planName: "Payroll", status: "ACTIVE", renewalDate: null, billingCycle: "MONTHLY", activeModules: ["payroll"], monthlyRecurringRevenue: 10000, baseMonthlyRecurringRevenue: 10000, revenueComponents: [{ key: "payroll", source: "BASE_PLAN", monthlyRevenue: 10000 }], seatAllocation: null }
+    { organizationId: "one", planKey: "all-in-one", planName: "All-in-One Suite", status: "ACTIVE", renewalDate: null, billingCycle: "MONTHLY", activeModules: ["hris", "payroll", "accounting"], monthlyRecurringRevenue: 150000, baseMonthlyRecurringRevenue: 150000, revenueComponents: [{ key: "all-in-one", source: "BASE_PLAN", monthlyRevenue: 150000 }] },
+    { organizationId: "two", planKey: "payroll", planName: "Payroll", status: "ACTIVE", renewalDate: null, billingCycle: "MONTHLY", activeModules: ["payroll"], monthlyRecurringRevenue: 10000, baseMonthlyRecurringRevenue: 10000, revenueComponents: [{ key: "payroll", source: "BASE_PLAN", monthlyRevenue: 10000 }] }
   ];
   const adoption = moduleAdoptionFromSnapshot(subscriptions, 2);
   assert.deepEqual(adoption.map((item) => [item.moduleId, item.tenantCount, item.percentageAdoption]), [
@@ -290,6 +290,7 @@ test("plan creation rejects duplicate features and accepts references or normali
 
 test("tenant creation validates modular plans, email, country, and strict fields", () => {
   assert.equal(createPlatformTenantSchema.safeParse({ companyName: "Acme", adminEmail: "admin@acme.test", subscriptionPlan: "ALL_IN_ONE", country: "NG" }).success, true);
+  assert.equal(createPlatformTenantSchema.safeParse({ companyName: "Acme", adminEmail: "admin@acme.test", subscriptionPlan: "HRIS", country: "NG", seatAllocation: 20 }).success, false);
   assert.equal(createPlatformTenantSchema.safeParse({ companyName: "Acme", adminEmail: "invalid", subscriptionPlan: "STARTER", country: "NG" }).success, false);
   assert.equal(createPlatformTenantSchema.safeParse({ companyName: "Acme", adminEmail: "admin@acme.test", subscriptionPlan: "HRIS", country: "ZZ" }).success, false);
 });
@@ -298,6 +299,7 @@ test("module toggles, plan overrides, and support filters reject invalid values"
   assert.equal(platformModuleToggleSchema.safeParse({ enabled: true }).success, true);
   assert.equal(platformModuleToggleSchema.safeParse({ enabled: "yes" }).success, false);
   assert.equal(overridePlatformTenantPlanSchema.safeParse({ plan: "accounting", effectiveDate: "2026-08-01T00:00:00+01:00" }).success, true);
+  assert.equal(overridePlatformTenantPlanSchema.safeParse({ plan: "hris", seatAllocation: 20 }).success, false);
   assert.equal(overridePlatformTenantPlanSchema.safeParse({ plan: "enterprise" }).success, false);
   assert.equal(platformTenantSupportQuerySchema.safeParse({ status: "OPEN", priority: "HIGH", sortOrder: "desc" }).success, true);
   assert.equal(platformTenantSupportQuerySchema.safeParse({ status: "UNKNOWN" }).success, false);

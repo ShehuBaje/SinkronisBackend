@@ -68,5 +68,4 @@ export interface PlatformSubscriptionSnapshot {
   monthlyRecurringRevenue: number;
   baseMonthlyRecurringRevenue: number;
   revenueComponents: Array<{ key: string; source: "BASE_PLAN" | "ADD_ON"; monthlyRevenue: number }>;
-  seatAllocation: number | null;
 }

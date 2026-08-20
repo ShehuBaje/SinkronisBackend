@@ -913,7 +913,7 @@ const options: swaggerJSDoc.Options = {
           type: "object",
           properties: {
             organization: { type: "object", properties: { organizationId: { type: "string" }, organizationName: { type: "string" }, companyEmail: { type: "string", format: "email", nullable: true }, industry: { type: "string", nullable: true }, currentPlan: { type: "object" }, subscriptionStatus: { type: "string" } } },
-            summary: { type: "object", properties: { totalUsers: { type: "integer" }, activeUsers: { type: "integer" }, seatAllocation: { type: "integer", nullable: true }, seatsUsed: { type: "integer" }, activeModules: { type: "array", items: { type: "object" } }, monthlyRecurringRevenue: { type: "number" }, currency: { type: "string", enum: ["NGN"] }, lastLoginDate: { type: "string", format: "date-time", nullable: true }, daysSinceLastLogin: { type: "integer", nullable: true } } }
+            summary: { type: "object", properties: { totalUsers: { type: "integer" }, activeUsers: { type: "integer" }, activeModules: { type: "array", items: { type: "object" } }, monthlyRecurringRevenue: { type: "number" }, currency: { type: "string", enum: ["NGN"] }, lastLoginDate: { type: "string", format: "date-time", nullable: true }, daysSinceLastLogin: { type: "integer", nullable: true } } }
           }
         },
         SuspendPlatformTenantBody: {
@@ -927,8 +927,7 @@ const options: swaggerJSDoc.Options = {
             adminEmail: { type: "string", format: "email", example: "admin@acme.example" },
             subscriptionPlan: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"], example: "ALL_IN_ONE" },
             country: { type: "string", minLength: 2, maxLength: 2, example: "NG", description: "ISO 3166-1 alpha-2 country code." },
-            industry: { type: "string", maxLength: 100, example: "Technology" },
-            seatAllocation: { type: "integer", minimum: 1, maximum: 1000000, example: 100 }
+            industry: { type: "string", maxLength: 100, example: "Technology" }
           }
         },
         PlatformTenantUser: {
@@ -1227,13 +1226,22 @@ const options: swaggerJSDoc.Options = {
             readOnly: { type: "boolean", example: true }
           }
         },
-        SubscriptionSeatsUpdateBody: {
+        CurrentSubscription: {
           type: "object",
-          required: ["totalSeats"],
+          required: ["planName", "planKey", "subscriptionStatus", "renewalDate", "monthlyCost", "currency", "includedModules", "packages", "billing", "cancellation"],
           properties: {
-            totalSeats: { type: "integer", minimum: 1, example: 15 }
+            planName: { type: "string" },
+            planKey: { type: "string", enum: ["hris", "payroll", "accounting", "all-in-one"] },
+            subscriptionStatus: { type: "string" },
+            renewalDate: { type: "string", format: "date-time" },
+            monthlyCost: { type: "number", description: "Configured base module/plan price plus active paid module add-ons. It is not seat based." },
+            currency: { type: "string", enum: ["NGN"] },
+            includedModules: { type: "array", items: { type: "object", properties: { key: { type: "string", enum: ["hris", "payroll", "accounting"] }, name: { type: "string" }, source: { type: "string", enum: ["plan", "paid_add_on"] } } } },
+            packages: { type: "array", items: { type: "string" } },
+            billing: { type: "object", properties: { baseMonthlyCost: { type: "number" }, activeAddOnMonthlyCost: { type: "number" }, totalMonthlyCost: { type: "number" } } },
+            cancellation: { type: "object", properties: { scheduled: { type: "boolean" }, effectiveDate: { type: "string", format: "date-time", nullable: true } } }
           }
-        }
+        },
       }
     },
     paths: {
@@ -1982,9 +1990,9 @@ const options: swaggerJSDoc.Options = {
       [`${platformAdminBase}/tenants/{tenantId}/subscription/override`]: {
         patch: {
           tags: ["Platform Tenants"], summary: "Override tenant subscription plan",
-          description: "Validates modular plans, updates entitlements and optional seat allocation, preserves billing history, notifies the tenant and records an audit event.",
+          description: "Validates modular plans, updates module entitlements, preserves billing history, notifies the tenant and records an audit event.",
           security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "tenantId", required: true, schema: { type: "string" } }],
-          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["plan"], additionalProperties: false, properties: { plan: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"] }, seatAllocation: { type: "integer", minimum: 1 }, effectiveDate: { type: "string", format: "date-time" }, reason: { type: "string", minLength: 3, maxLength: 1000 } } }, example: { plan: "ALL_IN_ONE", seatAllocation: 250, reason: "Enterprise account adjustment" } } } },
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["plan"], additionalProperties: false, properties: { plan: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"] }, effectiveDate: { type: "string", format: "date-time" }, reason: { type: "string", minLength: 3, maxLength: 1000 } } }, example: { plan: "ALL_IN_ONE", reason: "Subscription adjustment" } } } },
           responses: { "200": { description: "Plan override applied with previous/new cost and billing impact" }, "400": { description: "Invalid plan or request" }, "403": { description: "Billing management permission required" }, "404": { description: "Tenant not found" } }
         }
       },
@@ -2412,24 +2420,7 @@ const options: swaggerJSDoc.Options = {
           summary: "Get current subscription details",
           security: [{ bearerAuth: [] }],
           responses: {
-            "200": { description: "Current subscription", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanGenericResponse" } } } },
-            "401": { description: "Unauthorized" },
-            "403": { description: "Forbidden" }
-          }
-        }
-      },
-      [`${subscriptionsBase}/current/seats`]: {
-        patch: {
-          tags: ["Subscriptions"],
-          summary: "Update subscription seat allocation",
-          security: [{ bearerAuth: [] }],
-          requestBody: {
-            required: true,
-            content: { "application/json": { schema: { $ref: "#/components/schemas/SubscriptionSeatsUpdateBody" } } }
-          },
-          responses: {
-            "200": { description: "Seats updated", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanGenericResponse" } } } },
-            "400": { description: "Validation or seat allocation error" },
+            "200": { description: "Current module-based subscription; no seat allocation or seat billing fields are returned", content: { "application/json": { schema: { type: "object", properties: { success: { type: "boolean" }, message: { type: "string" }, data: { $ref: "#/components/schemas/CurrentSubscription" } } } } } },
             "401": { description: "Unauthorized" },
             "403": { description: "Forbidden" }
           }

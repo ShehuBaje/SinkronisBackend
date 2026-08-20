@@ -63,4 +63,6 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
   assert.deepEqual(undocumented, [], `Undocumented runtime operations:\n${undocumented.join("\n")}`);
   assert.deepEqual(stale, [], `Documented but unregistered operations:\n${stale.join("\n")}`);
   assert.deepEqual(forbidden, [], `Unimplemented Accounting/Payroll operations must not be published:\n${forbidden.join("\n")}`);
+  assert.equal(runtime.has("PATCH /api/v1/subscriptions/current/seats"), false);
+  assert.equal(documented.has("PATCH /api/v1/subscriptions/current/seats"), false);
 });

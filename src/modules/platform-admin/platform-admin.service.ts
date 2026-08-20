@@ -476,8 +476,7 @@ export const buildSubscriptionSnapshots = async (organizationIds: string[]) => {
       activeModules,
       monthlyRecurringRevenue,
       baseMonthlyRecurringRevenue: status === "ACTIVE" ? basePrice : 0,
-      revenueComponents: status === "ACTIVE" ? revenueComponents : [],
-      seatAllocation: typeof subscription.totalSeats === "number" ? subscription.totalSeats : null
+      revenueComponents: status === "ACTIVE" ? revenueComponents : []
     });
   }
   return snapshots;
@@ -741,7 +740,7 @@ export const getPlatformTenantSummary = async (tenantId: string, platformAdmin: 
       industry: organization.industry, currentPlan: { key: subscription.planKey, name: subscription.planName }, subscriptionStatus
     },
     summary: {
-      totalUsers, activeUsers, seatAllocation: subscription.seatAllocation, seatsUsed: activeUsers,
+      totalUsers, activeUsers,
       activeModules: moduleBadges(subscription),
       monthlyRecurringRevenue: subscriptionStatus === "ACTIVE" ? subscription.baseMonthlyRecurringRevenue : 0,
       currency: "NGN", lastLoginDate, daysSinceLastLogin
@@ -801,7 +800,7 @@ export const createPlatformTenant = async (body: unknown, platformAdmin: AuthUse
     const [firstName, ...lastParts] = payload.adminEmail.split("@")[0].split(/[._-]+/).filter(Boolean);
     const admin = await tx.user.create({ data: { organizationId: organization.id, roleId: role.id, email: payload.adminEmail, firstName: firstName || "Tenant", lastName: lastParts.join(" ") || "Admin", passwordHash: temporaryPasswordHash, isActive: true } });
     await tx.organizationGeneralSettings.create({ data: { organizationId: organization.id, currency: "NGN", timeZone: "Africa/Lagos", language: "en", dateFormat: "DD/MM/YYYY" } });
-    await tx.systemConfig.create({ data: { organizationId: organization.id, key: subscriptionKey, value: { planKey: plan.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: renewalDate.toISOString(), activatedAt: now.toISOString(), paymentVerifiedAt: now.toISOString(), automaticRenewal: true, cancelAtPeriodEnd: false, ...(payload.seatAllocation ? { totalSeats: payload.seatAllocation } : {}) } } });
+    await tx.systemConfig.create({ data: { organizationId: organization.id, key: subscriptionKey, value: { planKey: plan.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: renewalDate.toISOString(), activatedAt: now.toISOString(), paymentVerifiedAt: now.toISOString(), automaticRenewal: true, cancelAtPeriodEnd: false } } });
     await tx.systemConfig.createMany({ data: billingModuleKeys.map((moduleKey) => ({ organizationId: organization.id, key: `module.${moduleKey}.status`, value: plan.includedModules.includes(moduleKey) ? "ACTIVE" : "INACTIVE" })) });
     return { organization, admin };
   });
@@ -942,9 +941,9 @@ export const overridePlatformTenantPlan = async (tenantId: string, body: unknown
   const selected = getBillingPlanDefinition(payload.plan)!; if (selected.key === current.planKey) throw badRequest("Tenant is already on the selected plan", { errorCode: "DUPLICATE_OPERATION" });
   const selectedMonthlyPrice = (await getEffectivePlanCatalogue()).find((item) => item.key === selected.key)?.monthlyPrice ?? selected.monthlyCost;
   const effectiveDate = payload.effectiveDate ?? new Date(); const existing = await prisma.systemConfig.findUnique({ where: { organizationId_key: { organizationId: tenantId, key: subscriptionKey } } });
-  const value = objectValue(existing?.value); const previousMonthlyCost = current.monthlyRecurringRevenue;
+  const value = objectValue(existing?.value); delete value.totalSeats; const previousMonthlyCost = current.monthlyRecurringRevenue;
   await prisma.$transaction([
-    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: subscriptionKey } }, create: { organizationId: tenantId, key: subscriptionKey, value: { planKey: selected.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: new Date(effectiveDate.getTime() + 30 * 86_400_000).toISOString(), totalSeats: payload.seatAllocation } }, update: { value: { ...value, planKey: selected.key, status: "ACTIVE", ...(payload.seatAllocation ? { totalSeats: payload.seatAllocation } : {}), planOverriddenAt: effectiveDate.toISOString(), planOverriddenBy: platformAdmin.id } } }),
+    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: subscriptionKey } }, create: { organizationId: tenantId, key: subscriptionKey, value: { planKey: selected.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: new Date(effectiveDate.getTime() + 30 * 86_400_000).toISOString() } }, update: { value: { ...value, planKey: selected.key, status: "ACTIVE", planOverriddenAt: effectiveDate.toISOString(), planOverriddenBy: platformAdmin.id } } }),
     ...billingModuleKeys.map((key) => prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: `module.${key}.status` } }, create: { organizationId: tenantId, key: `module.${key}.status`, value: selected.includedModules.includes(key) ? "ACTIVE" : "INACTIVE" }, update: { value: selected.includedModules.includes(key) ? "ACTIVE" : "INACTIVE" } })),
     prisma.billingNotification.create({ data: { organizationId: tenantId, type: `PLAN_OVERRIDE_${effectiveDate.getTime()}`, renewalDate: current.renewalDate ?? effectiveDate, scheduledFor: effectiveDate, channels: ["EMAIL", "IN_APP"], status: "PENDING" } })
   ]);
