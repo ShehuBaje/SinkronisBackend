@@ -6,6 +6,7 @@ import { authorize } from "../../middleware/rbac.middleware";
 import { requirePlatformAdmin } from "../../middleware/platform-admin.middleware";
 import {
   activatePlatformTenantController,
+  activatePlatformTenantSubscriptionController,
   createPlatformTenantController,
   deactivatePlatformTenantUserController,
   exitPlatformTenantImpersonationController,
@@ -129,6 +130,7 @@ platformAdminRouter.post("/tenants/:tenantId/users/:userId/reset-password", auth
 platformAdminRouter.get("/tenants/:tenantId/modules", authorize("platform:tenants:view"), validate({ params: platformTenantParamsSchema }), asyncHandler(getPlatformTenantModulesController));
 platformAdminRouter.patch("/tenants/:tenantId/modules/:moduleId", authorize("platform:tenants:modules:manage"), validate({ params: platformTenantModuleParamsSchema, body: platformModuleToggleSchema }), asyncHandler(togglePlatformTenantModuleController));
 platformAdminRouter.get("/tenants/:tenantId/billing", authorize("platform:tenants:view"), validate({ params: platformTenantParamsSchema, query: platformTenantBillingQuerySchema }), asyncHandler(getPlatformTenantBillingController));
+platformAdminRouter.patch("/tenants/:tenantId/subscription/activate", authorize("platform:tenants:billing:manage"), validate({ params: platformTenantParamsSchema, body: overridePlatformTenantPlanSchema }), asyncHandler(activatePlatformTenantSubscriptionController));
 platformAdminRouter.patch("/tenants/:tenantId/subscription/override", authorize("platform:tenants:billing:manage"), validate({ params: platformTenantParamsSchema, body: overridePlatformTenantPlanSchema }), asyncHandler(overridePlatformTenantPlanController));
 platformAdminRouter.get("/tenants/:tenantId/activity", authorize("platform:tenants:view"), validate({ params: platformTenantParamsSchema, query: platformTenantActivityQuerySchema }), asyncHandler(getPlatformTenantActivityController));
 platformAdminRouter.get("/tenants/:tenantId/support-tickets", authorize("platform:tenants:view"), validate({ params: platformTenantParamsSchema, query: platformTenantSupportQuerySchema }), asyncHandler(getPlatformTenantSupportTicketsController));

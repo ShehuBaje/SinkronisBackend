@@ -78,7 +78,7 @@ test("only the consolidated dashboard plus Platform Tenant management routes are
     "/tenants/:tenantId/overview", "/tenants/:tenantId/users",
     "/tenants/:tenantId/users/:userId/deactivate", "/tenants/:tenantId/users/:userId/reset-password",
     "/tenants/:tenantId/modules", "/tenants/:tenantId/modules/:moduleId",
-    "/tenants/:tenantId/billing", "/tenants/:tenantId/subscription/override",
+    "/tenants/:tenantId/billing", "/tenants/:tenantId/subscription/activate", "/tenants/:tenantId/subscription/override",
     "/tenants/:tenantId/activity", "/tenants/:tenantId/support-tickets",
     "/tenants/:tenantId/impersonate", "/tenants/:tenantId/suspend", "/tenants/:tenantId/activate"
   ]);

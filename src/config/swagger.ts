@@ -1441,6 +1441,7 @@ const options: swaggerJSDoc.Options = {
         post: {
           tags: ["Auth"],
           summary: "Register organization and owner",
+          description: "Self-registration creates an explicit HRIS trial subscription with no active paid modules. A Platform Administrator must activate a selected plan through /platform-admin/tenants/{tenantId}/subscription/activate before module APIs become available.",
           requestBody: {
             required: true,
             content: {
@@ -1450,7 +1451,7 @@ const options: swaggerJSDoc.Options = {
             }
           },
           responses: {
-            "201": { description: "Created" },
+            "201": { description: "Organization and owner created with tokens and subscription status TRIAL; activeModules is empty" },
             "400": { description: "Validation error" }
           }
         }
@@ -1970,6 +1971,15 @@ const options: swaggerJSDoc.Options = {
           security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "tenantId", required: true, schema: { type: "string" } }],
           requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["plan"], additionalProperties: false, properties: { plan: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"] }, effectiveDate: { type: "string", format: "date-time" }, reason: { type: "string", minLength: 3, maxLength: 1000 } } }, example: { plan: "ALL_IN_ONE", reason: "Subscription adjustment" } } } },
           responses: { "200": { description: "Plan override applied with previous/new cost and billing impact" }, "400": { description: "Invalid plan or request" }, "403": { description: "Billing management permission required" }, "404": { description: "Tenant not found" } }
+        }
+      },
+      [`${platformAdminBase}/tenants/{tenantId}/subscription/activate`]: {
+        patch: {
+          tags: ["Platform Tenants"], summary: "Activate a tenant subscription",
+          description: "Transitions a registered TRIAL/PENDING tenant to ACTIVE, including when retaining the same plan. Module entitlements are applied atomically from the selected plan and the action is audited. Repeating activation for an already-active tenant on the same plan is idempotent.",
+          security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "tenantId", required: true, schema: { type: "string" } }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["plan"], additionalProperties: false, properties: { plan: { type: "string", enum: ["HRIS", "PAYROLL", "ACCOUNTING", "ALL_IN_ONE"] }, effectiveDate: { type: "string", format: "date-time" }, reason: { type: "string", minLength: 3, maxLength: 1000 } } }, example: { plan: "HRIS", reason: "Approved after tenant registration" } } } },
+          responses: { "200": { description: "Subscription activated with ACTIVE status, renewal date, pricing, and effective module entitlements" }, "400": { description: "Invalid plan or subscription is already active on that plan" }, "403": { description: "Billing management permission required" }, "404": { description: "Tenant not found" } }
         }
       },
       [`${platformAdminBase}/tenants/{tenantId}/activity`]: {

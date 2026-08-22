@@ -21,6 +21,7 @@ import type {
 } from "./auth.schemas";
 import type { z } from "zod";
 import { getGlobalPasswordPolicy } from "../platform-admin/platform-admin.service";
+import { billingModuleKeys, billingPlans } from "../billing/billing.catalog";
 
 const prismaAny = prisma as any;
 const loadOtpLibrary = () => import("otplib");
@@ -541,6 +542,28 @@ export const registerOrganization = async (input: z.infer<typeof registerOrganiz
       }
     });
 
+    const trialPlan = billingPlans[0];
+    await tx.systemConfig.create({
+      data: {
+        organizationId: organization.id,
+        key: "billing.subscription",
+        value: {
+          planKey: trialPlan.key,
+          status: "TRIAL",
+          billingCycle: "MONTHLY",
+          currency: organization.currency,
+          trialStartedAt: new Date().toISOString()
+        }
+      }
+    });
+    await tx.systemConfig.createMany({
+      data: billingModuleKeys.map((moduleKey) => ({
+        organizationId: organization.id,
+        key: `module.${moduleKey}.status`,
+        value: "INACTIVE"
+      }))
+    });
+
     return {
       organization,
       user: {
@@ -548,6 +571,11 @@ export const registerOrganization = async (input: z.infer<typeof registerOrganiz
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName
+      },
+      subscription: {
+        planKey: trialPlan.key,
+        status: "TRIAL",
+        activeModules: []
       },
       tokens: signTokens(user)
     };

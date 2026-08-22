@@ -428,7 +428,7 @@ export const buildSubscriptionSnapshots = async (organizationIds: string[]) => {
     const renewalDate = dateValue(subscription.renewalDate);
     if (status === "ACTIVE" && renewalDate && renewalDate < new Date() && subscription.cancelAtPeriodEnd === true) status = "CANCELLED";
     else if (status === "ACTIVE" && renewalDate && renewalDate < new Date()) status = "EXPIRED";
-    const activeModules = [...plan.includedModules] as BillingModuleKey[];
+    const activeModules = status === "ACTIVE" ? [...plan.includedModules] as BillingModuleKey[] : [];
     const configuredPlan = pricingByPlan.get(plan.key);
     const basePrice = resolvedPrices.get(`${organizationId}:${plan.key}:BASE_PLAN`) ?? configuredPlan?.monthlyPrice ?? plan.monthlyCost;
     const revenueComponents = [{ key: plan.key, source: "BASE_PLAN" as const, monthlyRevenue: basePrice }];
@@ -649,6 +649,11 @@ const buildTenantRows = (snapshot: PlatformTenantSnapshot) => snapshot.organizat
     createdAt: organization.createdAt,
     actions: [
       { key: "VIEW", method: "GET", href: `/platform-admin/tenants/${organization.id}`, enabled: true },
+      ...(status === "ACTIVE"
+        ? [{ key: "CHANGE_PLAN", method: "PATCH", href: `/platform-admin/tenants/${organization.id}/subscription/override`, enabled: true }]
+        : status === "SUSPENDED"
+          ? [{ key: "REACTIVATE_ORGANIZATION", method: "PATCH", href: `/platform-admin/tenants/${organization.id}/activate`, enabled: true }]
+          : [{ key: "ACTIVATE_SUBSCRIPTION", method: "PATCH", href: `/platform-admin/tenants/${organization.id}/subscription/activate`, enabled: true }]),
       { key: "SUSPEND", method: "PATCH", href: `/platform-admin/tenants/${organization.id}/suspend`, enabled: status !== "SUSPENDED" }
     ]
   };
@@ -902,21 +907,33 @@ export const getPlatformTenantBilling = async (tenantId: string, queryInput: unk
   };
 };
 
-export const overridePlatformTenantPlan = async (tenantId: string, body: unknown, platformAdmin: AuthUser) => {
+const applyPlatformTenantPlan = async (tenantId: string, body: unknown, platformAdmin: AuthUser, activationRequest: boolean) => {
   assertPlatformAdmin(platformAdmin); const payload = overridePlatformTenantPlanSchema.parse(body);
+  const tenant = await prisma.organization.findFirst({ where: { id: tenantId, ...managedTenantWhere }, select: { id: true, status: true } });
+  if (!tenant) throw notFound("Tenant not found");
+  if (tenant.status !== "ACTIVE") throw conflict("Tenant organization must be active before its subscription can be activated", { errorCode: "TENANT_INACTIVE" });
   const current = (await buildSubscriptionSnapshots([tenantId])).get(tenantId); if (!current) throw notFound("Tenant not found");
-  const selected = getBillingPlanDefinition(payload.plan)!; if (selected.key === current.planKey) throw badRequest("Tenant is already on the selected plan", { errorCode: "DUPLICATE_OPERATION" });
+  const selected = getBillingPlanDefinition(payload.plan)!;
   const selectedMonthlyPrice = (await getEffectivePlanCatalogue()).find((item) => item.key === selected.key)?.monthlyPrice ?? selected.monthlyCost;
+  if (selected.key === current.planKey && current.status === "ACTIVE") {
+    if (!activationRequest) throw badRequest("Tenant is already active on the selected plan", { errorCode: "DUPLICATE_OPERATION" });
+    return { changed: false, previousStatus: "ACTIVE", subscriptionStatus: "ACTIVE", currentPlan: { key: current.planKey, name: current.planName }, selectedPlan: { key: selected.key, name: selected.name }, previousMonthlyCost: current.monthlyRecurringRevenue, newMonthlyCost: selectedMonthlyPrice, effectiveDate: null, renewalDate: current.renewalDate, billingImpact: 0, activeModules: selected.includedModules.map((key) => ({ id: key, name: moduleLabels[key] })), currency: "NGN" };
+  }
   const effectiveDate = payload.effectiveDate ?? new Date(); const existing = await prisma.systemConfig.findUnique({ where: { organizationId_key: { organizationId: tenantId, key: subscriptionKey } } });
   const value = objectValue(existing?.value); delete value.totalSeats; const previousMonthlyCost = current.monthlyRecurringRevenue;
+  const renewalDate = new Date(effectiveDate); renewalDate.setMonth(renewalDate.getMonth() + 1);
   await prisma.$transaction([
-    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: subscriptionKey } }, create: { organizationId: tenantId, key: subscriptionKey, value: { planKey: selected.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: new Date(effectiveDate.getTime() + 30 * 86_400_000).toISOString() } }, update: { value: { ...value, planKey: selected.key, status: "ACTIVE", planOverriddenAt: effectiveDate.toISOString(), planOverriddenBy: platformAdmin.id } } }),
+    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: subscriptionKey } }, create: { organizationId: tenantId, key: subscriptionKey, value: { planKey: selected.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: renewalDate.toISOString(), activatedAt: effectiveDate.toISOString(), paymentVerifiedAt: effectiveDate.toISOString(), automaticRenewal: true, cancelAtPeriodEnd: false } }, update: { value: { ...value, planKey: selected.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: renewalDate.toISOString(), activatedAt: effectiveDate.toISOString(), paymentVerifiedAt: effectiveDate.toISOString(), automaticRenewal: true, cancelAtPeriodEnd: false, planOverriddenAt: effectiveDate.toISOString(), planOverriddenBy: platformAdmin.id } } }),
     ...billingModuleKeys.map((key) => prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: `module.${key}.status` } }, create: { organizationId: tenantId, key: `module.${key}.status`, value: selected.includedModules.includes(key) ? "ACTIVE" : "INACTIVE" }, update: { value: selected.includedModules.includes(key) ? "ACTIVE" : "INACTIVE" } })),
-    prisma.billingNotification.create({ data: { organizationId: tenantId, type: `PLAN_OVERRIDE_${effectiveDate.getTime()}`, renewalDate: current.renewalDate ?? effectiveDate, scheduledFor: effectiveDate, channels: ["EMAIL", "IN_APP"], status: "PENDING" } })
+    prisma.billingNotification.create({ data: { organizationId: tenantId, type: `PLAN_OVERRIDE_${effectiveDate.getTime()}`, renewalDate, scheduledFor: effectiveDate, channels: ["EMAIL", "IN_APP"], status: "PENDING" } })
   ]);
-  await createAuditLog({ organizationId: tenantId, actorUserId: platformAdmin.id, action: "PLATFORM_PLAN_OVERRIDDEN", resource: "SUBSCRIPTION", resourceId: tenantId, summary: `Overrode plan from ${current.planName} to ${selected.name}`, metadata: { fromPlan: current.planKey, toPlan: selected.key, reason: payload.reason ?? null, effectiveDate: effectiveDate.toISOString() } });
-  return { currentPlan: { key: current.planKey, name: current.planName }, selectedPlan: { key: selected.key, name: selected.name }, previousMonthlyCost, newMonthlyCost: selectedMonthlyPrice, effectiveDate, billingImpact: selectedMonthlyPrice - previousMonthlyCost, currency: "NGN" };
+  const activating = current.status !== "ACTIVE";
+  await createAuditLog({ organizationId: tenantId, actorUserId: platformAdmin.id, action: activating ? "PLATFORM_SUBSCRIPTION_ACTIVATED" : "PLATFORM_PLAN_OVERRIDDEN", resource: "SUBSCRIPTION", resourceId: tenantId, summary: activating ? `Activated ${selected.name} subscription` : `Overrode plan from ${current.planName} to ${selected.name}`, metadata: { previousStatus: current.status, newStatus: "ACTIVE", fromPlan: current.planKey, toPlan: selected.key, reason: payload.reason ?? null, effectiveDate: effectiveDate.toISOString() } });
+  return { changed: true, previousStatus: current.status, subscriptionStatus: "ACTIVE", currentPlan: { key: current.planKey, name: current.planName }, selectedPlan: { key: selected.key, name: selected.name }, previousMonthlyCost, newMonthlyCost: selectedMonthlyPrice, effectiveDate, renewalDate, billingImpact: selectedMonthlyPrice - previousMonthlyCost, activeModules: selected.includedModules.map((key) => ({ id: key, name: moduleLabels[key] })), currency: "NGN" };
 };
+
+export const overridePlatformTenantPlan = (tenantId: string, body: unknown, platformAdmin: AuthUser) => applyPlatformTenantPlan(tenantId, body, platformAdmin, false);
+export const activatePlatformTenantSubscription = (tenantId: string, body: unknown, platformAdmin: AuthUser) => applyPlatformTenantPlan(tenantId, body, platformAdmin, true);
 
 export const getPlatformTenantActivity = async (tenantId: string, queryInput: unknown, platformAdmin: AuthUser) => {
   assertPlatformAdmin(platformAdmin); await getPlatformTenantSummary(tenantId, platformAdmin);

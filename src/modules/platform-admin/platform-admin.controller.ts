@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { sendSuccess } from "../../core/api-response";
 import {
   activatePlatformTenant,
+  activatePlatformTenantSubscription,
   createPlatformTenant,
   deactivatePlatformTenantUser,
   exitPlatformTenantImpersonation,
@@ -162,6 +163,9 @@ export const getPlatformTenantBillingController = async (req: Request, res: Resp
 
 export const overridePlatformTenantPlanController = async (req: Request, res: Response) =>
   sendSuccess(res, "Tenant subscription overridden", await overridePlatformTenantPlan(String(req.params.tenantId), req.body, req.user!));
+
+export const activatePlatformTenantSubscriptionController = async (req: Request, res: Response) =>
+  sendSuccess(res, "Tenant subscription activated", await activatePlatformTenantSubscription(String(req.params.tenantId), req.body, req.user!));
 
 export const getPlatformTenantActivityController = async (req: Request, res: Response) => {
   const result = await getPlatformTenantActivity(String(req.params.tenantId), req.query, req.user!);
