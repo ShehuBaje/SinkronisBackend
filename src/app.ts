@@ -35,9 +35,11 @@ if (env.NODE_ENV === "production") {
 }
 
 app.use(helmet());
-const allowedCorsOrigins = env.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean);
+const configuredCorsOrigins = env.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean);
+// Keep local frontend development explicit rather than weakening production CORS with a wildcard.
+const allowedCorsOrigins = new Set([...configuredCorsOrigins, "http://localhost:3000"]);
 app.use(cors({
-  origin: allowedCorsOrigins.includes("*") ? true : (origin, callback) => callback(null, !origin || allowedCorsOrigins.includes(origin)),
+  origin: allowedCorsOrigins.has("*") ? true : (origin, callback) => callback(null, !origin || allowedCorsOrigins.has(origin)),
   credentials: true
 }));
 app.use(compression());
