@@ -1,14 +1,14 @@
 import { Prisma } from "@prisma/client";
 import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
-import { badRequest, conflict, notFound } from "../../core/http-error";
+import { badRequest, conflict, forbidden, notFound } from "../../core/http-error";
 import { createObjectKey, deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { createAuditLog } from "../admin/admin.audit";
 import { deliverUserNotification } from "../../core/notifications";
 import type { AuthUser } from "../../types";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
-import { shiftDateKey, tenantDateKey, zonedDateTimeToUtc } from "../hris/hris.service";
-import type { BankUpdateRequestInput, EmployeeActionItemStatus, EmployeeDashboard, EmployeeDocumentMetadata, UpdateEmployeePersonalDetailsInput } from "./employee.interface";
+import { applyForLeave, classifyAttendance, createAttendanceDispute, shiftDateKey, tenantDateKey, zonedDateTimeToUtc } from "../hris/hris.service";
+import type { BankUpdateRequestInput, EmployeeActionItemStatus, EmployeeAttendanceDisputeInput, EmployeeDashboard, EmployeeDocumentMetadata, EmployeeLeaveRequestInput, PayslipComponent, UpdateEmployeePersonalDetailsInput } from "./employee.interface";
 
 const DEFAULT_TIME_ZONE = "Africa/Lagos";
 const defaultSchedule = { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: false, sunday: false, workStartTime: "09:00", workEndTime: "17:00", breakDurationMinutes: 60 };
@@ -45,14 +45,206 @@ export const getEmployeeDashboard = async (organizationId: string, user: AuthUse
   const presentDays = new Set(monthAttendance.map((row) => tenantDateKey(row.clockInAt, timeZone))).size; const expectedWorkingDays = expectedWorkdaysThrough(month, currentDate, schedule, approvedLeaveDates); const baseAttendanceToday = dashboardAttendanceState(todayAttendance, now);
   const attendanceToday = !todayAttendance && approvedLeaveDates.has(currentDate) ? { ...baseAttendanceToday, status: "ON_LEAVE" as const, canClockIn: false } : !todayAttendance && !isDashboardWorkday(currentDate, schedule) ? { ...baseAttendanceToday, status: "NON_WORKING_DAY" as const, canClockIn: false } : baseAttendanceToday;
   const actionItems = notifications.map((notification) => { const metadata = metadataObject(notification.metadata); const status = notificationStatus(notification.type); const sourceRecordId = String(metadata.appraisalId ?? metadata.leaveRequestId ?? metadata.attendanceId ?? metadata.disputeId ?? "") || null; return { id: notification.id, type: notification.type, title: notification.title, description: notification.message, status, dueDate: null as Date | null, sourceModule: "HRIS" as const, sourceRecordId, actionRequired: status === "ACTION_REQUIRED", createdAt: notification.createdAt }; }).sort((a, b) => actionItemPriority(a, now) - actionItemPriority(b, now) || b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 5);
-  const entitlement = annualBalance ? Number(annualBalance.entitlement) : 0; const used = annualBalance ? Number(annualBalance.used) : 0;
-  return { currentDate, timeZone, employee: { id: employee.id, employeeId: employee.employeeNo, firstName: employee.firstName, fullName: `${employee.firstName} ${employee.lastName}`.trim(), role: employee.jobTitle ? { id: null, name: employee.jobTitle } : null, department: employee.department, branch: null }, attendanceToday: { ...attendanceToday, shift: { id: persistedSchedule?.id ?? null, name: "Default Work Schedule", startTime: schedule.workStartTime, endTime: schedule.workEndTime } }, summary: { annualLeaveRemaining: { leaveType: annualBalance?.leaveTypeCode ?? "ANNUAL", remainingDays: Math.max(0, entitlement - used), usedDays: used, totalDays: entitlement }, nextPayday: nextPayrollRun?.payDate ? { date: tenantDateKey(nextPayrollRun.payDate, timeZone), period: tenantDateKey(nextPayrollRun.periodStart, timeZone).slice(0, 7) } : null, attendanceThisMonth: { presentDays, expectedWorkingDays, attendanceRate: expectedWorkingDays ? Number(((presentDays / expectedWorkingDays) * 100).toFixed(2)) : 0 } }, actionItems, recentPayslip: latestPayslip ? { id: latestPayslip.id, period: tenantDateKey(latestPayslip.payrollrun.periodStart, timeZone).slice(0, 7), grossPay: Number(latestPayslip.grossPay), totalDeductions: Number(latestPayslip.deductions), netPay: Number(latestPayslip.netPay), currency: settings?.currency ?? organization?.currency ?? "NGN", status: latestPayslip.payrollrun.status === "PAID" ? "PAID" : "APPROVED", availableForDownload: false } : null };
+  const entitlement = annualBalance ? Number(annualBalance.entitlement) : 0; const used = annualBalance ? Number(annualBalance.used) : 0; const pending = annualBalance ? Number(annualBalance.pending) : 0;
+  return { currentDate, timeZone, employee: { id: employee.id, employeeId: employee.employeeNo, firstName: employee.firstName, fullName: `${employee.firstName} ${employee.lastName}`.trim(), role: employee.jobTitle ? { id: null, name: employee.jobTitle } : null, department: employee.department, branch: null }, attendanceToday: { ...attendanceToday, shift: { id: persistedSchedule?.id ?? null, name: "Default Work Schedule", startTime: schedule.workStartTime, endTime: schedule.workEndTime } }, summary: { annualLeaveRemaining: { leaveType: annualBalance?.leaveTypeCode ?? "ANNUAL", remainingDays: Math.max(0, entitlement - used - pending), usedDays: used, totalDays: entitlement }, nextPayday: nextPayrollRun?.payDate ? { date: tenantDateKey(nextPayrollRun.payDate, timeZone), period: tenantDateKey(nextPayrollRun.periodStart, timeZone).slice(0, 7) } : null, attendanceThisMonth: { presentDays, expectedWorkingDays, attendanceRate: expectedWorkingDays ? Number(((presentDays / expectedWorkingDays) * 100).toFixed(2)) : 0 } }, actionItems, recentPayslip: latestPayslip ? { id: latestPayslip.id, period: tenantDateKey(latestPayslip.payrollrun.periodStart, timeZone).slice(0, 7), grossPay: Number(latestPayslip.grossPay), totalDeductions: Number(latestPayslip.deductions), netPay: Number(latestPayslip.netPay), currency: latestPayslip.currency ?? settings?.currency ?? organization?.currency ?? "NGN", status: latestPayslip.payrollrun.status === "PAID" ? "PAID" : "APPROVED", availableForDownload: true } : null };
 };
 
 const authenticatedEmployee = async (organizationId: string, userId: string) => {
   const employee = await prisma.employee.findFirst({ where: { organizationId, user: { id: userId, organizationId } }, include: { department: true, manager: { select: { id: true, firstName: true, lastName: true } }, documents: { where: { employeeVisible: true }, orderBy: { createdAt: "desc" } }, bankUpdateRequests: { where: { status: "PENDING" }, orderBy: { submittedAt: "desc" }, take: 1 } } });
   if (!employee) throw notFound("Authenticated user is not linked to an employee");
   return employee;
+};
+
+const employeeAttendanceContext = async (organizationId: string, userId: string) => {
+  const [employee, settings, persistedSchedule] = await Promise.all([
+    prisma.employee.findFirst({ where: { organizationId, user: { id: userId, organizationId } }, select: { id: true, firstName: true, lastName: true, status: true, hireDate: true, managerId: true } }),
+    prisma.organizationGeneralSettings.findUnique({ where: { organizationId }, select: { timeZone: true } }),
+    prisma.workSchedule.findUnique({ where: { organizationId } })
+  ]);
+  if (!employee) throw notFound("Authenticated user is not linked to an employee");
+  return { employee, timeZone: safeTimeZone(settings?.timeZone), schedule: persistedSchedule ?? { ...defaultSchedule, gracePeriodMinutes: 0, overtimeAfterMinutes: 0 } };
+};
+
+const workedMinutes = (clockInAt: Date, clockOutAt: Date | null, now: Date) => Math.max(0, Math.floor(((clockOutAt ?? now).getTime() - clockInAt.getTime()) / 60_000));
+const monthEndExclusive = (month: string) => { const [year, value] = month.split("-").map(Number); return value === 12 ? `${year + 1}-01-01` : `${year}-${String(value + 1).padStart(2, "0")}-01`; };
+export const leaveCalendarDates = (startDate: string, endDate: string, month: string) => { const monthStart = `${month}-01`; const nextMonth = monthEndExclusive(month); const dates: string[] = []; let date = startDate < monthStart ? monthStart : startDate; const clippedEnd = endDate >= nextMonth ? shiftDateKey(nextMonth, -1) : endDate; while (date <= clippedEnd && date < nextMonth) { dates.push(date); date = shiftDateKey(date, 1); } return dates; };
+const employeeDayIsScheduled = (dateKey: string, schedule: Schedule) => isDashboardWorkday(dateKey, schedule);
+
+export const buildEmployeeAttendanceCalendar = (input: { month: string; today: string; schedule: Schedule; attendanceByDate: ReadonlyMap<string, string>; approvedLeaveDates: ReadonlySet<string> }) => {
+  const days = []; let date = `${input.month}-01`; const end = monthEndExclusive(input.month);
+  while (date < end) {
+    const scheduled = employeeDayIsScheduled(date, input.schedule); const onLeave = input.approvedLeaveDates.has(date); const future = date > input.today;
+    const dayType = future ? "FUTURE" : onLeave ? "ON_LEAVE" : scheduled ? "WORKING_DAY" : "WEEKEND";
+    const attendanceStatus = input.attendanceByDate.get(date) ?? (!future && onLeave ? "ON_LEAVE" : date < input.today && scheduled ? "ABSENT" : null);
+    days.push({ date, dayType, attendanceStatus }); date = shiftDateKey(date, 1);
+  }
+  return days;
+};
+
+export const getEmployeeAttendance = async (organizationId: string, user: AuthUser, requestedMonth?: string, now = new Date()) => {
+  const { employee, timeZone, schedule } = await employeeAttendanceContext(organizationId, user.id);
+  const todayKey = tenantDateKey(now, timeZone); const month = requestedMonth ?? todayKey.slice(0, 7); const firstKey = `${month}-01`; const nextKey = monthEndExclusive(month);
+  const start = zonedDateTimeToUtc(firstKey, "00:00", timeZone); const end = zonedDateTimeToUtc(nextKey, "00:00", timeZone);
+  const todayStart = zonedDateTimeToUtc(todayKey, "00:00", timeZone); const tomorrowStart = zonedDateTimeToUtc(shiftDateKey(todayKey, 1), "00:00", timeZone);
+  const [records, leaves, todayRecord, todayLeave] = await Promise.all([
+    prisma.attendance.findMany({ where: { organizationId, employeeId: employee.id, clockInAt: { gte: start, lt: end } }, include: { disputes: { orderBy: { createdAt: "desc" }, take: 1 } }, orderBy: { clockInAt: "desc" } }),
+    prisma.leaveRequest.findMany({ where: { organizationId, employeeId: employee.id, status: "APPROVED", startDate: { lt: end }, endDate: { gte: start } }, select: { startDate: true, endDate: true } }),
+    prisma.attendance.findFirst({ where: { organizationId, employeeId: employee.id, clockInAt: { gte: todayStart, lt: tomorrowStart } }, orderBy: { clockInAt: "desc" } }),
+    prisma.leaveRequest.findFirst({ where: { organizationId, employeeId: employee.id, status: "APPROVED", startDate: { lt: tomorrowStart }, endDate: { gte: todayStart } }, select: { id: true } })
+  ]);
+  const approvedLeaveDates = new Set<string>();
+  for (const leave of leaves) { let key = tenantDateKey(leave.startDate, timeZone); const leaveEnd = tenantDateKey(leave.endDate, timeZone); while (key <= leaveEnd && key < nextKey) { if (key >= firstKey) approvedLeaveDates.add(key); key = shiftDateKey(key, 1); } }
+  const classified = records.map((record) => ({ record, date: tenantDateKey(record.clockInAt, timeZone), classification: classifyAttendance(record, schedule, timeZone) }));
+  const attendanceByDate = new Map(classified.map(({ date, classification }) => [date, classification.primaryStatus === "ON_TIME" ? "PRESENT" : classification.primaryStatus]));
+  const days = buildEmployeeAttendanceCalendar({ month, today: todayKey, schedule, attendanceByDate, approvedLeaveDates });
+  const presentDays = new Set(classified.filter(({ classification }) => ["ON_TIME", "LATE"].includes(classification.primaryStatus)).map(({ date }) => date)).size;
+  const lateDays = new Set(classified.filter(({ classification }) => classification.primaryStatus === "LATE").map(({ date }) => date)).size;
+  const absentDays = days.filter((day) => day.attendanceStatus === "ABSENT").length;
+  const workingDays = days.filter((day) => day.dayType === "WORKING_DAY" && day.date <= todayKey).length;
+  const todayClassification = todayRecord ? classifyAttendance(todayRecord, schedule, timeZone).primaryStatus : todayLeave ? "ON_LEAVE" : null;
+  const todayClockState = todayRecord ? todayRecord.clockOutAt ? "CLOCKED_OUT" : "CLOCKED_IN" : "NOT_CLOCKED_IN";
+  return {
+    timeZone,
+    today: { date: todayKey, clockState: todayClockState, attendanceStatus: todayClassification === "ON_TIME" ? "PRESENT" : todayClassification, clockInAt: todayRecord?.clockInAt ?? null, clockOutAt: todayRecord?.clockOutAt ?? null, workedMinutes: todayRecord ? workedMinutes(todayRecord.clockInAt, todayRecord.clockOutAt, now) : 0, canClockIn: !todayRecord && employee.status === "ACTIVE" && employeeDayIsScheduled(todayKey, schedule) && !todayLeave, canClockOut: Boolean(todayRecord && !todayRecord.clockOutAt), shift: { id: "id" in schedule ? schedule.id : null, name: "Default Work Schedule", startTime: schedule.workStartTime, endTime: schedule.workEndTime } },
+    calendar: { month, holidayAvailability: "NOT_IMPLEMENTED" as const, days },
+    summary: { presentDays, lateDays, absentDays, workingDays },
+    attendanceLog: classified.map(({ record, date, classification }) => { const dispute = record.disputes[0]; return { id: record.id, date, clockInAt: record.clockInAt, clockOutAt: record.clockOutAt, active: !record.clockOutAt, workedMinutes: workedMinutes(record.clockInAt, record.clockOutAt, now), status: classification.primaryStatus === "ON_TIME" ? "PRESENT" : classification.primaryStatus, flags: classification.flags, canRaiseDispute: !dispute || dispute.status !== "PENDING", dispute: dispute ? { id: dispute.id, disputeNo: dispute.disputeNo, issueType: dispute.issueType, status: dispute.status, submittedAt: dispute.createdAt } : null }; })
+  };
+};
+
+export const clockInEmployee = async (organizationId: string, user: AuthUser, now = new Date()) => {
+  const { employee, timeZone, schedule } = await employeeAttendanceContext(organizationId, user.id); const date = tenantDateKey(now, timeZone);
+  if (employee.status !== "ACTIVE") throw conflict("Employee is not eligible to clock in");
+  if (!employeeDayIsScheduled(date, schedule)) throw conflict("Today is not a scheduled working day");
+  if (employee.hireDate && tenantDateKey(employee.hireDate, timeZone) > date) throw conflict("Employment has not started");
+  const start = zonedDateTimeToUtc(date, "00:00", timeZone); const end = zonedDateTimeToUtc(shiftDateKey(date, 1), "00:00", timeZone);
+  if (await prisma.attendance.findFirst({ where: { organizationId, employeeId: employee.id, clockInAt: { gte: start, lt: end } }, select: { id: true } })) throw conflict("Employee has already clocked in today");
+  if (await prisma.leaveRequest.findFirst({ where: { organizationId, employeeId: employee.id, status: "APPROVED", startDate: { lt: end }, endDate: { gte: start } }, select: { id: true } })) throw conflict("Cannot clock in during approved leave");
+  let attendance;
+  try { attendance = await prisma.attendance.create({ data: { organizationId, employeeId: employee.id, attendanceDate: date, clockInAt: now, source: "WEB" } }); }
+  catch (error) { if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw conflict("Employee has already clocked in today"); throw error; }
+  const classification = classifyAttendance(attendance, schedule, timeZone);
+  await createAuditLog({ organizationId, actorUserId: user.id, action: "EMPLOYEE_ATTENDANCE_CLOCKED_IN", resource: "ATTENDANCE", resourceId: attendance.id, summary: "Employee clocked in", metadata: { employeeId: employee.id, attendanceDate: date, source: "WEB" } });
+  return { id: attendance.id, date, clockState: "CLOCKED_IN" as const, attendanceStatus: classification.primaryStatus === "ON_TIME" ? "PRESENT" : classification.primaryStatus, clockInAt: attendance.clockInAt, clockOutAt: null, workedMinutes: 0, canClockIn: false, canClockOut: true };
+};
+
+export const clockOutEmployee = async (organizationId: string, user: AuthUser, now = new Date()) => {
+  const { employee, timeZone, schedule } = await employeeAttendanceContext(organizationId, user.id);
+  const attendance = await prisma.attendance.findFirst({ where: { organizationId, employeeId: employee.id, clockOutAt: null }, orderBy: { clockInAt: "desc" } });
+  if (!attendance) throw conflict("Employee has no active attendance record"); if (now <= attendance.clockInAt) throw conflict("Clock-out must be later than clock-in");
+  const result = await prisma.attendance.updateMany({ where: { id: attendance.id, organizationId, employeeId: employee.id, clockOutAt: null }, data: { clockOutAt: now } });
+  if (result.count !== 1) throw conflict("Attendance record was already clocked out");
+  const updated = { ...attendance, clockOutAt: now }; const classification = classifyAttendance(updated, schedule, timeZone); const date = tenantDateKey(attendance.clockInAt, timeZone);
+  await createAuditLog({ organizationId, actorUserId: user.id, action: "EMPLOYEE_ATTENDANCE_CLOCKED_OUT", resource: "ATTENDANCE", resourceId: attendance.id, summary: "Employee clocked out", metadata: { employeeId: employee.id, attendanceDate: date, source: "WEB" } });
+  return { id: attendance.id, date, clockState: "CLOCKED_OUT" as const, attendanceStatus: classification.primaryStatus === "ON_TIME" ? "PRESENT" : classification.primaryStatus, clockInAt: attendance.clockInAt, clockOutAt: now, workedMinutes: workedMinutes(attendance.clockInAt, now, now), canClockIn: false, canClockOut: false, flags: classification.flags };
+};
+
+export const raiseEmployeeAttendanceDispute = async (organizationId: string, user: AuthUser, attendanceId: string, input: EmployeeAttendanceDisputeInput) => {
+  const { employee } = await employeeAttendanceContext(organizationId, user.id);
+  const attendance = await prisma.attendance.findFirst({ where: { id: attendanceId, organizationId, employeeId: employee.id }, select: { id: true } });
+  if (!attendance) throw notFound("Attendance record not found");
+  const dispute = await createAttendanceDispute(organizationId, attendanceId, input, user);
+  await createAuditLog({ organizationId, actorUserId: user.id, action: "EMPLOYEE_ATTENDANCE_DISPUTE_SUBMITTED", resource: "ATTENDANCE_DISPUTE", resourceId: dispute.id, summary: "Employee submitted an attendance dispute", metadata: { employeeId: employee.id, attendanceId, issueType: input.issueType } });
+  const [approvers, managerUsers] = await Promise.all([
+    prisma.user.findMany({ where: { organizationId, isActive: true, role: { permissions: { some: { permission: { key: "hris:attendance:update" } } } } }, select: { id: true } }),
+    employee.managerId ? prisma.user.findMany({ where: { organizationId, employeeId: employee.managerId, isActive: true }, select: { id: true } }) : Promise.resolve([])
+  ]);
+  await Promise.all([...new Set([...approvers, ...managerUsers].map((recipient) => recipient.id))].map((recipientUserId) => deliverUserNotification({ organizationId, recipientUserId, moduleKey: "hris", categoryKey: "approvals-requests", eventKey: `attendance-dispute:${dispute.id}:submitted`, type: "ATTENDANCE_DISPUTE_SUBMITTED", title: "Attendance dispute awaiting review", message: `${employee.firstName} ${employee.lastName} submitted an attendance dispute.`, metadata: { disputeId: dispute.id, attendanceId, employeeId: employee.id } }).catch(() => null)));
+  return { id: dispute.id, disputeNo: dispute.disputeNo, attendanceId: dispute.attendanceId, issueType: dispute.issueType, description: dispute.description, status: dispute.status, submittedAt: dispute.createdAt };
+};
+
+export const getEmployeeLeave = async (organizationId: string, user: AuthUser, query: { month?: string; page: number; limit: number; status: "ALL" | "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED"; leaveType?: string }, now = new Date()) => {
+  const { employee, timeZone } = await employeeAttendanceContext(organizationId, user.id); const currentDate = tenantDateKey(now, timeZone); const month = query.month ?? currentDate.slice(0, 7);
+  const monthStartKey = `${month}-01`; const monthEndKey = monthEndExclusive(month); const monthStart = zonedDateTimeToUtc(monthStartKey, "00:00", timeZone); const monthEnd = zonedDateTimeToUtc(monthEndKey, "00:00", timeZone); const entitlementYear = Number(currentDate.slice(0, 4));
+  const historyWhere: Prisma.LeaveRequestWhereInput = { organizationId, employeeId: employee.id, ...(query.status !== "ALL" ? { status: query.status as any } : {}), ...(query.leaveType ? { type: query.leaveType.toUpperCase() } : {}) };
+  const [balances, leaveTypes, pendingRequestsCount, history, historyTotal, calendarRequests] = await Promise.all([
+    prisma.leaveBalance.findMany({ where: { organizationId, employeeId: employee.id, year: entitlementYear }, orderBy: { leaveTypeCode: "asc" } }),
+    prisma.leaveType.findMany({ where: { organizationId, active: true }, select: { id: true, code: true, name: true } }),
+    prisma.leaveRequest.count({ where: { organizationId, employeeId: employee.id, status: "PENDING" } }),
+    prisma.leaveRequest.findMany({ where: historyWhere, include: { reliever: { select: { id: true, employeeNo: true, firstName: true, lastName: true } } }, orderBy: [{ submittedAt: "desc" }, { startDate: "desc" }], skip: (query.page - 1) * query.limit, take: query.limit }),
+    prisma.leaveRequest.count({ where: historyWhere }),
+    prisma.leaveRequest.findMany({ where: { organizationId, employeeId: employee.id, status: { in: ["PENDING", "APPROVED"] }, startDate: { lt: monthEnd }, endDate: { gte: monthStart } }, orderBy: { startDate: "asc" }, select: { id: true, type: true, status: true, startDate: true, endDate: true } })
+  ]);
+  const leaveTypeByCode = new Map(leaveTypes.map((type) => [type.code, type]));
+  const balancesResponse = balances.map((balance) => { const type = leaveTypeByCode.get(balance.leaveTypeCode); const totalDays = Number(balance.entitlement); const usedDays = Number(balance.used); const pendingDays = Number(balance.pending); return { leaveTypeId: type?.id ?? null, code: balance.leaveTypeCode, name: type?.name ?? balance.leaveTypeCode, totalDays, usedDays, remainingDays: Math.max(0, totalDays - usedDays - pendingDays), pendingDays, entitlementYear }; });
+  const historyResponse = history.map((request) => { const type = leaveTypeByCode.get(request.type); return { id: request.id, leaveType: { id: type?.id ?? null, code: request.type, name: type?.name ?? request.type }, startDate: tenantDateKey(request.startDate, timeZone), endDate: tenantDateKey(request.endDate, timeZone), days: Number(request.requestedDays ?? 0), status: request.status, managerComment: request.managerComment ?? request.rejectionReason, reliever: request.reliever ? { id: request.reliever.id, employeeId: request.reliever.employeeNo, name: `${request.reliever.firstName} ${request.reliever.lastName}`.trim() } : null, submittedAt: request.submittedAt } });
+  const calendarEntries = calendarRequests.map((request) => { const startDate = tenantDateKey(request.startDate, timeZone); const endDate = tenantDateKey(request.endDate, timeZone); return { leaveRequestId: request.id, leaveType: request.type, status: request.status, startDate, endDate, dates: leaveCalendarDates(startDate, endDate, month) }; });
+  return { entitlementPeriod: { type: "CALENDAR_YEAR" as const, year: entitlementYear }, dayCalculation: { source: "TENANT_WORK_SCHEDULE" as const, excludesNonWorkingWeekdays: true, holidayAvailability: "NOT_IMPLEMENTED" as const }, pendingRequestsCount, balances: balancesResponse, history: historyResponse, historyPagination: { currentPage: query.page, pageSize: query.limit, totalRecords: historyTotal, totalPages: Math.ceil(historyTotal / query.limit) }, calendar: { month, entries: calendarEntries } };
+};
+
+export const applyEmployeeLeave = async (organizationId: string, user: AuthUser, input: EmployeeLeaveRequestInput) => {
+  const employee = await prisma.employee.findFirst({ where: { organizationId, user: { id: user.id, organizationId } }, select: { id: true } });
+  if (!employee) throw notFound("Authenticated user is not linked to an employee");
+  const leaveType = await prisma.leaveType.findFirst({ where: { id: input.leaveTypeId, organizationId, active: true }, select: { id: true, code: true, name: true } });
+  if (!leaveType) throw notFound("Eligible leave type not found");
+  const created = await applyForLeave(organizationId, { leaveType: leaveType.code, fromDate: input.startDate, toDate: input.endDate, reason: input.reason, relieverEmployeeId: input.relieverEmployeeId }, user);
+  return { id: created.id, leaveType: { id: leaveType.id, code: leaveType.code, name: leaveType.name }, startDate: input.startDate, endDate: input.endDate, days: Number(created.requestedDays ?? 0), status: created.status, relieverEmployeeId: created.relieverEmployeeId, submittedAt: created.submittedAt };
+};
+
+export const listEmployeeRelievers = async (organizationId: string, user: AuthUser, query: { search?: string; limit: number }) => {
+  const employee = await prisma.employee.findFirst({ where: { organizationId, user: { id: user.id, organizationId } }, select: { id: true } }); if (!employee) throw notFound("Authenticated user is not linked to an employee");
+  const search = query.search; const rows = await prisma.employee.findMany({ where: { organizationId, id: { not: employee.id }, status: "ACTIVE", ...(search ? { OR: [{ firstName: { contains: search } }, { lastName: { contains: search } }, { employeeNo: { contains: search } }] } : {}) }, orderBy: [{ firstName: "asc" }, { lastName: "asc" }], take: query.limit, select: { id: true, employeeNo: true, firstName: true, lastName: true, jobTitle: true, department: { select: { id: true, name: true } } } });
+  return rows.map((row) => ({ id: row.id, employeeId: row.employeeNo, name: `${row.firstName} ${row.lastName}`.trim(), role: row.jobTitle, department: row.department }));
+};
+
+const employeePayslipContext = async (organizationId: string, user: AuthUser) => {
+  if (!await isOrganizationModuleEnabled(organizationId, "payroll")) throw forbidden("PAYROLL module access is disabled");
+  const [employee, settings, organization] = await Promise.all([
+    prisma.employee.findFirst({ where: { organizationId, user: { id: user.id, organizationId } }, select: { id: true, employeeNo: true, firstName: true, lastName: true } }),
+    prisma.organizationGeneralSettings.findUnique({ where: { organizationId }, select: { timeZone: true, currency: true } }),
+    prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true, currency: true } })
+  ]);
+  if (!employee) throw notFound("Authenticated user is not linked to an employee");
+  return { employee, timeZone: safeTimeZone(settings?.timeZone), organizationName: organization?.name ?? env.APP_NAME, fallbackCurrency: settings?.currency ?? organization?.currency ?? "NGN" };
+};
+
+const finalizedPayrollStatuses = ["APPROVED", "PAID"] as const;
+export const isEmployeeVisiblePayrollStatus = (status: string) => (finalizedPayrollStatuses as readonly string[]).includes(status);
+const payslipPeriod = (date: Date, timeZone: string) => tenantDateKey(date, timeZone).slice(0, 7);
+export const payslipComponents = (value: Prisma.JsonValue | null): PayslipComponent[] => Array.isArray(value) ? value.flatMap((item) => { if (!item || typeof item !== "object" || Array.isArray(item)) return []; const record = item as Record<string, unknown>; const amount = Number(record.amount); if (typeof record.code !== "string" || typeof record.name !== "string" || !Number.isFinite(amount) || amount < 0) return []; return [{ code: record.code, name: record.name, amount }]; }) : [];
+const persistedPayslipBreakdown = (payslip: { earningsSnapshot: Prisma.JsonValue | null; deductionsSnapshot: Prisma.JsonValue | null; payeTax: Prisma.Decimal; pension: Prisma.Decimal }) => {
+  const earnings = payslipComponents(payslip.earningsSnapshot); const capturedDeductions = payslipComponents(payslip.deductionsSnapshot);
+  const deductions = capturedDeductions.length ? capturedDeductions : [{ code: "PAYE", name: "PAYE Tax", amount: Number(payslip.payeTax) }, { code: "PENSION", name: "Pension", amount: Number(payslip.pension) }].filter((item) => item.amount > 0);
+  return { earnings, deductions, availability: earnings.length && capturedDeductions.length ? "FULL" as const : deductions.length ? "PARTIAL" as const : "TOTALS_ONLY" as const };
+};
+
+export const getEmployeePayslips = async (organizationId: string, user: AuthUser, requestedYear?: number, now = new Date()) => {
+  const { employee, timeZone, fallbackCurrency } = await employeePayslipContext(organizationId, user);
+  const baseWhere: Prisma.PayslipWhereInput = { organizationId, employeeId: employee.id, payrollrun: { status: { in: [...finalizedPayrollStatuses] } } };
+  const [periodRows, trendRows] = await Promise.all([
+    prisma.payslip.findMany({ where: baseWhere, select: { payrollrun: { select: { periodStart: true } } }, orderBy: { payrollrun: { periodStart: "desc" } } }),
+    prisma.payslip.findMany({ where: baseWhere, select: { netPay: true, currency: true, payrollrun: { select: { periodStart: true } } }, orderBy: [{ payrollrun: { periodStart: "desc" } }, { createdAt: "desc" }], take: 6 })
+  ]);
+  const availableYears = [...new Set(periodRows.map((row) => Number(payslipPeriod(row.payrollrun.periodStart, timeZone).slice(0, 4))))].sort((a, b) => b - a);
+  const currentYear = Number(tenantDateKey(now, timeZone).slice(0, 4)); const selectedYear = requestedYear ?? (availableYears.includes(currentYear) ? currentYear : availableYears[0] ?? null);
+  let payslips: Array<{ id: string; period: string; year: number; month: number; grossPay: number; totalDeductions: number; netPay: number; currency: string; status: "APPROVED" | "PAID"; canDownload: boolean }> = [];
+  if (selectedYear !== null) {
+    const start = zonedDateTimeToUtc(`${selectedYear}-01-01`, "00:00", timeZone); const end = zonedDateTimeToUtc(`${selectedYear + 1}-01-01`, "00:00", timeZone);
+    const rows = await prisma.payslip.findMany({ where: { ...baseWhere, payrollrun: { status: { in: [...finalizedPayrollStatuses] }, periodStart: { gte: start, lt: end } } }, include: { payrollrun: true }, orderBy: [{ payrollrun: { periodStart: "desc" } }, { createdAt: "desc" }] });
+    payslips = rows.map((row) => { const period = payslipPeriod(row.payrollrun.periodStart, timeZone); return { id: row.id, period, year: Number(period.slice(0, 4)), month: Number(period.slice(5, 7)), grossPay: Number(row.grossPay), totalDeductions: Number(row.deductions), netPay: Number(row.netPay), currency: row.currency ?? fallbackCurrency, status: row.payrollrun.status as "APPROVED" | "PAID", canDownload: true }; });
+  }
+  const netPayTrend = trendRows.reverse().map((row) => { const period = payslipPeriod(row.payrollrun.periodStart, timeZone); return { period, year: Number(period.slice(0, 4)), month: Number(period.slice(5, 7)), netPay: Number(row.netPay), currency: row.currency ?? fallbackCurrency }; });
+  return { selectedYear, availableYears, netPayTrend, payslips };
+};
+
+const ownedFinalizedPayslip = async (organizationId: string, employeeId: string, payslipId: string) => {
+  const payslip = await prisma.payslip.findFirst({ where: { id: payslipId, organizationId, employeeId, payrollrun: { status: { in: [...finalizedPayrollStatuses] } } }, include: { payrollrun: true } });
+  if (!payslip) throw notFound("Payslip not found"); return payslip;
+};
+
+export const getEmployeePayslip = async (organizationId: string, user: AuthUser, payslipId: string) => {
+  const { employee, timeZone, fallbackCurrency } = await employeePayslipContext(organizationId, user); const payslip = await ownedFinalizedPayslip(organizationId, employee.id, payslipId); const period = payslipPeriod(payslip.payrollrun.periodStart, timeZone); const breakdown = persistedPayslipBreakdown(payslip);
+  return { id: payslip.id, period, year: Number(period.slice(0, 4)), month: Number(period.slice(5, 7)), grossPay: Number(payslip.grossPay), totalDeductions: Number(payslip.deductions), netPay: Number(payslip.netPay), currency: payslip.currency ?? fallbackCurrency, status: payslip.payrollrun.status as "APPROVED" | "PAID", canDownload: true, breakdownAvailability: breakdown.availability, earnings: breakdown.earnings, deductions: breakdown.deductions };
+};
+
+const pdfText = (value: unknown) => String(value ?? "").replace(/[^\x20-\x7E]/g, " ").replace(/[\\()]/g, "\\$&");
+export const createPayslipPdf = (lines: string[]) => { const stream = `BT /F1 11 Tf 45 790 Td ${lines.map((line, index) => `${index ? "0 -24 Td " : ""}(${pdfText(line)}) Tj`).join(" ")} ET`; const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>", `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]; let pdf = "%PDF-1.4\n", offset = Buffer.byteLength(pdf); const offsets = [0]; objects.forEach((object, index) => { offsets.push(offset); const part = `${index + 1} 0 obj\n${object}\nendobj\n`; pdf += part; offset += Buffer.byteLength(part); }); const xref = offset; pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n `).join("\n")}\ntrailer << /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`; return Buffer.from(pdf); };
+
+export const downloadEmployeePayslip = async (organizationId: string, user: AuthUser, payslipId: string) => {
+  const context = await employeePayslipContext(organizationId, user); const payslip = await ownedFinalizedPayslip(organizationId, context.employee.id, payslipId); const period = payslipPeriod(payslip.payrollrun.periodStart, context.timeZone); let buffer: Buffer;
+  if (payslip.pdfFileReference) buffer = await readObject(payslip.pdfFileReference); else { const breakdown = persistedPayslipBreakdown(payslip); const currency = payslip.currency ?? context.fallbackCurrency; const lines = [env.APP_NAME, "EMPLOYEE PAYSLIP", `Employer: ${context.organizationName}`, `Employee: ${context.employee.firstName} ${context.employee.lastName}`, `Employee ID: ${context.employee.employeeNo}`, `Period: ${period}`, `Status: ${payslip.payrollrun.status}`, "EARNINGS", ...breakdown.earnings.map((item) => `${item.name}: ${currency} ${item.amount.toFixed(2)}`), `Gross pay: ${currency} ${Number(payslip.grossPay).toFixed(2)}`, "DEDUCTIONS", ...breakdown.deductions.map((item) => `${item.name}: ${currency} ${item.amount.toFixed(2)}`), `Total deductions: ${currency} ${Number(payslip.deductions).toFixed(2)}`, `Net pay: ${currency} ${Number(payslip.netPay).toFixed(2)}`]; buffer = createPayslipPdf(lines); }
+  await createAuditLog({ organizationId, actorUserId: user.id, action: "EMPLOYEE_PAYSLIP_DOWNLOADED", resource: "PAYSLIP", resourceId: payslip.id, summary: "Employee downloaded own payslip", metadata: { employeeId: context.employee.id, period } });
+  return { buffer, filename: `payslip-${period}-${payslip.id}.pdf` };
 };
 
 export const maskBankAccountNumber = (accountNumber: string | null) => accountNumber ? { last4: accountNumber.slice(-4), masked: `${"*".repeat(Math.max(0, accountNumber.length - 4))}${accountNumber.slice(-4)}` } : { last4: null, masked: null };

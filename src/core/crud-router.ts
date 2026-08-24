@@ -29,6 +29,7 @@ type CrudOptions = {
   orderBy?: Record<string, "asc" | "desc">;
   beforeCreate?: (data: Record<string, unknown>, req: Request) => Record<string, unknown> | Promise<Record<string, unknown>>;
   beforeUpdate?: (data: Record<string, unknown>, req: Request) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  beforeDelete?: (context: { req: Request; existing: unknown }) => Promise<void> | void;
   afterCreate?: (context: { req: Request; created: unknown }) => Promise<void> | void;
   afterUpdate?: (context: { req: Request; updated: unknown; previous: unknown }) => Promise<void> | void;
   afterDelete?: (context: { req: Request; id: string; deleted: unknown }) => Promise<void> | void;
@@ -144,6 +145,7 @@ export const createCrudRouter = (options: CrudOptions) => {
       const existing = await delegate.findFirst({ where: tenantWhere(req, { id: req.params.id }) });
       if (!existing) throw notFound();
 
+      await options.beforeDelete?.({ req, existing });
       await delegate.delete({ where: { id: req.params.id } });
       await options.afterDelete?.({ req, id: String(req.params.id), deleted: existing });
       res.status(204).send();

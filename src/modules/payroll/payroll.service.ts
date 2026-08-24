@@ -1,4 +1,4 @@
-import { badRequest, notFound } from "../../core/http-error";
+import { badRequest, conflict, notFound } from "../../core/http-error";
 import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
 import { getQueueByName, isQueueBackendAvailable, PAYROLL_QUEUE_NAME } from "../../queues";
@@ -33,20 +33,21 @@ export const generatePayslips = async (organizationId: string, id: string) => {
     });
   }
 
-  const employees = await prisma.employee.findMany({
-    where: { organizationId, status: "ACTIVE" },
-    include: {
-      salaryStructures: {
-        where: {
-          effectiveFrom: { lte: run.periodEnd },
-          OR: [{ effectiveTo: null }, { effectiveTo: { gte: run.periodStart } }]
+  const [employees, settings, organization] = await Promise.all([
+    prisma.employee.findMany({
+      where: { organizationId, status: "ACTIVE" },
+      include: {
+        salaryStructures: {
+          where: { effectiveFrom: { lte: run.periodEnd }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: run.periodStart } }] },
+          orderBy: { effectiveFrom: "desc" }, take: 1
         },
-        orderBy: { effectiveFrom: "desc" },
-        take: 1
-      },
-      loans: true
-    }
-  });
+        loans: true
+      }
+    }),
+    prisma.organizationGeneralSettings.findUnique({ where: { organizationId }, select: { currency: true } }),
+    prisma.organization.findUnique({ where: { id: organizationId }, select: { currency: true } })
+  ]);
+  const currency = settings?.currency ?? organization?.currency ?? "NGN";
 
   const payslips = await prisma.$transaction(
     employees
@@ -62,6 +63,17 @@ export const generatePayslips = async (organizationId: string, id: string) => {
           0
         );
         const deductions = payeTax + pension + loanDeduction;
+        const earningsSnapshot = [
+          { code: "BASIC", name: "Basic", amount: Number(salary.basic) },
+          { code: "HOUSING", name: "Housing", amount: Number(salary.housing) },
+          { code: "TRANSPORT", name: "Transport", amount: Number(salary.transport) },
+          { code: "OTHER_ALLOWANCE", name: "Other allowance", amount: Number(salary.otherAllowance) }
+        ].filter((item) => item.amount !== 0);
+        const deductionsSnapshot = [
+          { code: "PAYE", name: "PAYE Tax", amount: payeTax },
+          { code: "PENSION", name: "Pension", amount: pension },
+          { code: "LOAN", name: "Loan deduction", amount: loanDeduction }
+        ].filter((item) => item.amount !== 0);
 
         return prisma.payslip.upsert({
           where: {
@@ -75,7 +87,10 @@ export const generatePayslips = async (organizationId: string, id: string) => {
             payeTax,
             pension,
             deductions,
-            netPay: grossPay - deductions
+            netPay: grossPay - deductions,
+            currency,
+            earningsSnapshot,
+            deductionsSnapshot
           },
           create: {
             organizationId,
@@ -85,7 +100,10 @@ export const generatePayslips = async (organizationId: string, id: string) => {
             payeTax,
             pension,
             deductions,
-            netPay: grossPay - deductions
+            netPay: grossPay - deductions,
+            currency,
+            earningsSnapshot,
+            deductionsSnapshot
           }
         });
       })
@@ -183,12 +201,25 @@ export const statutoryCrudOptions = {
   searchableFields: ["type", "reference"]
 };
 
+export const isMutablePayrollRunStatus = (status: string) => status === "DRAFT" || status === "PROCESSING";
+const assertPayslipMutable = async (organizationId: string, payslipId: string) => {
+  const payslip = await prisma.payslip.findFirst({ where: { id: payslipId, organizationId }, select: { payrollrun: { select: { status: true } } } });
+  if (!payslip) throw notFound("Payslip not found");
+  if (!isMutablePayrollRunStatus(payslip.payrollrun.status)) throw conflict("Finalized payslips are immutable");
+};
+
 export const payslipsCrudOptions = {
   model: "payslip" as const,
   createSchema: payslipCreateSchema,
   updateSchema: payslipUpdateSchema,
   permission: "payroll:payslips:update" as const,
-  include: { employee: true, payrollRun: true }
+  include: { employee: true, payrollrun: true },
+  beforeCreate: async (data: Record<string, unknown>, req: any) => {
+    const run = await prisma.payrollRun.findFirst({ where: { id: String(data.payrollRunId), organizationId: req.organizationId }, select: { status: true } });
+    if (!run) throw notFound("Payroll run not found"); if (!isMutablePayrollRunStatus(run.status)) throw conflict("Finalized payroll runs cannot receive new payslips"); return data;
+  },
+  beforeUpdate: async (data: Record<string, unknown>, req: any) => { await assertPayslipMutable(req.organizationId, String(req.params.id)); return data; },
+  beforeDelete: async ({ req }: any) => { await assertPayslipMutable(req.organizationId, String(req.params.id)); }
 };
 
 export const loansCrudOptions = {

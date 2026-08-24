@@ -24,7 +24,7 @@ export const rejectBankDetailsUpdateRequestController = async (req: Request, res
 export const approveLeaveRequestController = async (req: Request, res: Response) =>
   sendSuccess(res, "Leave request approved successfully", await reviewLeaveRequest({
     leaveRequestId: String(req.params.id), organizationId: req.organizationId!,
-    actorUserId: req.user!.id, decision: "APPROVED"
+    actorUserId: req.user!.id, decision: "APPROVED", reason: req.body.comment
   }));
 
 export const rejectLeaveRequestController = async (req: Request, res: Response) =>
@@ -67,7 +67,7 @@ export const exportAttendanceController = async (req: Request, res: Response) =>
 export const getLeaveOverviewController = async (req: Request, res: Response) => sendSuccess(res, "Leave overview retrieved successfully", await getLeaveOverview(req.organizationId!));
 export const listLeavesController = async (req: Request, res: Response) => { const result = await listLeaves(req.organizationId!, req.query, req.user!); return sendSuccess(res, "Leave requests retrieved successfully", result.leaves, { pagination: result.pagination }); };
 export const applyLeaveController = async (req: Request, res: Response) => sendSuccess(res, "Leave request submitted successfully", await applyForLeave(req.organizationId!, req.body, req.user!), { status: 201 });
-export const approveLeaveController = async (req: Request, res: Response) => sendSuccess(res, "Leave request approved successfully", await decideLeave(req.organizationId!, String(req.params.leaveId), "APPROVED", undefined, req.user!));
+export const approveLeaveController = async (req: Request, res: Response) => sendSuccess(res, "Leave request approved successfully", await decideLeave(req.organizationId!, String(req.params.leaveId), "APPROVED", req.body.comment, req.user!));
 export const rejectLeaveController = async (req: Request, res: Response) => sendSuccess(res, "Leave request rejected successfully", await decideLeave(req.organizationId!, String(req.params.leaveId), "REJECTED", req.body.reason, req.user!));
 
 export const getAppraisalOverviewController = async (req: Request, res: Response) => sendSuccess(res, "Appraisal overview retrieved successfully", await getAppraisalOverview(req.organizationId!, req.user!));

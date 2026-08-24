@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { attendanceMetric, calculateLeaveDays, calculateWeightedAssessmentScore, classifyAttendance, performanceRatingForScore, performanceRatingValueForScore, shiftDateKey, tenantDateKey, trendForDifference, validateAppraisalTemplateConfiguration, zonedDateTimeToUtc } from "./hris.service";
 import { hrisRouter } from "./hris.routes";
-import { appraisalTemplateBodySchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceLogsQuerySchema, attendanceOverrideSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, createAppraisalCycleSchema, createAttendanceDisputeSchema, createConductQuerySchema, createSuspensionSchema, employeeListQuerySchema, hrApprovalSchema, leaveDecisionParamsSchema, leaveListQuerySchema, managerReviewSchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, submitSelfAssessmentSchema, updateConductStatusSchema, updateEmployeeStatusSchema } from "./hris.validation";
+import { appraisalTemplateBodySchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceLogsQuerySchema, attendanceOverrideSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, createAppraisalCycleSchema, createAttendanceDisputeSchema, createConductQuerySchema, createSuspensionSchema, employeeListQuerySchema, hrApprovalSchema, leaveApproveSchema, leaveDecisionParamsSchema, leaveListQuerySchema, managerReviewSchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, submitSelfAssessmentSchema, updateConductStatusSchema, updateEmployeeStatusSchema } from "./hris.validation";
 
 test("HRIS dashboard trends return raw differences and normalized direction", () => {
   assert.deepEqual(attendanceMetric(12, 9), { count: 12, previousDayCount: 9, difference: 3, trend: "UP" });
@@ -73,6 +73,12 @@ test("leave dates, filters, and scheduled-day calculation are validated centrall
   assert.equal(leaveListQuerySchema.safeParse({ status: "PENDING", page: 1, limit: 20 }).success, true);
   const schedule = { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: false, sunday: false } as any;
   assert.equal(calculateLeaveDays("2026-08-20", "2026-08-24", schedule), 3);
+});
+
+test("leave approval accepts only an optional employee-visible manager comment", () => {
+  assert.equal(leaveApproveSchema.safeParse({ comment: "Approved with handover completed." }).success, true);
+  assert.equal(leaveApproveSchema.safeParse({}).success, true);
+  assert.equal(leaveApproveSchema.safeParse({ internalNotes: "Do not expose" }).success, false);
 });
 
 test("weighted appraisal scoring recalculates numeric KPI results and rating bands", () => {

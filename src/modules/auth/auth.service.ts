@@ -404,10 +404,13 @@ const resolveEnabledMethods = (input: {
   return enabled;
 };
 
+export const loginAccountType = (isPlatformAdmin: boolean) => isPlatformAdmin ? "PLATFORM_ADMIN" as const : "TENANT_USER" as const;
+
 const completeLoginSuccess = async (
   user: {
     id: string;
     organizationId: string;
+    isPlatformAdmin: boolean;
     email: string;
     firstName: string;
     lastName: string;
@@ -469,6 +472,8 @@ const completeLoginSuccess = async (
     user: {
       id: user.id,
       organizationId: user.organizationId,
+      isPlatformAdmin: user.isPlatformAdmin,
+      accountType: loginAccountType(user.isPlatformAdmin),
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
@@ -692,6 +697,7 @@ export const login = async (
         {
           id: user.id,
           organizationId: user.organizationId,
+          isPlatformAdmin: user.isPlatformAdmin,
           email: user.email,
           firstName: user.firstName,
           lastName: user.lastName,
@@ -802,6 +808,7 @@ export const login = async (
     {
       id: user.id,
       organizationId: user.organizationId,
+      isPlatformAdmin: user.isPlatformAdmin,
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
@@ -1284,6 +1291,7 @@ export const verifyLoginTwoFactor = async (
     {
       id: user.id,
       organizationId: user.organizationId,
+      isPlatformAdmin: user.isPlatformAdmin,
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,

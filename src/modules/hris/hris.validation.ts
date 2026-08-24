@@ -104,6 +104,7 @@ export const monthlyAttendanceQuerySchema = z.object({ ...pageFields, month: z.s
 export const leaveListQuerySchema = z.object({ ...pageFields, status: z.enum(["ALL", "PENDING", "APPROVED", "REJECTED"]).default("ALL") }).strict();
 export const applyLeaveSchema = z.object({ employeeId: id.optional(), leaveType: z.string().trim().min(2).max(100).transform((value) => value.toUpperCase()), fromDate: dateOnly, toDate: dateOnly, reason: z.string().trim().min(3).max(2000) }).strict().refine((value) => value.fromDate <= value.toDate, { message: "toDate must not precede fromDate", path: ["toDate"] });
 export const leaveParamsSchema = z.object({ leaveId: id }).strict();
+export const leaveApproveSchema = z.object({ comment: z.string().trim().min(3).max(2000).optional() }).strict();
 export const leaveRejectSchema = z.object({ reason: z.string().trim().min(3).max(2000).optional() }).strict();
 
 const appraisalStages = ["GOAL_SETTING", "SELF_ASSESSMENT", "MANAGER_REVIEW", "HR_APPROVAL", "ACKNOWLEDGMENT", "COMPLETED"] as const;

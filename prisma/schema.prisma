@@ -233,6 +233,7 @@ model Attendance {
   id             String              @id @default(cuid())
   organizationId String
   employeeId     String
+  attendanceDate String?             @db.Char(10)
   clockInAt      DateTime
   clockOutAt     DateTime?
   source         attendance_source   @default(WEB)
@@ -246,6 +247,7 @@ model Attendance {
   employee       Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "Attendance_employeeId_fkey")
   disputes       AttendanceDispute[]
 
+  @@unique([organizationId, employeeId, attendanceDate], map: "Attendance_org_employee_local_date_key")
   @@index([employeeId], map: "Attendance_employeeId_fkey")
   @@index([organizationId, clockInAt], map: "Attendance_organizationId_clockInAt_idx")
   @@index([organizationId, employeeId, clockInAt], map: "Attendance_organizationId_employeeId_clockInAt_idx")
@@ -562,69 +564,70 @@ model Department {
 }
 
 model Employee {
-  id                    String                    @id @default(cuid())
-  organizationId        String
-  departmentId          String?
-  teamId                String?
-  employeeNo            String
-  firstName             String
-  lastName              String
-  email                 String
-  phone                 String?
-  jobTitle              String?
-  hireDate              DateTime?
-  status                employee_status           @default(ACTIVE)
-  baseSalary            Decimal?                  @db.Decimal(14, 2)
-  bankName              String?
-  bankAccountNumber     String?
-  bankAccountName       String?
-  bankAccountType       String?
-  pensionPin            String?
-  lifecycleStatus       employee_lifecycle_status @default(PROBATION)
-  lifecycleEffectiveAt  DateTime?
-  gender                String?
-  employmentType        String?
-  dateOfBirth           DateTime?
-  address               String?                   @db.Text
-  city                  String?
-  nationality           String?
-  state                 String?
-  workMode              String?
-  maritalStatus         String?
-  taxId                 String?
-  bankCode              String?
-  profileImageUrl       String?
-  nextOfKinName         String?
-  nextOfKinPhone        String?
-  nextOfKinAddress      String?                   @db.Text
-  nextOfKinRelationship String?
-  guarantorFirstName    String?
-  guarantorLastName     String?
-  guarantorRelationship String?
-  guarantorPhone        String?
-  guarantorAddress      String?                   @db.Text
-  managerId             String?
-  createdAt             DateTime                  @default(now())
-  updatedAt             DateTime                  @updatedAt
-  attendance            Attendance[]
-  attendanceDisputes    AttendanceDispute[]
-  conductlog            ConductLog[]
-  headedDepartments     Department[]              @relation("department_headEmployeeIdToemployee")
-  department            Department?               @relation("employee_departmentIdTodepartment", fields: [departmentId], references: [id], map: "Employee_departmentId_fkey")
-  organization          Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Employee_organizationId_fkey")
-  team                  Team?                     @relation(fields: [teamId], references: [id], map: "Employee_teamId_fkey")
-  leaverequest          LeaveRequest[]
-  loans                 LoanAdvance[]
-  payslip               Payslip[]
-  salaryStructures      SalaryStructure[]
-  user                  User?
-  documents             EmployeeDocument[]
-  statusHistory         EmployeeStatusHistory[]
-  manager               Employee?                 @relation("EmployeeManager", fields: [managerId], references: [id], map: "Employee_managerId_fkey")
-  directReports         Employee[]                @relation("EmployeeManager")
-  employeeAppraisals    EmployeeAppraisal[]       @relation("EmployeeAppraisalEmployee")
-  managedAppraisals     EmployeeAppraisal[]       @relation("EmployeeAppraisalManager")
-  bankUpdateRequests    BankDetailsUpdateRequest[]
+  id                      String                     @id @default(cuid())
+  organizationId          String
+  departmentId            String?
+  teamId                  String?
+  employeeNo              String
+  firstName               String
+  lastName                String
+  email                   String
+  phone                   String?
+  jobTitle                String?
+  hireDate                DateTime?
+  status                  employee_status            @default(ACTIVE)
+  baseSalary              Decimal?                   @db.Decimal(14, 2)
+  bankName                String?
+  bankAccountNumber       String?
+  bankAccountName         String?
+  bankAccountType         String?
+  pensionPin              String?
+  lifecycleStatus         employee_lifecycle_status  @default(PROBATION)
+  lifecycleEffectiveAt    DateTime?
+  gender                  String?
+  employmentType          String?
+  dateOfBirth             DateTime?
+  address                 String?                    @db.Text
+  city                    String?
+  nationality             String?
+  state                   String?
+  workMode                String?
+  maritalStatus           String?
+  taxId                   String?
+  bankCode                String?
+  profileImageUrl         String?
+  nextOfKinName           String?
+  nextOfKinPhone          String?
+  nextOfKinAddress        String?                    @db.Text
+  nextOfKinRelationship   String?
+  guarantorFirstName      String?
+  guarantorLastName       String?
+  guarantorRelationship   String?
+  guarantorPhone          String?
+  guarantorAddress        String?                    @db.Text
+  managerId               String?
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+  attendance              Attendance[]
+  attendanceDisputes      AttendanceDispute[]
+  conductlog              ConductLog[]
+  headedDepartments       Department[]               @relation("department_headEmployeeIdToemployee")
+  department              Department?                @relation("employee_departmentIdTodepartment", fields: [departmentId], references: [id], map: "Employee_departmentId_fkey")
+  organization            Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Employee_organizationId_fkey")
+  team                    Team?                      @relation(fields: [teamId], references: [id], map: "Employee_teamId_fkey")
+  leaverequest            LeaveRequest[]             @relation("LeaveRequestEmployee")
+  leaveRequestsAsReliever LeaveRequest[]             @relation("LeaveRequestReliever")
+  loans                   LoanAdvance[]
+  payslip                 Payslip[]
+  salaryStructures        SalaryStructure[]
+  user                    User?
+  documents               EmployeeDocument[]
+  statusHistory           EmployeeStatusHistory[]
+  manager                 Employee?                  @relation("EmployeeManager", fields: [managerId], references: [id], map: "Employee_managerId_fkey")
+  directReports           Employee[]                 @relation("EmployeeManager")
+  employeeAppraisals      EmployeeAppraisal[]        @relation("EmployeeAppraisalEmployee")
+  managedAppraisals       EmployeeAppraisal[]        @relation("EmployeeAppraisalManager")
+  bankUpdateRequests      BankDetailsUpdateRequest[]
 
   @@unique([organizationId, email], map: "Employee_organizationId_email_key")
   @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
@@ -639,19 +642,19 @@ model Employee {
 }
 
 model EmployeeDocument {
-  id             String   @id @default(cuid())
-  organizationId String
-  employeeId     String
-  documentType   String
-  fileReference  String
-  originalName   String
-  mimeType       String
-  size           Int
-  employeeVisible Boolean @default(true)
-  allowDownload   Boolean @default(true)
-  uploadedById   String?
-  createdAt      DateTime @default(now())
-  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDocument_employeeId_fkey")
+  id              String   @id @default(cuid())
+  organizationId  String
+  employeeId      String
+  documentType    String
+  fileReference   String
+  originalName    String
+  mimeType        String
+  size            Int
+  employeeVisible Boolean  @default(true)
+  allowDownload   Boolean  @default(true)
+  uploadedById    String?
+  createdAt       DateTime @default(now())
+  employee        Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDocument_employeeId_fkey")
 
   @@index([organizationId, employeeId], map: "EmployeeDocument_org_employee_idx")
   @@index([organizationId, documentType], map: "EmployeeDocument_org_type_idx")
@@ -659,7 +662,7 @@ model EmployeeDocument {
 }
 
 model BankDetailsUpdateRequest {
-  id                    String   @id @default(cuid())
+  id                    String       @id @default(cuid())
   organizationId        String
   employeeId            String
   currentBankSnapshot   Json
@@ -668,16 +671,16 @@ model BankDetailsUpdateRequest {
   proposedAccountNumber String
   proposedAccountName   String
   proposedAccountType   String
-  reason                String?  @db.Text
-  status                String   @default("PENDING")
-  pendingKey            String?  @unique(map: "BankDetailsUpdateRequest_pendingKey_key")
-  submittedAt           DateTime @default(now())
+  reason                String?      @db.Text
+  status                String       @default("PENDING")
+  pendingKey            String?      @unique(map: "BankDetailsUpdateRequest_pendingKey_key")
+  submittedAt           DateTime     @default(now())
   reviewedById          String?
   reviewedAt            DateTime?
-  reviewNote            String?  @db.Text
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  employee              Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "BankDetailsUpdateRequest_employeeId_fkey")
+  reviewNote            String?      @db.Text
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  employee              Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "BankDetailsUpdateRequest_employeeId_fkey")
   organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "BankDetailsUpdateRequest_organizationId_fkey")
 
   @@index([organizationId, employeeId, status], map: "BankDetailsUpdateRequest_org_employee_status_idx")
@@ -756,26 +759,31 @@ model IpAllowlistEntry {
 }
 
 model LeaveRequest {
-  id              String              @id @default(cuid())
-  organizationId  String
-  employeeId      String
-  type            String
-  startDate       DateTime
-  endDate         DateTime
-  reason          String?             @db.Text
-  status          leaverequest_status @default(PENDING)
-  reviewedBy      String?
-  reviewedAt      DateTime?
-  requestedDays   Decimal?            @db.Decimal(8, 2)
-  submittedAt     DateTime            @default(now())
-  rejectionReason String?             @db.Text
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  employee        Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LeaveRequest_employeeId_fkey")
+  id                 String              @id @default(cuid())
+  organizationId     String
+  employeeId         String
+  relieverEmployeeId String?
+  type               String
+  startDate          DateTime
+  endDate            DateTime
+  reason             String?             @db.Text
+  status             leaverequest_status @default(PENDING)
+  reviewedBy         String?
+  reviewedAt         DateTime?
+  requestedDays      Decimal?            @db.Decimal(8, 2)
+  submittedAt        DateTime            @default(now())
+  rejectionReason    String?             @db.Text
+  managerComment     String?             @db.Text
+  activeRequestKey   String?             @unique(map: "LeaveRequest_activeRequestKey_key")
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  employee           Employee            @relation("LeaveRequestEmployee", fields: [employeeId], references: [id], onDelete: Cascade, map: "LeaveRequest_employeeId_fkey")
+  reliever           Employee?           @relation("LeaveRequestReliever", fields: [relieverEmployeeId], references: [id], map: "LeaveRequest_relieverEmployeeId_fkey")
 
   @@index([employeeId], map: "LeaveRequest_employeeId_fkey")
   @@index([organizationId, employeeId, status], map: "LeaveRequest_organizationId_employeeId_status_idx")
   @@index([organizationId, status, startDate, endDate], map: "LeaveRequest_org_status_dates_idx")
+  @@index([organizationId, relieverEmployeeId], map: "LeaveRequest_org_reliever_idx")
   @@map("LeaveRequest")
 }
 
@@ -1193,19 +1201,23 @@ model PayrollRun {
 }
 
 model Payslip {
-  id             String     @id @default(cuid())
-  organizationId String
-  payrollRunId   String
-  employeeId     String
-  grossPay       Decimal    @db.Decimal(14, 2)
-  payeTax        Decimal    @default(0.00) @db.Decimal(14, 2)
-  pension        Decimal    @default(0.00) @db.Decimal(14, 2)
-  deductions     Decimal    @default(0.00) @db.Decimal(14, 2)
-  netPay         Decimal    @db.Decimal(14, 2)
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
-  employee       Employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
-  payrollrun     PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
+  id                 String     @id @default(cuid())
+  organizationId     String
+  payrollRunId       String
+  employeeId         String
+  grossPay           Decimal    @db.Decimal(14, 2)
+  payeTax            Decimal    @default(0.00) @db.Decimal(14, 2)
+  pension            Decimal    @default(0.00) @db.Decimal(14, 2)
+  deductions         Decimal    @default(0.00) @db.Decimal(14, 2)
+  netPay             Decimal    @db.Decimal(14, 2)
+  currency           String?
+  earningsSnapshot   Json?
+  deductionsSnapshot Json?
+  pdfFileReference   String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  employee           Employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
+  payrollrun         PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
 
   @@unique([payrollRunId, employeeId], map: "Payslip_payrollRunId_employeeId_key")
   @@index([employeeId], map: "Payslip_employeeId_fkey")

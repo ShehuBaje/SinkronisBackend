@@ -11,7 +11,7 @@ import {
   employeesCrudOptions,
   leaveCrudOptions
 } from "./hris.service";
-import { acknowledgeAppraisalSchema, appraisalGoalParamsSchema, appraisalListQuerySchema, appraisalParamsSchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceDateQuerySchema, attendanceLogsQuerySchema, attendanceOverrideSchema, attendanceParamsSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, clockInSchema, clockOutParamsSchema, createAppraisalGoalSchema, createAttendanceDisputeSchema, createManagedEmployeeSchema, disputeListQuerySchema, disputeParamsSchema, employeeHistoryQuerySchema, employeeListQuerySchema, employeeParamsSchema, hrApprovalSchema, leaveDecisionParamsSchema, leaveListQuerySchema, leaveParamsSchema, leaveRejectSchema, lifecycleQuerySchema, managerReviewSchema, monthlyAttendanceQuerySchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, resolveAttendanceDisputeSchema, scoreAppraisalGoalSchema, submitSelfAssessmentSchema, updateEmployeeStatusSchema, updateManagedEmployeeSchema } from "./hris.validation";
+import { acknowledgeAppraisalSchema, appraisalGoalParamsSchema, appraisalListQuerySchema, appraisalParamsSchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceDateQuerySchema, attendanceLogsQuerySchema, attendanceOverrideSchema, attendanceParamsSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, clockInSchema, clockOutParamsSchema, createAppraisalGoalSchema, createAttendanceDisputeSchema, createManagedEmployeeSchema, disputeListQuerySchema, disputeParamsSchema, employeeHistoryQuerySchema, employeeListQuerySchema, employeeParamsSchema, hrApprovalSchema, leaveApproveSchema, leaveDecisionParamsSchema, leaveListQuerySchema, leaveParamsSchema, leaveRejectSchema, lifecycleQuerySchema, managerReviewSchema, monthlyAttendanceQuerySchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, resolveAttendanceDisputeSchema, scoreAppraisalGoalSchema, submitSelfAssessmentSchema, updateEmployeeStatusSchema, updateManagedEmployeeSchema } from "./hris.validation";
 import { badRequest } from "../../core/http-error";
 import { completeAppraisalCycleController, createAppraisalCycleController, createAppraisalTemplateController, createConductQueryController, createSuspensionController, deleteAppraisalCycleController, deleteAppraisalTemplateController, getAppraisalSettingsController, getAppraisalTemplateController, getConductController, getConductOverviewController, launchAppraisalCycleController, listAppraisalCyclesController, listAppraisalTemplatesController, listConductController, listCycleReviewsController, signOffAppraisalController, updateAppraisalSettingsController, updateAppraisalTemplateController, updateConductStatusController } from "./hris.controller";
 import { openAppraisalSelfAssessmentController } from "./hris.controller";
@@ -39,7 +39,7 @@ hrisRouter.get(
 hrisRouter.patch(
   "/leave-requests/:id/approve",
   authorize("hris:leave:approve"),
-  validate({ params: leaveDecisionParamsSchema }),
+  validate({ params: leaveDecisionParamsSchema, body: leaveApproveSchema }),
   asyncHandler(approveLeaveRequestController)
 );
 
@@ -57,7 +57,7 @@ hrisRouter.patch("/bank-details-update-requests/:requestId/reject", authorize("h
 hrisRouter.get("/leaves/overview", authorize("hris:leave:approve"), asyncHandler(getLeaveOverviewController));
 hrisRouter.get("/leaves", authorize("hris:leave:view"), validate({ query: leaveListQuerySchema }), asyncHandler(listLeavesController));
 hrisRouter.post("/leaves", authorize("hris:leave:create"), validate({ body: applyLeaveSchema }), asyncHandler(applyLeaveController));
-hrisRouter.patch("/leaves/:leaveId/approve", authorize("hris:leave:approve"), validate({ params: leaveParamsSchema }), asyncHandler(approveLeaveController));
+hrisRouter.patch("/leaves/:leaveId/approve", authorize("hris:leave:approve"), validate({ params: leaveParamsSchema, body: leaveApproveSchema }), asyncHandler(approveLeaveController));
 hrisRouter.patch("/leaves/:leaveId/reject", authorize("hris:leave:approve"), validate({ params: leaveParamsSchema, body: leaveRejectSchema }), asyncHandler(rejectLeaveController));
 
 hrisRouter.get("/appraisals/overview", authorize("hris:appraisals:update"), asyncHandler(getAppraisalOverviewController));

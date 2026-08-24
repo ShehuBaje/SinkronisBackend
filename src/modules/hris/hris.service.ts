@@ -168,20 +168,20 @@ const attendanceCountsForDate = async (
 
 export const clockIn = async (organizationId: string, input: ClockInInput) => {
   await tenantEmployeeExists(organizationId, input.employeeId);
+  const settings = await prisma.organizationGeneralSettings.findUnique({ where: { organizationId }, select: { timeZone: true } });
+  const attendanceDate = tenantDateKey(new Date(), safeTimeZone(settings?.timeZone));
   const open = await prisma.attendance.findFirst({
     where: { organizationId, employeeId: input.employeeId, clockOutAt: null }
   });
 
   if (open) throw badRequest("Employee already has an open attendance record");
 
-  return prisma.attendance.create({
-    data: {
-      organizationId,
-      employeeId: input.employeeId,
-      clockInAt: new Date(),
-      note: input.note
-    }
-  });
+  try {
+    return await prisma.attendance.create({ data: { organizationId, employeeId: input.employeeId, attendanceDate, clockInAt: new Date(), note: input.note } });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw conflict("Employee has already clocked in today");
+    throw error;
+  }
 };
 
 export const clockOut = async (organizationId: string, id: string) => {
@@ -628,6 +628,8 @@ export const resolveAttendanceDispute = async (organizationId: string, disputeId
     await overrideAttendance(organizationId, dispute.attendanceId, { clockIn: formatTime(dispute.claimedClockIn), clockOut: formatTime(dispute.claimedClockOut), reason: input.resolutionNote }, user, dispute.id);
   }
   await createAuditLog({ organizationId, actorUserId: user.id, action: `HRIS_ATTENDANCE_DISPUTE_${input.status}`, resource: "ATTENDANCE_DISPUTE", resourceId: dispute.id, summary: `${input.status === "APPROVED" ? "Approved" : "Rejected"} attendance dispute`, metadata: { employeeId: dispute.employeeId, attendanceId: dispute.attendanceId, resolutionNote: input.resolutionNote } });
+  const employeeUser = await prisma.user.findFirst({ where: { organizationId, employeeId: dispute.employeeId, isActive: true }, select: { id: true } });
+  if (employeeUser) await deliverUserNotification({ organizationId, recipientUserId: employeeUser.id, moduleKey: "hris", categoryKey: "record-updates", eventKey: `attendance-dispute:${dispute.id}:${input.status.toLowerCase()}`, type: `ATTENDANCE_DISPUTE_${input.status}`, title: `Attendance dispute ${input.status.toLowerCase()}`, message: `Your attendance dispute has been ${input.status.toLowerCase()}.`, metadata: { disputeId: dispute.id, attendanceId: dispute.attendanceId, status: input.status } }).catch(() => null);
   return updated;
 };
 
@@ -735,8 +737,14 @@ export const applyForLeave = async (organizationId: string, input: any, user: Au
   const employeeId = input.employeeId && canCreateForOthers ? input.employeeId : self?.id;
   if (!employeeId) throw forbidden("Authenticated user is not linked to an employee");
   await tenantEmployeeExists(organizationId, employeeId);
-  const [schedule, leaveType] = await Promise.all([getSchedule(organizationId), prisma.leaveType.findFirst({ where: { organizationId, code: input.leaveType, active: true } })]);
+  const [schedule, leaveType, reliever] = await Promise.all([
+    getSchedule(organizationId),
+    prisma.leaveType.findFirst({ where: { organizationId, code: input.leaveType, active: true } }),
+    input.relieverEmployeeId ? prisma.employee.findFirst({ where: { id: input.relieverEmployeeId, organizationId, status: "ACTIVE" }, select: { id: true } }) : Promise.resolve(null)
+  ]);
   if (!leaveType && !defaultLeaveTypeCodes.has(input.leaveType)) throw badRequest("Leave type is not supported");
+  if (input.relieverEmployeeId && !reliever) throw notFound("Reliever employee not found");
+  if (reliever?.id === employeeId) throw badRequest("Employee cannot be their own reliever");
   const days = calculateLeaveDays(input.fromDate, input.toDate, schedule);
   if (days <= 0) throw badRequest("Selected dates contain no scheduled workdays");
   const startDate = zonedDateTimeToUtc(input.fromDate, "00:00", safeTimeZone((await prisma.organizationGeneralSettings.findUnique({ where: { organizationId }, select: { timeZone: true } }))?.timeZone));
@@ -745,27 +753,37 @@ export const applyForLeave = async (organizationId: string, input: any, user: Au
   if (overlap) throw conflict("Employee already has an overlapping pending or approved leave request");
   const year = Number(input.fromDate.slice(0, 4)); const balance = await prisma.leaveBalance.findUnique({ where: { organizationId_employeeId_leaveTypeCode_year: { organizationId, employeeId, leaveTypeCode: input.leaveType, year } } });
   if (balance && Number(balance.entitlement) - Number(balance.used) - Number(balance.pending) < days) throw conflict("Insufficient leave balance");
-  const created = await prisma.$transaction(async (tx) => {
-    if (balance) {
-      const maximumPendingBeforeRequest = Number(balance.entitlement) - Number(balance.used) - days;
-      const reserved = await tx.leaveBalance.updateMany({ where: { id: balance.id, pending: { lte: maximumPendingBeforeRequest } }, data: { pending: { increment: days } } });
-      if (reserved.count !== 1) throw conflict("Leave balance changed concurrently; please retry");
-    }
-    return tx.leaveRequest.create({ data: { organizationId, employeeId, type: input.leaveType, startDate, endDate, reason: input.reason, status: "PENDING", requestedDays: days } });
-  });
+  const activeRequestKey = `${organizationId}:${employeeId}:${input.fromDate}:${input.toDate}`;
+  let created;
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      if (balance) {
+        const maximumPendingBeforeRequest = Number(balance.entitlement) - Number(balance.used) - days;
+        const reserved = await tx.leaveBalance.updateMany({ where: { id: balance.id, pending: { lte: maximumPendingBeforeRequest } }, data: { pending: { increment: days } } });
+        if (reserved.count !== 1) throw conflict("Leave balance changed concurrently; please retry");
+      }
+      return tx.leaveRequest.create({ data: { organizationId, employeeId, relieverEmployeeId: reliever?.id, type: input.leaveType, startDate, endDate, reason: input.reason, status: "PENDING", requestedDays: days, activeRequestKey } });
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw conflict("An active leave request already exists for this date range");
+    throw error;
+  }
   const employee = await prisma.employee.findFirst({ where: { id: employeeId, organizationId }, select: { firstName: true, lastName: true, managerId: true } });
   let recipients = await userIdsForEmployees(organizationId, [employee?.managerId]);
   if (!recipients.length) recipients = await hrisApproverUserIds(organizationId, ["hris:leave:approve"]);
   const notification = await notifyHRISUsers({ organizationId, recipientUserIds: recipients, categoryKey: "approvals-requests", eventKey: `leave:${created.id}:submitted`, type: "LEAVE_REQUEST_SUBMITTED", title: "Leave request awaiting approval", message: `${employee?.firstName ?? "An employee"} ${employee?.lastName ?? ""}`.trim() + ` submitted a ${input.leaveType} request for ${days} day${days === 1 ? "" : "s"}.`, metadata: { leaveRequestId: created.id, employeeId } });
+  const relieverRecipients = await userIdsForEmployees(organizationId, [reliever?.id]);
+  await notifyHRISUsers({ organizationId, recipientUserIds: relieverRecipients, categoryKey: "record-updates", eventKey: `leave:${created.id}:reliever`, type: "LEAVE_RELIEVER_ASSIGNED", title: "Leave cover assignment", message: `You were selected as reliever for an upcoming leave request.`, metadata: { leaveRequestId: created.id, employeeId } });
   await createAuditLog({ organizationId, actorUserId: user.id, action: "HRIS_LEAVE_REQUEST_SUBMITTED", resource: "LEAVE_REQUEST", resourceId: created.id, summary: "Submitted a leave request", metadata: { employeeId, leaveType: input.leaveType, days, notification } });
   return created;
 };
 export const decideLeave = async (organizationId: string, leaveId: string, decision: "APPROVED" | "REJECTED", reason: string | undefined, user: AuthUser) => {
   const existing = await prisma.leaveRequest.findFirst({ where: { id: leaveId, organizationId }, include: { employee: true } });
   if (!existing) throw notFound("Leave request not found"); if (existing.status !== "PENDING") throw conflict("Only a pending leave request can be reviewed");
-  const days = Number(existing.requestedDays ?? 0); const year = existing.startDate.getUTCFullYear();
+  const settings = await prisma.organizationGeneralSettings.findUnique({ where: { organizationId }, select: { timeZone: true } });
+  const days = Number(existing.requestedDays ?? 0); const year = Number(tenantDateKey(existing.startDate, safeTimeZone(settings?.timeZone)).slice(0, 4));
   const updated = await prisma.$transaction(async (tx) => {
-    const changed = await tx.leaveRequest.updateMany({ where: { id: existing.id, organizationId, status: "PENDING" }, data: { status: decision, reviewedBy: user.id, reviewedAt: new Date(), rejectionReason: decision === "REJECTED" ? reason ?? null : null } });
+    const changed = await tx.leaveRequest.updateMany({ where: { id: existing.id, organizationId, status: "PENDING" }, data: { status: decision, reviewedBy: user.id, reviewedAt: new Date(), managerComment: reason ?? null, rejectionReason: decision === "REJECTED" ? reason ?? null : null, ...(decision === "REJECTED" ? { activeRequestKey: null } : {}) } });
     if (changed.count !== 1) throw conflict("Leave request was reviewed concurrently");
     const balance = await tx.leaveBalance.findUnique({ where: { organizationId_employeeId_leaveTypeCode_year: { organizationId, employeeId: existing.employeeId, leaveTypeCode: existing.type, year } } });
     if (balance && days > 0) await tx.leaveBalance.update({ where: { id: balance.id }, data: decision === "APPROVED" ? { pending: { decrement: Math.min(days, Number(balance.pending)) }, used: { increment: days } } : { pending: { decrement: Math.min(days, Number(balance.pending)) } } });

@@ -46,3 +46,8 @@ export interface EmployeeDashboard {
 export interface UpdateEmployeePersonalDetailsInput { phoneNumber?: string | null; personalEmail?: string; address?: string | null; maritalStatus?: "SINGLE" | "MARRIED" | "DIVORCED" | "WIDOWED" | "SEPARATED" | null; nationality?: string | null }
 export interface BankUpdateRequestInput { bankCode: string; bankName: string; accountNumber: string; accountName: string; accountType: "SAVINGS" | "CURRENT"; reason?: string }
 export interface EmployeeDocumentMetadata { id: string; documentType: string; documentName: string; originalFileName: string; dateAdded: Date; downloadAvailable: boolean }
+export type EmployeeAttendanceClockState = "NOT_CLOCKED_IN" | "CLOCKED_IN" | "CLOCKED_OUT";
+export type EmployeeAttendanceDayType = "WORKING_DAY" | "WEEKEND" | "ON_LEAVE" | "FUTURE";
+export interface EmployeeAttendanceDisputeInput { issueType: "MISSING_CLOCK_IN" | "MISSING_CLOCK_OUT" | "SYSTEM_ERROR" | "WRONG_STATUS" | "OTHER"; description: string; claimedClockIn?: string; claimedClockOut?: string }
+export interface EmployeeLeaveRequestInput { leaveTypeId: string; startDate: string; endDate: string; reason: string; relieverEmployeeId?: string }
+export interface PayslipComponent { code: string; name: string; amount: number }
