@@ -577,6 +577,8 @@ model Employee {
   baseSalary            Decimal?                  @db.Decimal(14, 2)
   bankName              String?
   bankAccountNumber     String?
+  bankAccountName       String?
+  bankAccountType       String?
   pensionPin            String?
   lifecycleStatus       employee_lifecycle_status @default(PROBATION)
   lifecycleEffectiveAt  DateTime?
@@ -622,6 +624,7 @@ model Employee {
   directReports         Employee[]                @relation("EmployeeManager")
   employeeAppraisals    EmployeeAppraisal[]       @relation("EmployeeAppraisalEmployee")
   managedAppraisals     EmployeeAppraisal[]       @relation("EmployeeAppraisalManager")
+  bankUpdateRequests    BankDetailsUpdateRequest[]
 
   @@unique([organizationId, email], map: "Employee_organizationId_email_key")
   @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
@@ -644,6 +647,8 @@ model EmployeeDocument {
   originalName   String
   mimeType       String
   size           Int
+  employeeVisible Boolean @default(true)
+  allowDownload   Boolean @default(true)
   uploadedById   String?
   createdAt      DateTime @default(now())
   employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDocument_employeeId_fkey")
@@ -651,6 +656,33 @@ model EmployeeDocument {
   @@index([organizationId, employeeId], map: "EmployeeDocument_org_employee_idx")
   @@index([organizationId, documentType], map: "EmployeeDocument_org_type_idx")
   @@map("EmployeeDocument")
+}
+
+model BankDetailsUpdateRequest {
+  id                    String   @id @default(cuid())
+  organizationId        String
+  employeeId            String
+  currentBankSnapshot   Json
+  proposedBankCode      String
+  proposedBankName      String
+  proposedAccountNumber String
+  proposedAccountName   String
+  proposedAccountType   String
+  reason                String?  @db.Text
+  status                String   @default("PENDING")
+  pendingKey            String?  @unique(map: "BankDetailsUpdateRequest_pendingKey_key")
+  submittedAt           DateTime @default(now())
+  reviewedById          String?
+  reviewedAt            DateTime?
+  reviewNote            String?  @db.Text
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  employee              Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "BankDetailsUpdateRequest_employeeId_fkey")
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "BankDetailsUpdateRequest_organizationId_fkey")
+
+  @@index([organizationId, employeeId, status], map: "BankDetailsUpdateRequest_org_employee_status_idx")
+  @@index([organizationId, submittedAt], map: "BankDetailsUpdateRequest_org_submitted_idx")
+  @@map("BankDetailsUpdateRequest")
 }
 
 model EmployeeStatusHistory {
@@ -890,6 +922,7 @@ model Organization {
   authchallenge                AuthChallenge[]
   authevent                    AuthEvent[]
   billinghistory               BillingHistory[]
+  bankDetailsUpdateRequests    BankDetailsUpdateRequest[]
   billingnotification          BillingNotification[]
   branches                     Branch[]
   client                       Client[]

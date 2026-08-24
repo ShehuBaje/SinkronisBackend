@@ -1,5 +1,6 @@
 import {
   beginAuthenticatorSetup,
+  acceptTenantAdminInvitation,
   disableAuthenticator,
   enableAuthenticator,
   forgotPassword,
@@ -17,6 +18,7 @@ export const registerOrganizationController = async (req: any, res: any) => {
   const result = await registerOrganization(req.body);
   res.status(201).json(result);
 };
+export const acceptTenantAdminInvitationController = async (req: any, res: any) => res.json(await acceptTenantAdminInvitation(req.body));
 
 export const loginController = async (req: any, res: any) => {
   const result = await login(req.body, {

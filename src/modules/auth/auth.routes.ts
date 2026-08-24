@@ -4,6 +4,7 @@ import { validate } from "../../core/validate";
 import { authenticate } from "../../middleware/auth.middleware";
 import {
   beginAuthenticatorSetupController,
+  acceptTenantAdminInvitationController,
   disableAuthenticatorController,
   enableAuthenticatorController,
   forgotPasswordController,
@@ -18,6 +19,7 @@ import {
 } from "./auth.controller";
 import {
   beginAuthenticatorSetupSchema,
+  acceptTenantInvitationSchema,
   disableAuthenticatorSchema,
   enableAuthenticatorSchema,
   forgotPasswordSchema,
@@ -36,6 +38,8 @@ authRouter.post(
   validate({ body: registerOrganizationSchema }),
   asyncHandler(registerOrganizationController)
 );
+
+authRouter.post("/tenant-invitations/accept", validate({ body: acceptTenantInvitationSchema }), asyncHandler(acceptTenantAdminInvitationController));
 
 authRouter.post(
   "/login",

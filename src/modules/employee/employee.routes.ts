@@ -1,0 +1,18 @@
+import { Router } from "express";
+import multer from "multer";
+import { asyncHandler } from "../../core/async-handler";
+import { badRequest } from "../../core/http-error";
+import { env } from "../../config/env";
+import { validate } from "../../core/validate";
+import { downloadEmployeeDocumentController, getEmployeeDashboardController, getEmployeeProfileController, listEmployeeDocumentsController, requestBankDetailsUpdateController, updateEmployeePersonalDetailsController, updateEmployeeProfilePhotoController } from "./employee.controller";
+import { bankUpdateRequestSchema, employeeDashboardQuerySchema, employeeDocumentParamsSchema, updateEmployeePersonalDetailsSchema } from "./employee.validation";
+export const employeeRouter = Router();
+const profilePhotoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: env.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => { if (!["image/jpeg", "image/png", "image/webp"].includes(file.mimetype)) return callback(badRequest("Profile photo must be JPEG, PNG, or WebP")); return callback(null, true); } });
+const receiveProfilePhoto = (req: any, res: any, next: any) => profilePhotoUpload.single("photo")(req, res, (error) => error instanceof multer.MulterError ? next(badRequest(error.code === "LIMIT_FILE_SIZE" ? `Profile photo must be <= ${env.UPLOAD_MAX_FILE_SIZE_MB}MB` : "Invalid profile photo upload")) : error ? next(error) : next());
+employeeRouter.get("/dashboard", validate({ query: employeeDashboardQuerySchema }), asyncHandler(getEmployeeDashboardController));
+employeeRouter.get("/profile", validate({ query: employeeDashboardQuerySchema }), asyncHandler(getEmployeeProfileController));
+employeeRouter.patch("/profile/personal-details", validate({ body: updateEmployeePersonalDetailsSchema }), asyncHandler(updateEmployeePersonalDetailsController));
+employeeRouter.patch("/profile/photo", receiveProfilePhoto, asyncHandler(updateEmployeeProfilePhotoController));
+employeeRouter.get("/profile/documents", validate({ query: employeeDashboardQuerySchema }), asyncHandler(listEmployeeDocumentsController));
+employeeRouter.get("/profile/documents/:documentId/download", validate({ params: employeeDocumentParamsSchema, query: employeeDashboardQuerySchema }), asyncHandler(downloadEmployeeDocumentController));
+employeeRouter.post("/profile/bank-details/update-request", validate({ body: bankUpdateRequestSchema }), asyncHandler(requestBankDetailsUpdateController));

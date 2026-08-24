@@ -53,6 +53,12 @@ export const resetPasswordSchema = z
     path: ["confirmPassword"]
   });
 
+export const acceptTenantInvitationSchema = z.object({
+  token: z.string().min(32).max(256),
+  password: z.string().min(8).max(128),
+  confirmPassword: z.string().min(8).max(128)
+}).strict().refine((value) => value.password === value.confirmPassword, { message: "Passwords do not match", path: ["confirmPassword"] });
+
 export const verifyLoginTwoFactorSchema = z.object({
   challengeToken: z.string().min(1),
   otp: z.string().regex(/^\d{6}$/)

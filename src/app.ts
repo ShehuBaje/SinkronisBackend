@@ -24,8 +24,9 @@ import { platformAdminRouter } from "./modules/platform-admin";
 import { redis } from "./config/redis";
 import { internalRouter } from "./modules/internal/internal.routes";
 import { restrictImpersonatedSensitiveActions } from "./middleware/impersonation.middleware";
-import { requireEffectiveModuleAccess } from "./middleware/module-access.middleware";
+import { requireEffectiveModuleAccess, requireModuleEntitlement } from "./middleware/module-access.middleware";
 import { telemetryRouter } from "./modules/telemetry/telemetry.routes";
+import { employeeRouter } from "./modules/employee/employee.routes";
 import { enforcePlatformMaintenance } from "./middleware/maintenance.middleware";
 
 export const app = express();
@@ -144,6 +145,7 @@ app.use(`${env.API_PREFIX}/platform-admin`, authenticate, platformAdminRouter);
 app.use(env.API_PREFIX, authenticate, enforcePlatformMaintenance);
 app.use(`${env.API_PREFIX}/admin`, restrictImpersonatedSensitiveActions, requireTenant, adminRouter);
 app.use(`${env.API_PREFIX}/telemetry`, requireTenant, telemetryRouter);
+app.use(`${env.API_PREFIX}/employee`, requireTenant, requireModuleEntitlement("hris"), employeeRouter);
 app.use(`${env.API_PREFIX}/subscriptions`, restrictImpersonatedSensitiveActions, requireTenant, subscriptionsRouter);
 app.use(`${env.API_PREFIX}/hris`, requireTenant, requireEffectiveModuleAccess("hris"), hrisRouter);
 app.use(`${env.API_PREFIX}/accounting`, restrictImpersonatedSensitiveActions, requireTenant, requireEffectiveModuleAccess("accounting"), accountingRouter);

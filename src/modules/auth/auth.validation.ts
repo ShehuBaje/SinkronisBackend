@@ -1,4 +1,5 @@
 export {
+  acceptTenantInvitationSchema,
   beginAuthenticatorSetupSchema,
   disableAuthenticatorSchema,
   enableAuthenticatorSchema,

@@ -8,7 +8,7 @@ import { badRequest, conflict, forbidden, notFound, serviceUnavailable } from ".
 import { prisma } from "../../core/prisma";
 import { createAuditLog } from "../admin/admin.audit";
 import { forgotPassword } from "../auth/auth.service";
-import { sendTenantCheckInEmail } from "../auth/auth.mailer";
+import { sendTenantAdminInvitationEmail, sendTenantCheckInEmail } from "../auth/auth.mailer";
 import { snapshotTenantModuleUsage } from "../telemetry/telemetry.service";
 import { sendPlatformInvoiceReminderEmail } from "./platform-billing.mailer";
 import {
@@ -771,20 +771,23 @@ export const createPlatformTenant = async (body: unknown, platformAdmin: AuthUse
     await tx.rolePermission.createMany({ data: tenantPermissions.map((permission) => ({ roleId: role.id, permissionId: permission.id })), skipDuplicates: true });
     const [firstName, ...lastParts] = payload.adminEmail.split("@")[0].split(/[._-]+/).filter(Boolean);
     const admin = await tx.user.create({ data: { organizationId: organization.id, roleId: role.id, email: payload.adminEmail, firstName: firstName || "Tenant", lastName: lastParts.join(" ") || "Admin", passwordHash: temporaryPasswordHash, isActive: true } });
+    const invitation = await tx.agentInvitation.create({ data: { organizationId: organization.id, roleId: role.id, invitedByUserId: platformAdmin.id, email: admin.email, token: crypto.randomBytes(32).toString("hex"), moduleAccess: plan.includedModules, status: "PENDING", expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) } });
     await tx.organizationGeneralSettings.create({ data: { organizationId: organization.id, currency: "NGN", timeZone: "Africa/Lagos", language: "en", dateFormat: "DD/MM/YYYY" } });
     await tx.systemConfig.create({ data: { organizationId: organization.id, key: subscriptionKey, value: { planKey: plan.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: renewalDate.toISOString(), activatedAt: now.toISOString(), paymentVerifiedAt: now.toISOString(), automaticRenewal: true, cancelAtPeriodEnd: false } } });
     await tx.systemConfig.createMany({ data: billingModuleKeys.map((moduleKey) => ({ organizationId: organization.id, key: `module.${moduleKey}.status`, value: plan.includedModules.includes(moduleKey) ? "ACTIVE" : "INACTIVE" })) });
-    return { organization, admin };
+    return { organization, admin, invitation };
   });
   await createAuditLog({ organizationId: created.organization.id, actorUserId: platformAdmin.id, action: "PLATFORM_TENANT_CREATED", resource: "ORGANIZATION", resourceId: created.organization.id, summary: `Created tenant ${created.organization.name}`, metadata: { planKey: plan.key, adminEmail: created.admin.email, country: payload.country } });
-  const invitation = await forgotPassword({ email: created.admin.email, organizationSlug: created.organization.slug });
+  const frontendOrigin = env.CORS_ORIGIN.split(",").map((origin) => origin.trim()).find((origin) => origin && origin !== "*") ?? "http://localhost:3000";
+  const setupUrl = `${frontendOrigin.replace(/\/$/, "")}/setup-password?token=${encodeURIComponent(created.invitation.token)}`;
+  await sendTenantAdminInvitationEmail({ to: created.admin.email, organizationName: created.organization.name, setupUrl, expiresAt: created.invitation.expiresAt });
   return {
     organizationId: created.organization.id, companyName: created.organization.name, slug: created.organization.slug,
-    admin: { userId: created.admin.id, email: created.admin.email, invitationStatus: "PASSWORD_SETUP_SENT" },
+    admin: { userId: created.admin.id, email: created.admin.email, invitationStatus: "TENANT_ADMIN_INVITATION_SENT" },
     subscription: { planKey: plan.key, planName: plan.name, status: "ACTIVE", monthlyCost: currentPlanPrice, renewalDate },
     activeModules: plan.includedModules.map((key) => ({ id: key, name: moduleLabels[key] })),
     country: created.organization.country, createdAt: created.organization.createdAt,
-    onboarding: { delivery: "PASSWORD_RESET_EMAIL", expiresInSeconds: invitation.expiresInSeconds }
+    onboarding: { delivery: "TENANT_ADMIN_INVITATION_EMAIL", expiresAt: created.invitation.expiresAt }
   };
 };
 

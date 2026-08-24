@@ -20,3 +20,17 @@ export const evaluateEffectiveModuleAccess = async (input: { organizationId: str
   const plan = getBillingPlanDefinition(String(subscription.planKey ?? "") as never);
   return Boolean(plan?.includedModules.includes(input.module));
 };
+
+/** Tenant-level entitlement check for cross-module read models such as dashboards. */
+export const isOrganizationModuleEnabled = async (organizationId: string, module: BillingModuleKey) => {
+  const [organization, configs] = await Promise.all([
+    prisma.organization.findFirst({ where: { id: organizationId, status: "ACTIVE", deletionRequests: { none: { status: "PENDING_PLATFORM_APPROVAL" } } }, select: { id: true } }),
+    prisma.systemConfig.findMany({ where: { organizationId, key: { in: ["billing.subscription", `module.${module}.status`] } }, select: { key: true, value: true } })
+  ]);
+  if (!organization) return false;
+  const subscription = objectValue(configs.find((row) => row.key === "billing.subscription")?.value);
+  if (String(subscription.status ?? "").toUpperCase() !== "ACTIVE") return false;
+  const explicit = configs.find((row) => row.key === `module.${module}.status`);
+  if (explicit) return activeValue(explicit.value);
+  return Boolean(getBillingPlanDefinition(String(subscription.planKey ?? "") as never)?.includedModules.includes(module));
+};

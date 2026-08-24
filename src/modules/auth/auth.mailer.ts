@@ -152,6 +152,16 @@ export const sendLoginSmsOtp = async (input: SendLoginSmsOtpInput) => {
   }
 };
 
+export const sendTenantAdminInvitationEmail = async (input: { to: string; organizationName: string; setupUrl: string; expiresAt: Date }) => {
+  const transport = getTransporter();
+  const subject = `Your ${env.APP_NAME} workspace is ready`;
+  const expiry = input.expiresAt.toISOString();
+  const text = [`Hello,`, "", `Your ${env.APP_NAME} workspace for ${input.organizationName} is ready.`, `Create your Tenant Admin password using this secure link: ${input.setupUrl}`, `This invitation expires at ${expiry}.`, "", "If you were not expecting this invitation, ignore this email."].join("\n");
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto"><h2>Your ${env.APP_NAME} workspace is ready</h2><p>You have been invited as the Tenant Admin for <strong>${input.organizationName}</strong>.</p><p><a href="${input.setupUrl}" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Create your password</a></p><p>This one-time invitation expires at ${expiry}.</p><p>If you were not expecting this invitation, ignore this email.</p></div>`;
+  if (!transport) { if (env.NODE_ENV === "production") throw new Error("SMTP credentials are not configured"); console.log(`[dev-email] to=${input.to} tenant-admin-setup=${input.setupUrl}`); return; }
+  await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html });
+};
+
 export const sendSubscriptionRenewalEmail = async (input: { to: string; organizationName: string; planName: string; renewalDate: Date; amount: number; currency: string }) => {
   const transport = getTransporter();
   const date = input.renewalDate.toISOString().slice(0, 10);

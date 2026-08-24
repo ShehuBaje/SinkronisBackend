@@ -72,7 +72,7 @@ export const employeeManagementSchema = z.object({
   maritalStatus: z.enum(["SINGLE", "MARRIED", "DIVORCED", "WIDOWED", "OTHER"]).optional(), address: z.string().trim().max(1000).optional(),
   city: z.string().trim().max(100).optional(), state: z.string().trim().max(100).optional(), nationality: z.string().trim().max(100).optional(),
   monthlySalary: z.coerce.number().finite().min(0).optional(), bankName: z.string().trim().max(150).optional(), bankCode: z.string().trim().max(20).optional(),
-  accountNumber: z.string().trim().regex(/^\d{10}$/).optional(), taxId: z.string().trim().max(100).optional(), pensionId: z.string().trim().max(100).optional(),
+  accountNumber: z.string().trim().regex(/^\d{6,20}$/).optional(), accountName: z.string().trim().min(2).max(150).optional(), accountType: z.enum(["SAVINGS", "CURRENT"]).optional(), taxId: z.string().trim().max(100).optional(), pensionId: z.string().trim().max(100).optional(),
   lifecycleStatus: z.enum(["PROBATION", "CONFIRMED", "EXITED"]).optional(), operationalStatus: z.enum(["ACTIVE", "ON_LEAVE", "SUSPENDED", "TERMINATED"]).optional(),
   profileImageUrl: z.string().url().optional(), nextOfKinName: z.string().trim().max(201).optional(), nextOfKinPhone: z.string().trim().regex(/^\+?[1-9]\d{7,14}$/).optional(),
   nextOfKinAddress: z.string().trim().max(1000).optional(), nextOfKinRelationship: z.string().trim().max(100).optional(),
@@ -82,6 +82,10 @@ export const employeeManagementSchema = z.object({
 }).strict();
 export const createManagedEmployeeSchema = employeeManagementSchema.refine((v) => Boolean(v.employeeId ?? v.employeeNo) && Boolean(v.firstName || v.fullName) && Boolean(v.lastName || v.fullName) && Boolean(v.email), "Employee ID, name, and email are required");
 export const updateManagedEmployeeSchema = employeeManagementSchema.refine((v) => Object.keys(v).length > 0, "At least one field is required");
+export const bankUpdateRequestParamsSchema = z.object({ requestId: id }).strict();
+export const bankUpdateRequestsQuerySchema = z.object({ ...pageFields, status: z.enum(["ALL", "PENDING", "APPROVED", "REJECTED", "CANCELLED"]).default("PENDING") }).strict();
+export const rejectBankUpdateRequestSchema = z.object({ reviewNote: z.string().trim().min(3).max(2000) }).strict();
+export const approveBankUpdateRequestSchema = z.object({ reviewNote: z.string().trim().max(2000).optional() }).strict();
 
 export const attendanceDateQuerySchema = z.object({ date: dateOnly.optional() }).strict();
 export const attendanceLogsQuerySchema = z.object({

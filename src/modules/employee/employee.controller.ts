@@ -1,0 +1,10 @@
+import type { Request, Response } from "express";
+import { sendSuccess } from "../../core/api-response";
+import { downloadEmployeeDocument, getEmployeeDashboard, getEmployeeProfile, listEmployeeDocuments, requestBankDetailsUpdate, updateEmployeePersonalDetails, updateEmployeeProfilePhoto } from "./employee.service";
+export const getEmployeeDashboardController = async (req: Request, res: Response) => sendSuccess(res, "Employee dashboard retrieved successfully", await getEmployeeDashboard(req.organizationId!, req.user!));
+export const getEmployeeProfileController = async (req: Request, res: Response) => sendSuccess(res, "Employee profile retrieved successfully", await getEmployeeProfile(req.organizationId!, req.user!));
+export const updateEmployeePersonalDetailsController = async (req: Request, res: Response) => sendSuccess(res, "Employee personal details updated successfully", await updateEmployeePersonalDetails(req.organizationId!, req.user!, req.body));
+export const updateEmployeeProfilePhotoController = async (req: Request, res: Response) => sendSuccess(res, "Employee profile photo updated successfully", await updateEmployeeProfilePhoto(req.organizationId!, req.user!, req.file, `${req.protocol}://${req.get("host")}`));
+export const listEmployeeDocumentsController = async (req: Request, res: Response) => sendSuccess(res, "Employee documents retrieved successfully", await listEmployeeDocuments(req.organizationId!, req.user!));
+export const downloadEmployeeDocumentController = async (req: Request, res: Response) => { const document = await downloadEmployeeDocument(req.organizationId!, req.user!, String(req.params.documentId)); return res.status(200).type(document.mimeType).attachment(document.filename).send(document.buffer); };
+export const requestBankDetailsUpdateController = async (req: Request, res: Response) => sendSuccess(res, "Bank details update request submitted successfully", await requestBankDetailsUpdate(req.organizationId!, req.user!, req.body), { status: 201 });

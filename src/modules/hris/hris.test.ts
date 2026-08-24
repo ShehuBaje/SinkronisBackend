@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { attendanceMetric, calculateLeaveDays, calculateWeightedAssessmentScore, classifyAttendance, performanceRatingForScore, performanceRatingValueForScore, shiftDateKey, tenantDateKey, trendForDifference, validateAppraisalTemplateConfiguration, zonedDateTimeToUtc } from "./hris.service";
 import { hrisRouter } from "./hris.routes";
-import { appraisalTemplateBodySchema, applyLeaveSchema, attendanceLogsQuerySchema, attendanceOverrideSchema, createAppraisalCycleSchema, createAttendanceDisputeSchema, createConductQuerySchema, createSuspensionSchema, employeeListQuerySchema, hrApprovalSchema, leaveDecisionParamsSchema, leaveListQuerySchema, managerReviewSchema, rejectLeaveSchema, submitSelfAssessmentSchema, updateConductStatusSchema, updateEmployeeStatusSchema } from "./hris.validation";
+import { appraisalTemplateBodySchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceLogsQuerySchema, attendanceOverrideSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, createAppraisalCycleSchema, createAttendanceDisputeSchema, createConductQuerySchema, createSuspensionSchema, employeeListQuerySchema, hrApprovalSchema, leaveDecisionParamsSchema, leaveListQuerySchema, managerReviewSchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, submitSelfAssessmentSchema, updateConductStatusSchema, updateEmployeeStatusSchema } from "./hris.validation";
 
 test("HRIS dashboard trends return raw differences and normalized direction", () => {
   assert.deepEqual(attendanceMetric(12, 9), { count: 12, previousDayCount: 9, difference: 3, trend: "UP" });
@@ -26,6 +26,16 @@ test("HRIS dashboard and tenant-scoped leave decision routes are registered", ()
 test("appraisal administration and conduct workflow routes are registered centrally", () => {
   const routes = (hrisRouter as any).stack.filter((layer: any) => layer.route).map((layer: any) => layer.route.path);
   for (const path of ["/appraisals/templates", "/appraisals/cycles", "/appraisals/reviews", "/appraisals/:appraisalId/sign-off", "/conduct/overview", "/conduct/queries", "/conduct/suspensions", "/conduct/:conductId/status"]) assert.equal(routes.includes(path), true, `${path} route missing`);
+});
+
+test("bank update review routes and decisions are strictly registered and validated", () => {
+  const routes = (hrisRouter as any).stack.filter((layer: any) => layer.route).map((layer: any) => layer.route.path);
+  for (const path of ["/bank-details-update-requests", "/bank-details-update-requests/:requestId/approve", "/bank-details-update-requests/:requestId/reject"]) assert.equal(routes.includes(path), true, `${path} route missing`);
+  assert.equal(bankUpdateRequestParamsSchema.safeParse({ requestId: "request-id" }).success, true);
+  assert.equal(bankUpdateRequestsQuerySchema.safeParse({ page: 1, limit: 20, status: "PENDING" }).success, true);
+  assert.equal(approveBankUpdateRequestSchema.safeParse({}).success, true);
+  assert.equal(rejectBankUpdateRequestSchema.safeParse({ reviewNote: "Account could not be verified" }).success, true);
+  assert.equal(rejectBankUpdateRequestSchema.safeParse({}).success, false);
 });
 
 test("leave decision inputs reject invalid identifiers and short rejection reasons", () => {

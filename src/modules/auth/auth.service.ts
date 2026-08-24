@@ -9,6 +9,7 @@ import { sendLoginOtpEmail, sendLoginSmsOtp, sendPasswordResetOtpEmail } from ".
 import { permissions } from "./permissions";
 import type {
   beginAuthenticatorSetupSchema,
+  acceptTenantInvitationSchema,
   disableAuthenticatorSchema,
   enableAuthenticatorSchema,
   forgotPasswordSchema,
@@ -22,6 +23,7 @@ import type {
 import type { z } from "zod";
 import { getGlobalPasswordPolicy } from "../platform-admin/platform-admin.service";
 import { billingModuleKeys, billingPlans } from "../billing/billing.catalog";
+import { createAuditLog } from "../admin/admin.audit";
 
 const prismaAny = prisma as any;
 const loadOtpLibrary = () => import("otplib");
@@ -959,6 +961,24 @@ export const resetPassword = async (input: z.infer<typeof resetPasswordSchema>) 
   return {
     message: "Password reset successful"
   };
+};
+
+export const acceptTenantAdminInvitation = async (input: z.infer<typeof acceptTenantInvitationSchema>) => {
+  const invitation = await prisma.agentInvitation.findFirst({ where: { token: input.token, status: "PENDING", expiresAt: { gt: new Date() } }, include: { organization: { select: { id: true, name: true, slug: true, status: true } }, role: { select: { id: true, name: true } } } });
+  if (!invitation || invitation.organization.status !== "ACTIVE") throw badRequest("Invitation is invalid or expired");
+  const user = await prisma.user.findFirst({ where: { organizationId: invitation.organizationId, email: invitation.email, roleId: invitation.roleId ?? undefined, isActive: true }, select: { id: true } });
+  if (!user) throw badRequest("Invitation is invalid or expired");
+  const securityPolicy = await getSecurityPolicyForOrganization(invitation.organizationId);
+  validatePasswordAgainstPolicy(input.password, securityPolicy);
+  const passwordHash = await bcrypt.hash(input.password, 12); const acceptedAt = new Date();
+  await prisma.$transaction(async (tx) => {
+    const consumed = await tx.agentInvitation.updateMany({ where: { id: invitation.id, status: "PENDING", expiresAt: { gt: acceptedAt } }, data: { status: "ACCEPTED", acceptedAt } });
+    if (consumed.count !== 1) throw badRequest("Invitation is invalid or expired");
+    await tx.user.update({ where: { id: user.id }, data: { passwordHash, passwordChangedAt: acceptedAt } });
+    await tx.userSession.updateMany({ where: { organizationId: invitation.organizationId, userId: user.id, revokedAt: null }, data: { revokedAt: acceptedAt, revokeReason: "Tenant invitation password established" } });
+  });
+  await createAuditLog({ organizationId: invitation.organizationId, actorUserId: user.id, action: "TENANT_ADMIN_INVITATION_ACCEPTED", resource: "INVITATION", resourceId: invitation.id, summary: "Tenant Admin accepted workspace invitation", metadata: { userId: user.id } });
+  return { message: "Tenant Admin password created successfully", organization: { name: invitation.organization.name, slug: invitation.organization.slug }, email: invitation.email };
 };
 
 export const getTwoFactorStatus = async (userId?: string) => {
