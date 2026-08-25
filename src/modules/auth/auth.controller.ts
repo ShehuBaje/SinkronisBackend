@@ -4,6 +4,7 @@ import {
   disableAuthenticator,
   enableAuthenticator,
   forgotPassword,
+  getCurrentAuthenticatedUser,
   getTwoFactorStatus,
   login,
   registerOrganization,
@@ -13,6 +14,10 @@ import {
   verifyLoginTwoFactor,
   verifyResetOtp
 } from "./auth.service";
+
+export const getCurrentAuthenticatedUserController = async (req: any, res: any) => {
+  res.json(await getCurrentAuthenticatedUser(req.user?.id, req.user?.organizationId));
+};
 
 export const registerOrganizationController = async (req: any, res: any) => {
   const result = await registerOrganization(req.body);

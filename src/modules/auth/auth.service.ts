@@ -406,6 +406,42 @@ const resolveEnabledMethods = (input: {
 
 export const loginAccountType = (isPlatformAdmin: boolean) => isPlatformAdmin ? "PLATFORM_ADMIN" as const : "TENANT_USER" as const;
 
+export const getCurrentAuthenticatedUser = async (userId?: string, organizationId?: string) => {
+  if (!userId || !organizationId) throw unauthorized();
+
+  const user = await prisma.user.findFirst({
+    where: { id: userId, organizationId, isActive: true },
+    select: {
+      id: true,
+      organizationId: true,
+      isPlatformAdmin: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      lastLoginAt: true,
+      role: { select: { name: true } },
+      organization: { select: { name: true, slug: true, status: true } }
+    }
+  });
+
+  if (!user) throw unauthorized();
+
+  return {
+    user: {
+      id: user.id,
+      organizationId: user.organizationId,
+      isPlatformAdmin: user.isPlatformAdmin,
+      accountType: loginAccountType(user.isPlatformAdmin),
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role.name,
+      lastLoginAt: user.lastLoginAt,
+      organization: user.organization
+    }
+  };
+};
+
 const completeLoginSuccess = async (
   user: {
     id: string;

@@ -13,6 +13,7 @@ import {
   resendPasswordOtpController,
   resetPasswordController,
   getTwoFactorStatusController,
+  getCurrentAuthenticatedUserController,
   updatePreferredTwoFactorMethodController,
   verifyLoginTwoFactorController,
   verifyResetOtpController
@@ -38,6 +39,8 @@ authRouter.post(
   validate({ body: registerOrganizationSchema }),
   asyncHandler(registerOrganizationController)
 );
+
+authRouter.get("/me", authenticate, asyncHandler(getCurrentAuthenticatedUserController));
 
 authRouter.post("/tenant-invitations/accept", validate({ body: acceptTenantInvitationSchema }), asyncHandler(acceptTenantAdminInvitationController));
 
