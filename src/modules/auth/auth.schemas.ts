@@ -31,6 +31,10 @@ export const loginSchema = z.object({
   twoFactorMethod: z.enum(["AUTHENTICATOR_APP", "SMS_OTP", "EMAIL_OTP"]).optional()
 });
 
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string().min(1)
+}).strict();
+
 export const forgotPasswordSchema = z.object({
   email: z.string().email(),
   organizationSlug: z.string().min(2).optional()

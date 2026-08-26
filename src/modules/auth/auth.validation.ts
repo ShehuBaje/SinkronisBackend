@@ -5,6 +5,7 @@ export {
   enableAuthenticatorSchema,
   forgotPasswordSchema,
   loginSchema,
+  refreshTokenSchema,
   registerOrganizationSchema,
   resetPasswordSchema,
   updatePreferredTwoFactorMethodSchema,

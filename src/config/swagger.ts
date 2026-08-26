@@ -708,6 +708,8 @@ const options: swaggerJSDoc.Options = {
         },
         AuthenticatedLoginUser: { type: "object", required: ["id", "organizationId", "isPlatformAdmin", "accountType", "email", "firstName", "lastName", "role"], properties: { id: { type: "string" }, organizationId: { type: "string", description: "Tenant context identifier; do not use this value to infer account type." }, isPlatformAdmin: { type: "boolean", description: "Authoritative platform-administrator discriminator." }, accountType: { type: "string", enum: ["PLATFORM_ADMIN", "TENANT_USER"], description: "Stable frontend routing discriminator. PLATFORM_ADMIN routes to the Platform Admin application; TENANT_USER routes according to tenant RBAC/portal permissions." }, email: { type: "string", format: "email" }, firstName: { type: "string" }, lastName: { type: "string" }, role: { type: "string", description: "Organization-scoped RBAC role name. It is not an account-type discriminator and may be Owner for both platform and tenant users." }, lastLoginAt: { type: "string", format: "date-time", nullable: true } } },
         LoginSuccessResponse: { type: "object", required: ["user", "tokens"], properties: { user: { $ref: "#/components/schemas/AuthenticatedLoginUser" }, tokens: { type: "object", required: ["accessToken", "refreshToken"], properties: { accessToken: { type: "string" }, refreshToken: { type: "string" } } } } },
+        RefreshTokenBody: { type: "object", required: ["refreshToken"], additionalProperties: false, properties: { refreshToken: { type: "string", writeOnly: true } } },
+        RefreshTokenResponse: { type: "object", required: ["tokens"], properties: { tokens: { type: "object", required: ["accessToken", "refreshToken"], properties: { accessToken: { type: "string" }, refreshToken: { type: "string", description: "Rotated refresh token. Replace the previously stored refresh token immediately." } } } } },
         CurrentSessionResponse: { type: "object", required: ["user"], properties: { user: { allOf: [{ $ref: "#/components/schemas/AuthenticatedLoginUser" }, { type: "object", properties: { organization: { type: "object", required: ["name", "slug", "status"], properties: { name: { type: "string" }, slug: { type: "string" }, status: { type: "string" } } } } }] } } },
         AcceptTenantInvitationBody: { type: "object", required: ["token", "password", "confirmPassword"], additionalProperties: false, properties: { token: { type: "string", minLength: 32, description: "One-time token from the Tenant Admin invitation email." }, password: { type: "string", minLength: 8, maxLength: 128, writeOnly: true }, confirmPassword: { type: "string", minLength: 8, maxLength: 128, writeOnly: true } } },
         MyPlanGenericResponse: {
@@ -1832,6 +1834,19 @@ const options: swaggerJSDoc.Options = {
             "401": { description: "Unauthorized" },
             "403": { description: "Forbidden" },
             "404": { description: "Module not found" }
+          }
+        }
+      },
+      [`${authBase}/refresh`]: {
+        post: {
+          tags: ["Auth"],
+          summary: "Refresh authentication tokens",
+          description: "Exchanges one active refresh token for a new access token and rotated refresh token. Each refresh token is single-use.",
+          requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/RefreshTokenBody" } } } },
+          responses: {
+            "200": { description: "Tokens rotated successfully", content: { "application/json": { schema: { $ref: "#/components/schemas/RefreshTokenResponse" } } } },
+            "400": { description: "Invalid request body" },
+            "401": { description: "Refresh token is invalid, expired, revoked, already used, or belongs to an inactive account" }
           }
         }
       },

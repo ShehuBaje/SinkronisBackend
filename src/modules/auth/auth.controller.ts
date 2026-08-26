@@ -7,6 +7,7 @@ import {
   getCurrentAuthenticatedUser,
   getTwoFactorStatus,
   login,
+  refreshAuthenticationTokens,
   registerOrganization,
   resendPasswordOtp,
   resetPassword,
@@ -31,6 +32,10 @@ export const loginController = async (req: any, res: any) => {
     ip: req.ip
   });
   res.json(result);
+};
+
+export const refreshAuthenticationTokensController = async (req: any, res: any) => {
+  res.json(await refreshAuthenticationTokens(req.body));
 };
 
 export const verifyLoginTwoFactorController = async (req: any, res: any) => {

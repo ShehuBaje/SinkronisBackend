@@ -9,6 +9,7 @@ import {
   enableAuthenticatorController,
   forgotPasswordController,
   loginController,
+  refreshAuthenticationTokensController,
   registerOrganizationController,
   resendPasswordOtpController,
   resetPasswordController,
@@ -25,6 +26,7 @@ import {
   enableAuthenticatorSchema,
   forgotPasswordSchema,
   loginSchema,
+  refreshTokenSchema,
   registerOrganizationSchema,
   resetPasswordSchema,
   updatePreferredTwoFactorMethodSchema,
@@ -48,6 +50,12 @@ authRouter.post(
   "/login",
   validate({ body: loginSchema }),
   asyncHandler(loginController)
+);
+
+authRouter.post(
+  "/refresh",
+  validate({ body: refreshTokenSchema }),
+  asyncHandler(refreshAuthenticationTokensController)
 );
 
 authRouter.post(

@@ -14,6 +14,7 @@ import type {
   enableAuthenticatorSchema,
   forgotPasswordSchema,
   loginSchema,
+  refreshTokenSchema,
   registerOrganizationSchema,
   resetPasswordSchema,
   updatePreferredTwoFactorMethodSchema,
@@ -262,9 +263,61 @@ const signTokens = (user: { id: string; organizationId: string }) => ({
   }),
   refreshToken: jwt.sign({ organizationId: user.organizationId }, env.JWT_REFRESH_SECRET, {
     subject: user.id,
+    jwtid: crypto.randomUUID(),
     expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions["expiresIn"]
   })
 });
+
+const tokenExpiresAt = (token: string) => {
+  const decoded = jwt.decode(token);
+  if (!decoded || typeof decoded === "string" || typeof decoded.exp !== "number") {
+    throw unauthorized("Invalid refresh token");
+  }
+  return new Date(decoded.exp * 1000);
+};
+
+export const refreshAuthenticationTokens = async (input: z.infer<typeof refreshTokenSchema>) => {
+  let payload: jwt.JwtPayload;
+  try {
+    payload = jwt.verify(input.refreshToken, env.JWT_REFRESH_SECRET) as jwt.JwtPayload;
+  } catch {
+    throw unauthorized("Invalid or expired refresh token");
+  }
+
+  if (!payload.sub || typeof payload.organizationId !== "string" || payload.purpose) {
+    throw unauthorized("Invalid refresh token");
+  }
+
+  const refreshTokenHash = hashRefreshToken(input.refreshToken);
+  const now = new Date();
+  const session = await prisma.userSession.findFirst({
+    where: {
+      userId: payload.sub,
+      organizationId: payload.organizationId,
+      refreshTokenHash,
+      revokedAt: null,
+      expiresAt: { gt: now }
+    },
+    include: { user: { include: { organization: { select: { status: true } } } } }
+  });
+
+  if (!session || !session.user.isActive || (!session.user.isPlatformAdmin && session.user.organization.status !== "ACTIVE")) {
+    throw unauthorized("Refresh session is no longer valid");
+  }
+
+  const tokens = signTokens(session.user);
+  const rotated = await prisma.userSession.updateMany({
+    where: { id: session.id, refreshTokenHash, revokedAt: null, expiresAt: { gt: now } },
+    data: {
+      refreshTokenHash: hashRefreshToken(tokens.refreshToken),
+      lastSeenAt: now,
+      expiresAt: tokenExpiresAt(tokens.refreshToken)
+    }
+  });
+
+  if (rotated.count !== 1) throw unauthorized("Refresh token has already been used");
+  return { tokens };
+};
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
