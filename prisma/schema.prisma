@@ -109,6 +109,8 @@ model EmployeeAppraisal {
   templateSnapshot     Json?
   acknowledgedResponse String?                  @db.Text
   acknowledgedAt       DateTime?
+  goalsConfirmedAt     DateTime?
+  goalsConfirmedById   String?
   createdAt            DateTime                 @default(now())
   updatedAt            DateTime                 @updatedAt
   employee             Employee                 @relation("EmployeeAppraisalEmployee", fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeAppraisal_employeeId_fkey")
@@ -125,6 +127,7 @@ model EmployeeAppraisal {
   @@index([organizationId, cycleId, stage], map: "EmployeeAppraisal_org_cycle_stage_idx")
   @@index([organizationId, status], map: "EmployeeAppraisal_org_status_idx")
   @@index([managerId, stage], map: "EmployeeAppraisal_manager_stage_idx")
+  @@index([organizationId, goalsConfirmedAt], map: "EmployeeAppraisal_org_goals_confirmed_idx")
   @@map("EmployeeAppraisal")
 }
 
@@ -628,6 +631,10 @@ model Employee {
   employeeAppraisals      EmployeeAppraisal[]        @relation("EmployeeAppraisalEmployee")
   managedAppraisals       EmployeeAppraisal[]        @relation("EmployeeAppraisalManager")
   bankUpdateRequests      BankDetailsUpdateRequest[]
+  payrollEnrollment       PayrollEnrollment?
+  payrollStatutoryProfile PayrollStatutoryProfile?
+  payrollDeductions       EmployeeDeduction[]
+  payrollBik              EmployeeBenefitInKind?
 
   @@unique([organizationId, email], map: "Employee_organizationId_email_key")
   @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
@@ -827,6 +834,9 @@ model LoanAdvance {
   outstanding    Decimal  @db.Decimal(14, 2)
   reason         String?  @db.Text
   issuedAt       DateTime
+  loanType       String   @default("RECURRING")
+  monthlyRepayment Decimal? @db.Decimal(14, 2)
+  status         String   @default("ACTIVE")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LoanAdvance_employeeId_fkey")
@@ -834,6 +844,76 @@ model LoanAdvance {
   @@index([employeeId], map: "LoanAdvance_employeeId_fkey")
   @@index([organizationId, employeeId], map: "LoanAdvance_organizationId_employeeId_idx")
   @@map("LoanAdvance")
+}
+
+model PayrollEnrollment {
+  id             String   @id @default(cuid())
+  organizationId String
+  employeeId     String   @unique(map: "PayrollEnrollment_employeeId_key")
+  isActive       Boolean  @default(true)
+  enrolledAt     DateTime @default(now())
+  enrolledById   String?
+  removedAt      DateTime?
+  removedById    String?
+  removedReason  String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "PayrollEnrollment_employeeId_fkey")
+
+  @@index([organizationId, isActive], map: "PayrollEnrollment_org_active_idx")
+  @@map("PayrollEnrollment")
+}
+
+model PayrollStatutoryProfile {
+  id             String   @id @default(cuid())
+  organizationId String
+  employeeId     String   @unique(map: "PayrollStatutoryProfile_employeeId_key")
+  taxState       String?
+  taxStatus      String   @default("PAYE")
+  tin            String?
+  pensionPin     String?
+  pfaName        String?
+  nhfNumber      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "PayrollStatutoryProfile_employeeId_fkey")
+
+  @@index([organizationId, taxStatus], map: "PayrollStatutoryProfile_org_tax_idx")
+  @@map("PayrollStatutoryProfile")
+}
+
+model EmployeeDeduction {
+  id             String   @id @default(cuid())
+  organizationId String
+  employeeId     String
+  name           String
+  amount         Decimal  @db.Decimal(14, 2)
+  frequency      String   @default("MONTHLY")
+  active         Boolean  @default(true)
+  effectiveFrom  DateTime @default(now())
+  effectiveTo    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDeduction_employeeId_fkey")
+
+  @@index([organizationId, employeeId, active], map: "EmployeeDeduction_org_employee_active_idx")
+  @@map("EmployeeDeduction")
+}
+
+model EmployeeBenefitInKind {
+  id                    String   @id @default(cuid())
+  organizationId        String
+  employeeId            String   @unique(map: "EmployeeBenefitInKind_employeeId_key")
+  hmoHealthInsurance    Decimal  @default(0) @db.Decimal(14, 2)
+  airtimeAllowance      Decimal  @default(0) @db.Decimal(14, 2)
+  mealAllowance         Decimal  @default(0) @db.Decimal(14, 2)
+  thirteenthMonthAnnual Decimal  @default(0) @db.Decimal(14, 2)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  employee              Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeBenefitInKind_employeeId_fkey")
+
+  @@index([organizationId], map: "EmployeeBenefitInKind_org_idx")
+  @@map("EmployeeBenefitInKind")
 }
 
 model NotificationCategory {
@@ -1197,6 +1277,7 @@ model PayrollRun {
   payslip        Payslip[]
 
   @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
+  @@index([organizationId, periodEnd], map: "PayrollRun_organizationId_periodEnd_idx")
   @@map("PayrollRun")
 }
 
@@ -1208,12 +1289,17 @@ model Payslip {
   grossPay           Decimal    @db.Decimal(14, 2)
   payeTax            Decimal    @default(0.00) @db.Decimal(14, 2)
   pension            Decimal    @default(0.00) @db.Decimal(14, 2)
+  employerPension    Decimal    @default(0.00) @db.Decimal(14, 2)
+  nhf                Decimal    @default(0.00) @db.Decimal(14, 2)
+  nsitf              Decimal    @default(0.00) @db.Decimal(14, 2)
   deductions         Decimal    @default(0.00) @db.Decimal(14, 2)
   netPay             Decimal    @db.Decimal(14, 2)
   currency           String?
   earningsSnapshot   Json?
   deductionsSnapshot Json?
   pdfFileReference   String?
+  departmentIdSnapshot String?
+  departmentNameSnapshot String?
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
   employee           Employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
@@ -1222,6 +1308,7 @@ model Payslip {
   @@unique([payrollRunId, employeeId], map: "Payslip_payrollRunId_employeeId_key")
   @@index([employeeId], map: "Payslip_employeeId_fkey")
   @@index([organizationId, employeeId], map: "Payslip_organizationId_employeeId_idx")
+  @@index([organizationId, payrollRunId], map: "Payslip_organizationId_payrollRunId_idx")
   @@map("Payslip")
 }
 
@@ -1314,6 +1401,9 @@ model SalaryStructure {
   housing        Decimal      @default(0.00) @db.Decimal(14, 2)
   transport      Decimal      @default(0.00) @db.Decimal(14, 2)
   otherAllowance Decimal      @default(0.00) @db.Decimal(14, 2)
+  additionalAllowances Json?
+  prorationResumeDate DateTime?
+  prorationMethod String?
   effectiveFrom  DateTime
   effectiveTo    DateTime?
   createdAt      DateTime     @default(now())
@@ -1500,6 +1590,7 @@ model TaxReport {
   periodEnd      DateTime
   type           String
   amount         Decimal      @db.Decimal(14, 2)
+  dueDate        DateTime?
   submittedAt    DateTime?
   reference      String?
   createdAt      DateTime     @default(now())
@@ -1507,6 +1598,7 @@ model TaxReport {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "TaxReport_organizationId_fkey")
 
   @@index([organizationId, type], map: "TaxReport_organizationId_type_idx")
+  @@index([organizationId, periodEnd, dueDate], map: "TaxReport_org_period_due_idx")
   @@map("TaxReport")
 }
 
@@ -1786,7 +1878,12 @@ enum paymentrequest_status {
 enum payrollrun_status {
   DRAFT
   PROCESSING
+  PENDING_APPROVAL
   APPROVED
+  PENDING_DISBURSEMENT
+  DISBURSING
+  DISBURSED
+  FAILED
   PAID
   CANCELLED
 }

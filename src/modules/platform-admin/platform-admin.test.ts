@@ -248,6 +248,8 @@ test("platform billing validates dates, pagination, filters, sorting, periods, a
   assert.equal(invoiceListQuerySchema.safeParse({ status: "SENT" }).success, false);
   assert.equal(invoiceListQuerySchema.safeParse({ sortBy: "rawSql" }).success, false);
   assert.equal(invoiceListQuerySchema.safeParse({ billingPeriod: "2026-13" }).success, false);
+  assert.equal(invoiceListQuerySchema.safeParse({ period: "2026-07" }).success, true);
+  assert.equal(invoiceListQuerySchema.safeParse({ period: "2026-07", billingPeriod: "2026-08" }).success, false);
   assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 500000.25 }).success, true);
   assert.equal(createPlatformInvoiceSchema.parse({ tenantId: "tenant", period: "2026-08", amount: 185000 }).billingPeriod, "2026-08");
   assert.equal(createPlatformInvoiceSchema.safeParse({ tenantId: "tenant", billingPeriod: "2026-07", amount: 0 }).success, false);
@@ -268,7 +270,7 @@ test("billing formulas and reminder eligibility follow the fixed-price model", (
 });
 
 test("invoice export accepts the listing filters without pagination", () => {
-  const result = invoiceExportQuerySchema.parse({ search: "Acme", status: "OVERDUE", tenantId: "tenant", billingPeriod: "2026-07", sortBy: "tenantName", sortOrder: "asc" });
+  const result = invoiceExportQuerySchema.parse({ search: "Acme", status: "OVERDUE", tenantId: "tenant", period: "2026-07", sortBy: "tenantName", sortOrder: "asc" });
   assert.deepEqual({ status: result.status, sortBy: result.sortBy, sortOrder: result.sortOrder }, { status: "OVERDUE", sortBy: "tenantName", sortOrder: "asc" });
   assert.equal(invoiceExportQuerySchema.safeParse({ page: 1 }).success, false);
 });

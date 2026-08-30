@@ -287,11 +287,15 @@ export const billingDateFilterSchema = z.object(billingDateFilterFields).strict(
 const invoiceListObjectSchema = z.object({ ...billingDateFilterFields,
   page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(25),
   search: z.string().trim().max(100).optional(), status: z.enum(platformInvoiceStatuses).optional(), tenantId: z.string().trim().min(1).max(191).optional(),
-  billingPeriod: period.optional(), sortBy: z.enum(platformInvoiceSortFields).default("createdAt"), sortOrder: z.enum(["asc", "desc"]).default("desc")
+  period: period.optional(), billingPeriod: period.optional(), sortBy: z.enum(platformInvoiceSortFields).default("createdAt"), sortOrder: z.enum(["asc", "desc"]).default("desc")
 }).strict();
-export const invoiceListQuerySchema = invoiceListObjectSchema.superRefine(validateDateRange);
+const validateInvoiceList = (value: { startDate?: Date; endDate?: Date; period?: string; billingPeriod?: string }, context: z.RefinementCtx) => {
+  validateDateRange(value, context);
+  if (value.period && value.billingPeriod && value.period !== value.billingPeriod) context.addIssue({ code: z.ZodIssueCode.custom, path: ["period"], message: "period and billingPeriod must match when both are supplied" });
+};
+export const invoiceListQuerySchema = invoiceListObjectSchema.superRefine(validateInvoiceList);
 
-export const invoiceExportQuerySchema = invoiceListObjectSchema.omit({ page: true, limit: true }).superRefine(validateDateRange);
+export const invoiceExportQuerySchema = invoiceListObjectSchema.omit({ page: true, limit: true }).superRefine(validateInvoiceList);
 export const invoiceParamsSchema = z.object({ invoiceId: z.string().trim().min(1).max(191) }).strict();
 export const createPlatformInvoiceSchema = z.object({
   tenantId: z.string().trim().min(1).max(191), billingPeriod: period.optional(), period: period.optional(),

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionItemPriority, buildEmployeeAttendanceCalendar, createPayslipPdf, dashboardAttendanceState, expectedWorkdaysThrough, inspectProfilePhoto, isEmployeeVisiblePayrollStatus, leaveCalendarDates, maskBankAccountNumber, payslipComponents } from "./employee.service";
-import { bankUpdateRequestSchema, employeeAttendanceDisputeSchema, employeeAttendanceQuerySchema, employeeDashboardQuerySchema, employeeLeaveQuerySchema, employeeLeaveRequestSchema, employeePayslipParamsSchema, employeePayslipsQuerySchema, employeeRelieverQuerySchema, updateEmployeePersonalDetailsSchema } from "./employee.validation";
+import { actionItemPriority, buildEmployeeAttendanceCalendar, createPayslipPdf, dashboardAttendanceState, expectedWorkdaysThrough, inspectProfilePhoto, isEmployeeVisiblePayrollStatus, leaveCalendarDates, maskBankAccountNumber, paginateEmployeeInboxItems, payslipComponents } from "./employee.service";
+import { bankUpdateRequestSchema, employeeAppraisalAcknowledgmentSchema, employeeAppraisalGoalConfirmationSchema, employeeAppraisalGoalCreateSchema, employeeAppraisalGoalUpdateSchema, employeeAppraisalHistoryQuerySchema, employeeAttendanceDisputeSchema, employeeAttendanceQuerySchema, employeeDashboardQuerySchema, employeeInboxQuerySchema, employeeLeaveQuerySchema, employeeLeaveRequestSchema, employeePayslipParamsSchema, employeePayslipsQuerySchema, employeeRelieverQuerySchema, employeeSelfAssessmentDraftSchema, updateEmployeePersonalDetailsSchema } from "./employee.validation";
 import { isMutablePayrollRunStatus } from "../payroll/payroll.service";
+import { appraisalAssessmentFromTemplate, appraisalTemplateSnapshot, isAppraisalSubmissionDeadlineOpen } from "../hris/hris.service";
+import { employeeRouter } from "./employee.routes";
 
 test("dashboard attendance exposes empty, clocked-in, and clocked-out states", () => {
   const now = new Date("2026-08-24T12:00:00.000Z");
@@ -117,4 +119,64 @@ test("on-demand payslip document is a PDF built only from supplied snapshot line
   const pdf = createPayslipPdf(["EMPLOYEE PAYSLIP", "Net pay: NGN 100.00"]);
   assert.equal(pdf.subarray(0, 8).toString(), "%PDF-1.4");
   assert.equal(pdf.includes(Buffer.from("Net pay: NGN 100.00")), true);
+});
+
+const appraisalSections = [{ section: "KRA", totalWeight: 100, objectives: [{ title: "Configured objective", weight: 100, keyResults: [{ keyResult: "Configured result", kpiWeight: 100, target: 10, achieved: 8 }] }] }];
+const appraisalTemplate = { sections: [{ section: "KRA", weight: 100, objectives: [{ title: "Configured objective", weight: 100, keyResults: [{ description: "Configured result", kpiWeight: 100, target: 10 }] }] }], quarterScoring: false };
+
+test("employee appraisal inputs support goal setting but cannot force identity or workflow state", () => {
+  assert.equal(employeeAppraisalGoalCreateSchema.safeParse({ title: "Improve delivery", description: "Improve delivery consistency", successCriteria: "Meet agreed delivery dates", targetDate: "2026-12-31" }).success, true);
+  assert.equal(employeeAppraisalGoalUpdateSchema.safeParse({ title: "Changed objective" }).success, true);
+  assert.equal(employeeAppraisalGoalConfirmationSchema.safeParse({}).success, true);
+  assert.equal(employeeAppraisalGoalConfirmationSchema.safeParse({ employeeId: "another-employee" }).success, false);
+  assert.equal(employeeSelfAssessmentDraftSchema.safeParse({ sections: appraisalSections, reflections: [] }).success, true);
+  assert.equal(employeeSelfAssessmentDraftSchema.safeParse({ sections: appraisalSections, reflections: [], employeeId: "another-employee", submit: true }).success, false);
+  assert.equal(employeeAppraisalAcknowledgmentSchema.safeParse({ response: "Acknowledged" }).success, true);
+  assert.equal(employeeAppraisalHistoryQuerySchema.safeParse({ page: 1, limit: 100 }).success, false);
+});
+
+test("shared HRIS appraisal snapshot rejects employee changes to targets and weights", () => {
+  assert.equal((appraisalAssessmentFromTemplate(appraisalTemplate as any, appraisalSections) as any[])[0].objectives[0].keyResults[0].target, 10);
+  assert.throws(() => appraisalAssessmentFromTemplate(appraisalTemplate as any, [{ ...appraisalSections[0], objectives: [{ ...appraisalSections[0].objectives[0], keyResults: [{ ...appraisalSections[0].objectives[0].keyResults[0], target: 999 }] }] }]));
+});
+
+test("employee appraisal routes are registered in the shared employee module", () => {
+  const routes = (employeeRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
+  for (const route of ["GET /appraisal", "GET /appraisal/history", "POST /appraisal/:appraisalId/goals", "POST /appraisal/:appraisalId/goals/confirm", "GET /appraisal/:appraisalId/self-assessment", "PUT /appraisal/:appraisalId/self-assessment/draft", "POST /appraisal/:appraisalId/self-assessment/submit", "POST /appraisal/:appraisalId/acknowledge"]) assert.ok(routes.includes(route), route);
+});
+
+test("appraisal deadline is inclusive in tenant-local time", () => {
+  const deadline = new Date("2026-08-27T00:00:00.000Z");
+  assert.equal(isAppraisalSubmissionDeadlineOpen(deadline, new Date("2026-08-27T22:30:00.000Z"), "Africa/Lagos"), true);
+  assert.equal(isAppraisalSubmissionDeadlineOpen(deadline, new Date("2026-08-27T23:30:00.000Z"), "Africa/Lagos"), false);
+});
+
+test("appraisal snapshot preserves template display metadata", () => {
+  const snapshot = appraisalTemplateSnapshot(appraisalTemplate as any, { id: "template-id", name: "Configured Review", version: 3 }) as any;
+  assert.deepEqual(snapshot.templateMetadata, { id: "template-id", name: "Configured Review", version: 3 });
+  assert.equal(snapshot.sections[0].section, "KRA");
+});
+
+const inboxItem = (id: string, status: "PENDING" | "DONE", requiresAction: boolean, eventDate: string, dueDate: string | null = null, readAt: string | null = null) => ({ id, category: "APPRAISAL" as const, type: id, title: id, description: id, status, requiresAction, dueDate: dueDate ? new Date(dueDate) : null, eventDate: new Date(eventDate), readAt: readAt ? new Date(readAt) : null, source: { entityType: "EMPLOYEE_APPRAISAL", entityId: id }, navigation: { target: "MY_APPRAISAL" as const, resourceId: id, action: "VIEW", available: true }, createdAt: new Date(eventDate), completedAt: status === "DONE" ? new Date(eventDate) : null });
+
+test("inbox validation is bounded and rejects employee identity manipulation", () => {
+  assert.equal(employeeInboxQuerySchema.safeParse({ status: "pending", page: 1, limit: 20 }).success, true);
+  assert.equal(employeeInboxQuerySchema.safeParse({ status: "unknown" }).success, false);
+  assert.equal(employeeInboxQuerySchema.safeParse({ employeeId: "another-employee" }).success, false);
+  assert.equal(employeeInboxQuerySchema.safeParse({ limit: 101 }).success, false);
+});
+
+test("inbox counts and filters use one projection while read state remains independent", () => {
+  const items = [inboxItem("later", "PENDING", false, "2026-08-20T00:00:00.000Z", "2026-09-01T00:00:00.000Z", "2026-08-21T00:00:00.000Z"), inboxItem("urgent", "PENDING", true, "2026-08-21T00:00:00.000Z", "2026-08-28T00:00:00.000Z"), inboxItem("complete", "DONE", false, "2026-08-22T00:00:00.000Z")];
+  const pending = paginateEmployeeInboxItems(items, { status: "pending", page: 1, limit: 20 });
+  assert.deepEqual(pending.counts, { all: 3, pending: 2, done: 1 });
+  assert.deepEqual(pending.items.map((item) => item.id), ["urgent", "later"]);
+  assert.equal(pending.items[1].status, "PENDING");
+  assert.ok(pending.items[1].readAt, "a read workflow item remains pending");
+  assert.deepEqual(paginateEmployeeInboxItems(items, { status: "done", page: 1, limit: 20 }).items.map((item) => item.id), ["complete"]);
+});
+
+test("employee inbox route is registered in the shared employee module", () => {
+  const routes = (employeeRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
+  assert.ok(routes.includes("GET /inbox"));
 });

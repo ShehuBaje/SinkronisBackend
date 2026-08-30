@@ -18,7 +18,7 @@ export interface EmployeeActionItem {
   description: string;
   status: EmployeeActionItemStatus;
   dueDate: Date | null;
-  sourceModule: "HRIS";
+  sourceModule: "HRIS" | "PAYROLL";
   sourceRecordId: string | null;
   actionRequired: boolean;
   createdAt: Date;
@@ -51,3 +51,26 @@ export type EmployeeAttendanceDayType = "WORKING_DAY" | "WEEKEND" | "ON_LEAVE" |
 export interface EmployeeAttendanceDisputeInput { issueType: "MISSING_CLOCK_IN" | "MISSING_CLOCK_OUT" | "SYSTEM_ERROR" | "WRONG_STATUS" | "OTHER"; description: string; claimedClockIn?: string; claimedClockOut?: string }
 export interface EmployeeLeaveRequestInput { leaveTypeId: string; startDate: string; endDate: string; reason: string; relieverEmployeeId?: string }
 export interface PayslipComponent { code: string; name: string; amount: number }
+export type EmployeeAppraisalStage = "GOAL_SETTING" | "SELF_ASSESSMENT" | "MANAGER_REVIEW" | "HR_APPROVAL" | "ACKNOWLEDGMENT" | "COMPLETED";
+export type EmployeeAppraisalWorkflowStatus = "PENDING" | "ACTIVE" | "COMPLETED";
+export interface EmployeeAppraisalActions { canEditGoals: boolean; canConfirmGoals: boolean; canBeginSelfAssessment: boolean; canSaveDraft: boolean; canSubmitSelfAssessment: boolean; canAcknowledge: boolean }
+export interface EmployeeAppraisalHistoryItem { id: string; cycleName: string; periodStart: Date; periodEnd: Date; finalScore: number | null; rating: { level: number | null; label: string } | null; completedAt: Date }
+
+export type EmployeeInboxStatus = "PENDING" | "DONE";
+export type EmployeeInboxCategory = "APPRAISAL" | "LEAVE" | "ATTENDANCE" | "PAYROLL" | "PROFILE" | "SYSTEM";
+export interface EmployeeInboxItem {
+  id: string;
+  category: EmployeeInboxCategory;
+  type: string;
+  title: string;
+  description: string;
+  status: EmployeeInboxStatus;
+  requiresAction: boolean;
+  dueDate: Date | null;
+  eventDate: Date;
+  readAt: Date | null;
+  source: { entityType: string; entityId: string };
+  navigation: { target: "MY_APPRAISAL" | "MY_LEAVE" | "MY_ATTENDANCE" | "MY_PAYSLIPS" | "MY_PROFILE" | "MY_INBOX"; resourceId: string; action: string; available: boolean };
+  createdAt: Date;
+  completedAt: Date | null;
+}

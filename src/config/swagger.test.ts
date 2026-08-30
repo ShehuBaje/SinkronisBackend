@@ -46,18 +46,19 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
     /^(GET|PATCH|DELETE) \/api\/v1\/hris\/attendance\/\{\}$/.test(operation) ||
     operation === "POST /api/v1/hris/attendance" ||
     operation === "DELETE /api/v1/hris/employees/{}";
+  const implementedPayroll = (operation: string) => operation === "GET /api/v1/payroll/dashboard" || operation.includes(" /api/v1/payroll/employees");
   const ignored = (operation: string) =>
     operation === "GET /" ||
     /\/(docs|docs\.json)(\/|$)|favicon/.test(operation) ||
     operation.includes(" /api/v1/internal/") ||
     operation.includes(" /api/v1/accounting/") ||
-    operation.includes(" /api/v1/payroll/") ||
+    (operation.includes(" /api/v1/payroll/") && !implementedPayroll(operation)) ||
     excludedLegacyCrud(operation);
 
   const undocumented = [...runtime].filter((operation) => !documented.has(operation) && !ignored(operation)).sort();
   const stale = [...documented].filter((operation) => !runtime.has(operation)).sort();
   const forbidden = [...documented].filter((operation) =>
-    operation.includes(" /api/v1/accounting/") || operation.includes(" /api/v1/payroll/")
+    operation.includes(" /api/v1/accounting/") || (operation.includes(" /api/v1/payroll/") && !implementedPayroll(operation))
   ).sort();
 
   assert.deepEqual(undocumented, [], `Undocumented runtime operations:\n${undocumented.join("\n")}`);

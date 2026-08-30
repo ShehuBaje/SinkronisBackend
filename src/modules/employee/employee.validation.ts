@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { acknowledgeAppraisalSchema, createAppraisalGoalSchema, scoreAppraisalGoalSchema, submitSelfAssessmentSchema } from "../hris/hris.validation";
 
 // The dashboard identity is derived exclusively from authentication context.
 export const employeeDashboardQuerySchema = z.object({}).strict();
@@ -30,6 +31,19 @@ export const employeeLeaveRequestSchema = z.object({
 export const employeeRelieverQuerySchema = z.object({ search: z.string().trim().min(1).max(100).optional(), limit: z.coerce.number().int().min(1).max(50).default(20) }).strict();
 export const employeePayslipsQuerySchema = z.object({ year: z.coerce.number().int().min(2000).max(2200).optional() }).strict();
 export const employeePayslipParamsSchema = z.object({ payslipId: z.string().trim().min(1).max(191) }).strict();
+export const employeeAppraisalParamsSchema = z.object({ appraisalId: z.string().cuid() }).strict();
+export const employeeAppraisalGoalParamsSchema = z.object({ appraisalId: z.string().cuid(), goalId: z.string().cuid() }).strict();
+export const employeeAppraisalHistoryQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(50).default(10) }).strict();
+export const employeeSelfAssessmentDraftSchema = submitSelfAssessmentSchema.omit({ submit: true });
+export const employeeAppraisalGoalCreateSchema = createAppraisalGoalSchema;
+export const employeeAppraisalGoalUpdateSchema = scoreAppraisalGoalSchema;
+export const employeeAppraisalGoalConfirmationSchema = z.object({}).strict();
+export const employeeAppraisalAcknowledgmentSchema = acknowledgeAppraisalSchema;
+export const employeeInboxQuerySchema = z.object({
+  status: z.enum(["all", "pending", "done"]).default("all"),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20)
+}).strict();
 
 const optionalText = (max: number) => z.string().trim().min(1).max(max).nullable().optional();
 export const updateEmployeePersonalDetailsSchema = z.object({

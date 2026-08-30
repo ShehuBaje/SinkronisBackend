@@ -1207,7 +1207,7 @@ const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const assertAdmin = (user: AuthUser) => { if (!user.isPlatformAdmin) throw forbidden("Platform Admin access is required"); };
 const endExclusive = (date: Date) => new Date(date.getTime() + 86_400_000);
 const planLabel = (key: string) => ({ hris: "HRIS", payroll: "PAYROLL", accounting: "ACCOUNTING", "all-in-one": "ALL_IN_ONE" }[key] ?? key.toUpperCase());
-const toInvoice = (row: any) => ({ id: row.id, invoiceId: row.invoiceNumber, invoiceNumber: row.invoiceNumber, tenantId: row.organizationId, tenantName: row.organization.name, tenant: { id: row.organizationId, name: row.organization.name }, billingPeriod: row.billingPeriod, period: row.billingPeriod, amount: Number(row.amount), currency: row.currency, status: row.status, invoiceDate: row.invoiceDate, dueDate: row.dueDate, paidAt: row.paidAt, pricingSnapshot: row.pricingSnapshot ?? null, actions: { canDownload: true, canSendReminder: row.status === "OVERDUE" }, createdAt: row.createdAt, updatedAt: row.updatedAt });
+const toInvoice = (row: any) => ({ id: row.id, invoiceId: row.invoiceNumber, invoiceNumber: row.invoiceNumber, tenantId: row.organizationId, tenantName: row.organization.name, tenant: { id: row.organizationId, name: row.organization.name }, billingPeriod: row.billingPeriod, period: row.billingPeriod, amount: Number(row.amount), currency: row.currency, status: row.status, isOverdue: row.status === "OVERDUE", invoiceDate: row.invoiceDate, dueDate: row.dueDate, paidAt: row.paidAt, pricingSnapshot: row.pricingSnapshot ?? null, actions: { canDownload: true, canSendReminder: row.status === "OVERDUE" }, createdAt: row.createdAt, updatedAt: row.updatedAt });
 const refreshOverdueInvoices = () => prisma.platformInvoice.updateMany({ where: { status: "DRAFT", dueDate: { lt: new Date() } }, data: { status: "OVERDUE" } });
 export const annualRecurringRevenue = (mrr: number) => sumMoney([mrr * 12]);
 export const churnRatePercentage = (activeAtStart: number, churned: number) => activeAtStart > 0 ? Number(((churned / activeAtStart) * 100).toFixed(2)) : 0;
@@ -1225,7 +1225,7 @@ const periodBounds = (query: { year?: number; month?: number; startDate?: Date; 
 const invoiceWhere = (q: Omit<InvoiceListQuery, "page" | "limit">): Prisma.PlatformInvoiceWhereInput => {
   const dates = periodBounds(q);
   return {
-    ...(q.status ? { status: q.status } : {}), ...(q.tenantId ? { organizationId: q.tenantId } : {}), ...(q.billingPeriod ? { billingPeriod: q.billingPeriod } : {}),
+    ...(q.status ? { status: q.status } : {}), ...(q.tenantId ? { organizationId: q.tenantId } : {}), ...((q.period ?? q.billingPeriod) ? { billingPeriod: q.period ?? q.billingPeriod } : {}),
     ...(dates.start || dates.end ? { createdAt: { ...(dates.start ? { gte: dates.start } : {}), ...(dates.end ? { lt: dates.end } : {}) } } : {}),
     ...(q.search ? { OR: [{ id: { contains: q.search } }, { invoiceNumber: { contains: q.search } }, { organization: { is: { OR: [{ name: { contains: q.search } }, { email: { contains: q.search } }] } } }] } : {})
   };
@@ -1371,7 +1371,12 @@ export const getBillingOverview = async (input: unknown, user: AuthUser) => {
   const query = invoiceListQuerySchema.parse(input);
   const dateFilters = { year: query.year, month: query.month, startDate: query.startDate, endDate: query.endDate };
   const [analytics, revenueByPlan, invoices] = await Promise.all([getBillingAnalytics(dateFilters, user), getRevenueByPlan(dateFilters, user), listPlatformInvoices(query, user)]);
-  return { analytics, revenueByPlan, invoices };
+  return {
+    summary: { mrr: analytics.mrr, arr: analytics.arr, overdueAmount: analytics.totalOverdueAmount, churnRate: analytics.churnRate, currency: analytics.currency },
+    analytics,
+    revenueByPlan,
+    invoices
+  };
 };
 
 

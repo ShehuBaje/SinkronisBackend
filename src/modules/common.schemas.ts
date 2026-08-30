@@ -166,6 +166,7 @@ export const taxReportCreateSchema = z.object({
   periodEnd: dateValue,
   type: z.string().min(2),
   amount: money,
+  dueDate: dateValue.optional(),
   submittedAt: dateValue.optional(),
   reference: optionalText
 });
@@ -275,7 +276,7 @@ export const payrollRunCreateSchema = z.object({
   periodStart: dateValue,
   periodEnd: dateValue,
   payDate: dateValue.optional(),
-  status: z.enum(["DRAFT", "PROCESSING", "APPROVED", "PAID", "CANCELLED"]).optional()
+  status: z.enum(["DRAFT", "PROCESSING", "PENDING_APPROVAL", "APPROVED", "PENDING_DISBURSEMENT", "DISBURSING", "DISBURSED", "FAILED", "PAID", "CANCELLED"]).optional()
 });
 export const payrollRunUpdateSchema = payrollRunCreateSchema.partial();
 
@@ -285,6 +286,9 @@ export const payslipCreateSchema = z.object({
   grossPay: money,
   payeTax: money.default(0),
   pension: money.default(0),
+  employerPension: money.default(0),
+  nhf: money.default(0),
+  nsitf: money.default(0),
   deductions: money.default(0),
   netPay: money
 });

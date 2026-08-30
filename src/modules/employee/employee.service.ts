@@ -7,8 +7,8 @@ import { createAuditLog } from "../admin/admin.audit";
 import { deliverUserNotification } from "../../core/notifications";
 import type { AuthUser } from "../../types";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
-import { applyForLeave, classifyAttendance, createAttendanceDispute, shiftDateKey, tenantDateKey, zonedDateTimeToUtc } from "../hris/hris.service";
-import type { BankUpdateRequestInput, EmployeeActionItemStatus, EmployeeAttendanceDisputeInput, EmployeeDashboard, EmployeeDocumentMetadata, EmployeeLeaveRequestInput, PayslipComponent, UpdateEmployeePersonalDetailsInput } from "./employee.interface";
+import { acknowledgeAppraisal, applyForLeave, classifyAttendance, confirmEmployeeAppraisalGoals, createAppraisalGoal, createAttendanceDispute, getAppraisalDetail, getSelfAssessment, saveSelfAssessment, scoreAppraisalGoal, shiftDateKey, tenantDateKey, zonedDateTimeToUtc } from "../hris/hris.service";
+import type { BankUpdateRequestInput, EmployeeAttendanceDisputeInput, EmployeeDashboard, EmployeeDocumentMetadata, EmployeeInboxItem, EmployeeLeaveRequestInput, PayslipComponent, UpdateEmployeePersonalDetailsInput } from "./employee.interface";
 
 const DEFAULT_TIME_ZONE = "Africa/Lagos";
 const defaultSchedule = { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: false, sunday: false, workStartTime: "09:00", workEndTime: "17:00", breakDurationMinutes: 60 };
@@ -20,8 +20,74 @@ export const expectedWorkdaysThrough = (month: string, throughDate: string, sche
 export const dashboardAttendanceState = (attendance: { clockInAt: Date; clockOutAt: Date | null } | null, now: Date) => { if (!attendance) return { status: "NOT_CLOCKED_IN" as const, clockInAt: null, clockOutAt: null, workedMinutes: 0, canClockIn: true, canClockOut: false }; const end = attendance.clockOutAt ?? now; const workedMinutes = Math.max(0, Math.floor((end.getTime() - attendance.clockInAt.getTime()) / 60_000)); return { status: attendance.clockOutAt ? "CLOCKED_OUT" as const : "CLOCKED_IN" as const, clockInAt: attendance.clockInAt, clockOutAt: attendance.clockOutAt, workedMinutes, canClockIn: false, canClockOut: !attendance.clockOutAt }; };
 
 const metadataObject = (value: Prisma.JsonValue | null): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-const notificationStatus = (type: string): EmployeeActionItemStatus => type.includes("REJECTED") ? "REJECTED" : type.includes("APPROVED") ? "APPROVED" : type.includes("OPENED") || type.includes("READY") || type.includes("PROPOSED") ? "ACTION_REQUIRED" : "INFORMATIONAL";
 export const actionItemPriority = (item: { status: string; dueDate: Date | null }, now: Date) => item.status === "ACTION_REQUIRED" && item.dueDate && item.dueDate < now ? 0 : item.status === "ACTION_REQUIRED" ? 1 : item.status === "UPCOMING" ? 2 : 3;
+
+const inboxStageIndex = (stage: string) => ["GOAL_SETTING", "SELF_ASSESSMENT", "MANAGER_REVIEW", "HR_APPROVAL", "ACKNOWLEDGMENT", "COMPLETED"].indexOf(stage);
+const inboxReadAt = (notifications: Array<{ type: string; metadata: Prisma.JsonValue | null; readAt: Date | null }>, category: string, entityId: string) => notifications.find((notification) => {
+  const metadata = metadataObject(notification.metadata);
+  const sourceId = metadata.appraisalId ?? metadata.leaveRequestId ?? metadata.disputeId ?? metadata.payslipId;
+  return String(sourceId ?? "") === entityId && notification.type.includes(category);
+})?.readAt ?? null;
+
+export const sortEmployeeInboxItems = (items: EmployeeInboxItem[]) => [...items].sort((a, b) => {
+  if (a.status !== b.status) return a.status === "PENDING" ? -1 : 1;
+  if (a.status === "PENDING") {
+    if (a.dueDate && b.dueDate) return a.dueDate.getTime() - b.dueDate.getTime();
+    if (a.dueDate) return -1;
+    if (b.dueDate) return 1;
+  }
+  return (b.completedAt ?? b.eventDate).getTime() - (a.completedAt ?? a.eventDate).getTime();
+});
+
+export const paginateEmployeeInboxItems = (items: EmployeeInboxItem[], query: { status: "all" | "pending" | "done"; page: number; limit: number }) => {
+  const counts = { all: items.length, pending: items.filter((item) => item.status === "PENDING").length, done: items.filter((item) => item.status === "DONE").length };
+  const filtered = query.status === "all" ? items : items.filter((item) => item.status === query.status.toUpperCase());
+  const ordered = sortEmployeeInboxItems(filtered); const total = ordered.length;
+  return { counts, items: ordered.slice((query.page - 1) * query.limit, query.page * query.limit), pagination: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) } };
+};
+
+export const getEmployeeTaskProjection = async (organizationId: string, user: AuthUser): Promise<EmployeeInboxItem[]> => {
+  const employee = await prisma.employee.findFirst({ where: { organizationId, user: { id: user.id, organizationId } }, select: { id: true } });
+  if (!employee) throw notFound("Authenticated user is not linked to an employee");
+  const payrollEnabled = await isOrganizationModuleEnabled(organizationId, "payroll");
+  const [appraisals, leaveRequests, disputes, payslips, notifications] = await Promise.all([
+    prisma.employeeAppraisal.findMany({ where: { organizationId, employeeId: employee.id }, include: { cycle: true, goals: { select: { id: true } }, selfAssessment: { select: { status: true, submittedAt: true } } }, orderBy: { createdAt: "desc" } }),
+    prisma.leaveRequest.findMany({ where: { organizationId, employeeId: employee.id, status: { in: ["PENDING", "APPROVED", "REJECTED"] } }, orderBy: { submittedAt: "desc" } }),
+    prisma.attendanceDispute.findMany({ where: { organizationId, employeeId: employee.id }, orderBy: { createdAt: "desc" } }),
+    payrollEnabled ? prisma.payslip.findMany({ where: { organizationId, employeeId: employee.id, payrollrun: { status: { in: ["APPROVED", "PAID"] } } }, include: { payrollrun: true }, orderBy: [{ payrollrun: { periodEnd: "desc" } }, { createdAt: "desc" }] }) : Promise.resolve([]),
+    prisma.userNotification.findMany({ where: { organizationId, recipientUserId: user.id }, orderBy: { createdAt: "desc" }, take: 500, select: { type: true, metadata: true, readAt: true } })
+  ]);
+  const items: EmployeeInboxItem[] = [];
+  for (const appraisal of appraisals) {
+    const stage = inboxStageIndex(appraisal.stage); const deadline = appraisal.cycle.deadline;
+    if (appraisal.goals.length > 0) {
+      const done = Boolean(appraisal.goalsConfirmedAt) || stage > inboxStageIndex("GOAL_SETTING");
+      items.push({ id: `APPRAISAL_GOAL_CONFIRMATION:${appraisal.id}`, category: "APPRAISAL", type: "APPRAISAL_GOAL_CONFIRMATION", title: "Confirm appraisal goals", description: `Review the goals assigned for ${appraisal.cycle.title}.`, status: done ? "DONE" : "PENDING", requiresAction: !done, dueDate: done ? null : deadline, eventDate: appraisal.goalsConfirmedAt ?? appraisal.createdAt, readAt: inboxReadAt(notifications, "APPRAISAL", appraisal.id), source: { entityType: "EMPLOYEE_APPRAISAL", entityId: appraisal.id }, navigation: { target: "MY_APPRAISAL", resourceId: appraisal.id, action: "CONFIRM_GOALS", available: true }, createdAt: appraisal.createdAt, completedAt: done ? appraisal.goalsConfirmedAt ?? appraisal.updatedAt : null });
+    }
+    if (stage >= inboxStageIndex("SELF_ASSESSMENT")) {
+      const done = appraisal.selfAssessment?.status === "SUBMITTED" || stage > inboxStageIndex("SELF_ASSESSMENT");
+      items.push({ id: `APPRAISAL_SELF_ASSESSMENT:${appraisal.id}`, category: "APPRAISAL", type: "APPRAISAL_SELF_ASSESSMENT", title: "Complete self-assessment", description: `Complete your self-assessment for ${appraisal.cycle.title}.`, status: done ? "DONE" : "PENDING", requiresAction: !done, dueDate: done ? null : deadline, eventDate: appraisal.selfAssessment?.submittedAt ?? appraisal.updatedAt, readAt: inboxReadAt(notifications, "APPRAISAL", appraisal.id), source: { entityType: "EMPLOYEE_APPRAISAL", entityId: appraisal.id }, navigation: { target: "MY_APPRAISAL", resourceId: appraisal.id, action: "COMPLETE_SELF_ASSESSMENT", available: true }, createdAt: appraisal.createdAt, completedAt: done ? appraisal.selfAssessment?.submittedAt ?? appraisal.updatedAt : null });
+    }
+    if (stage >= inboxStageIndex("ACKNOWLEDGMENT")) {
+      const done = appraisal.stage === "COMPLETED" || Boolean(appraisal.acknowledgedAt);
+      items.push({ id: `APPRAISAL_ACKNOWLEDGMENT:${appraisal.id}`, category: "APPRAISAL", type: "APPRAISAL_ACKNOWLEDGMENT_REQUIRED", title: "Acknowledge final appraisal", description: `Review and acknowledge the final appraisal for ${appraisal.cycle.title}.`, status: done ? "DONE" : "PENDING", requiresAction: !done, dueDate: done ? null : deadline, eventDate: appraisal.acknowledgedAt ?? appraisal.updatedAt, readAt: inboxReadAt(notifications, "APPRAISAL", appraisal.id), source: { entityType: "EMPLOYEE_APPRAISAL", entityId: appraisal.id }, navigation: { target: "MY_APPRAISAL", resourceId: appraisal.id, action: "ACKNOWLEDGE", available: true }, createdAt: appraisal.createdAt, completedAt: done ? appraisal.acknowledgedAt ?? appraisal.updatedAt : null });
+    }
+  }
+  for (const leave of leaveRequests) {
+    const pending = leave.status === "PENDING"; const decision = leave.status.toLowerCase();
+    items.push({ id: `LEAVE_REQUEST:${leave.id}`, category: "LEAVE", type: pending ? "LEAVE_PENDING" : `LEAVE_${leave.status}`, title: pending ? "Leave request awaiting review" : `Leave request ${decision}`, description: `Your ${leave.type} leave request is ${pending ? "awaiting review" : decision}.`, status: pending ? "PENDING" : "DONE", requiresAction: false, dueDate: null, eventDate: leave.reviewedAt ?? leave.submittedAt, readAt: inboxReadAt(notifications, "LEAVE", leave.id), source: { entityType: "LEAVE_REQUEST", entityId: leave.id }, navigation: { target: "MY_LEAVE", resourceId: leave.id, action: "VIEW_REQUEST", available: true }, createdAt: leave.submittedAt, completedAt: pending ? null : leave.reviewedAt ?? leave.updatedAt });
+  }
+  for (const dispute of disputes) {
+    const pending = dispute.status === "PENDING"; const result = dispute.status.toLowerCase();
+    items.push({ id: `ATTENDANCE_DISPUTE:${dispute.id}`, category: "ATTENDANCE", type: pending ? "ATTENDANCE_DISPUTE_PENDING" : `ATTENDANCE_DISPUTE_${dispute.status}`, title: pending ? "Attendance dispute under review" : `Attendance dispute ${result}`, description: pending ? "Your attendance dispute is awaiting review." : `Your attendance dispute was ${result}.`, status: pending ? "PENDING" : "DONE", requiresAction: false, dueDate: null, eventDate: dispute.resolvedAt ?? dispute.createdAt, readAt: inboxReadAt(notifications, "ATTENDANCE", dispute.id), source: { entityType: "ATTENDANCE_DISPUTE", entityId: dispute.id }, navigation: { target: "MY_ATTENDANCE", resourceId: dispute.id, action: "VIEW_DISPUTE", available: true }, createdAt: dispute.createdAt, completedAt: pending ? null : dispute.resolvedAt ?? dispute.updatedAt });
+  }
+  for (const payslip of payslips) {
+    items.push({ id: `PAYSLIP_AVAILABLE:${payslip.id}`, category: "PAYROLL", type: "PAYSLIP_AVAILABLE", title: "Payslip available", description: `Your payslip for ${payslip.payrollrun.name} is available.`, status: "DONE", requiresAction: false, dueDate: null, eventDate: payslip.createdAt, readAt: inboxReadAt(notifications, "PAYSLIP", payslip.id), source: { entityType: "PAYSLIP", entityId: payslip.id }, navigation: { target: "MY_PAYSLIPS", resourceId: payslip.id, action: "VIEW_PAYSLIP", available: true }, createdAt: payslip.createdAt, completedAt: payslip.createdAt });
+  }
+  return items;
+};
+
+export const getEmployeeInbox = async (organizationId: string, user: AuthUser, query: { status: "all" | "pending" | "done"; page: number; limit: number }) => paginateEmployeeInboxItems(await getEmployeeTaskProjection(organizationId, user), query);
 
 export const getEmployeeDashboard = async (organizationId: string, user: AuthUser, now = new Date()): Promise<EmployeeDashboard> => {
   const employee = await prisma.employee.findFirst({ where: { organizationId, user: { id: user.id, organizationId } }, select: { id: true, employeeNo: true, firstName: true, lastName: true, jobTitle: true, department: { select: { id: true, name: true } } } });
@@ -32,19 +98,19 @@ export const getEmployeeDashboard = async (organizationId: string, user: AuthUse
   ]);
   const timeZone = safeTimeZone(settings?.timeZone); const currentDate = tenantDateKey(now, timeZone); const month = currentDate.slice(0, 7); const year = Number(currentDate.slice(0, 4)); const schedule: Schedule = persistedSchedule ?? defaultSchedule;
   const monthStart = zonedDateTimeToUtc(`${month}-01`, "00:00", timeZone); const tomorrowStart = zonedDateTimeToUtc(shiftDateKey(currentDate, 1), "00:00", timeZone); const todayStart = zonedDateTimeToUtc(currentDate, "00:00", timeZone);
-  const [todayAttendance, monthAttendance, annualBalance, approvedLeaves, notifications, latestPayslip, nextPayrollRun] = await Promise.all([
+  const [todayAttendance, monthAttendance, annualBalance, approvedLeaves, inboxItems, latestPayslip, nextPayrollRun] = await Promise.all([
     prisma.attendance.findFirst({ where: { organizationId, employeeId: employee.id, clockInAt: { gte: todayStart, lt: tomorrowStart } }, orderBy: { clockInAt: "desc" }, select: { clockInAt: true, clockOutAt: true } }),
     prisma.attendance.findMany({ where: { organizationId, employeeId: employee.id, clockInAt: { gte: monthStart, lt: tomorrowStart } }, select: { clockInAt: true } }),
     prisma.leaveBalance.findFirst({ where: { organizationId, employeeId: employee.id, leaveTypeCode: { in: ["ANNUAL", "ANNUAL_LEAVE"] }, year }, orderBy: { leaveTypeCode: "asc" } }),
     prisma.leaveRequest.findMany({ where: { organizationId, employeeId: employee.id, status: "APPROVED", startDate: { lt: tomorrowStart }, endDate: { gte: monthStart } }, select: { startDate: true, endDate: true } }),
-    prisma.userNotification.findMany({ where: { organizationId, recipientUserId: user.id, category: { moduleKey: "hris" } }, orderBy: { createdAt: "desc" }, take: 20, select: { id: true, type: true, title: true, message: true, metadata: true, createdAt: true } }),
+    getEmployeeTaskProjection(organizationId, user),
     payrollEnabled ? prisma.payslip.findFirst({ where: { organizationId, employeeId: employee.id, payrollrun: { status: { in: ["APPROVED", "PAID"] } } }, orderBy: [{ payrollrun: { periodEnd: "desc" } }, { createdAt: "desc" }], include: { payrollrun: true } }) : Promise.resolve(null),
     payrollEnabled ? prisma.payrollRun.findFirst({ where: { organizationId, payDate: { gte: now }, status: { not: "CANCELLED" } }, orderBy: { payDate: "asc" }, select: { payDate: true, periodStart: true } }) : Promise.resolve(null)
   ]);
   const approvedLeaveDates = new Set<string>(); for (const leave of approvedLeaves) { let key = tenantDateKey(leave.startDate, timeZone); const end = tenantDateKey(leave.endDate, timeZone); while (key <= end && key <= currentDate) { approvedLeaveDates.add(key); key = shiftDateKey(key, 1); } }
   const presentDays = new Set(monthAttendance.map((row) => tenantDateKey(row.clockInAt, timeZone))).size; const expectedWorkingDays = expectedWorkdaysThrough(month, currentDate, schedule, approvedLeaveDates); const baseAttendanceToday = dashboardAttendanceState(todayAttendance, now);
   const attendanceToday = !todayAttendance && approvedLeaveDates.has(currentDate) ? { ...baseAttendanceToday, status: "ON_LEAVE" as const, canClockIn: false } : !todayAttendance && !isDashboardWorkday(currentDate, schedule) ? { ...baseAttendanceToday, status: "NON_WORKING_DAY" as const, canClockIn: false } : baseAttendanceToday;
-  const actionItems = notifications.map((notification) => { const metadata = metadataObject(notification.metadata); const status = notificationStatus(notification.type); const sourceRecordId = String(metadata.appraisalId ?? metadata.leaveRequestId ?? metadata.attendanceId ?? metadata.disputeId ?? "") || null; return { id: notification.id, type: notification.type, title: notification.title, description: notification.message, status, dueDate: null as Date | null, sourceModule: "HRIS" as const, sourceRecordId, actionRequired: status === "ACTION_REQUIRED", createdAt: notification.createdAt }; }).sort((a, b) => actionItemPriority(a, now) - actionItemPriority(b, now) || b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 5);
+  const actionItems = inboxItems.filter((item) => item.status === "PENDING").map((item) => ({ id: item.id, type: item.type, title: item.title, description: item.description, status: item.requiresAction ? "ACTION_REQUIRED" as const : "UPCOMING" as const, dueDate: item.dueDate, sourceModule: item.category === "PAYROLL" ? "PAYROLL" as const : "HRIS" as const, sourceRecordId: item.source.entityId, actionRequired: item.requiresAction, createdAt: item.createdAt })).sort((a, b) => actionItemPriority(a, now) - actionItemPriority(b, now) || b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 5);
   const entitlement = annualBalance ? Number(annualBalance.entitlement) : 0; const used = annualBalance ? Number(annualBalance.used) : 0; const pending = annualBalance ? Number(annualBalance.pending) : 0;
   return { currentDate, timeZone, employee: { id: employee.id, employeeId: employee.employeeNo, firstName: employee.firstName, fullName: `${employee.firstName} ${employee.lastName}`.trim(), role: employee.jobTitle ? { id: null, name: employee.jobTitle } : null, department: employee.department, branch: null }, attendanceToday: { ...attendanceToday, shift: { id: persistedSchedule?.id ?? null, name: "Default Work Schedule", startTime: schedule.workStartTime, endTime: schedule.workEndTime } }, summary: { annualLeaveRemaining: { leaveType: annualBalance?.leaveTypeCode ?? "ANNUAL", remainingDays: Math.max(0, entitlement - used - pending), usedDays: used, totalDays: entitlement }, nextPayday: nextPayrollRun?.payDate ? { date: tenantDateKey(nextPayrollRun.payDate, timeZone), period: tenantDateKey(nextPayrollRun.periodStart, timeZone).slice(0, 7) } : null, attendanceThisMonth: { presentDays, expectedWorkingDays, attendanceRate: expectedWorkingDays ? Number(((presentDays / expectedWorkingDays) * 100).toFixed(2)) : 0 } }, actionItems, recentPayslip: latestPayslip ? { id: latestPayslip.id, period: tenantDateKey(latestPayslip.payrollrun.periodStart, timeZone).slice(0, 7), grossPay: Number(latestPayslip.grossPay), totalDeductions: Number(latestPayslip.deductions), netPay: Number(latestPayslip.netPay), currency: latestPayslip.currency ?? settings?.currency ?? organization?.currency ?? "NGN", status: latestPayslip.payrollrun.status === "PAID" ? "PAID" : "APPROVED", availableForDownload: true } : null };
 };
@@ -277,3 +343,55 @@ export const listEmployeeDocuments = async (organizationId: string, user: AuthUs
 export const downloadEmployeeDocument = async (organizationId: string, user: AuthUser, documentId: string) => { const employee = await authenticatedEmployee(organizationId, user.id); const document = await prisma.employeeDocument.findFirst({ where: { id: documentId, organizationId, employeeId: employee.id, employeeVisible: true, allowDownload: true }, select: { id: true, fileReference: true, originalName: true, mimeType: true } }); if (!document) throw notFound("Employee document not found"); const buffer = await readObject(document.fileReference); await createAuditLog({ organizationId, actorUserId: user.id, action: "EMPLOYEE_DOCUMENT_DOWNLOADED", resource: "EMPLOYEE_DOCUMENT", resourceId: document.id, summary: "Employee downloaded own document", metadata: { employeeId: employee.id, documentId: document.id } }); return { buffer, filename: document.originalName.replace(/[\r\n"\\/]/g, "_"), mimeType: document.mimeType } as const; };
 
 export const requestBankDetailsUpdate = async (organizationId: string, user: AuthUser, input: BankUpdateRequestInput) => { const employee = await authenticatedEmployee(organizationId, user.id); if (employee.bankUpdateRequests.length) throw conflict("A bank details update request is already pending"); if (employee.bankCode === input.bankCode && employee.bankAccountNumber === input.accountNumber && employee.bankAccountName === input.accountName && employee.bankAccountType === input.accountType) throw conflict("Proposed bank details match the current details"); const maskedCurrent = maskBankAccountNumber(employee.bankAccountNumber); const maskedProposed = maskBankAccountNumber(input.accountNumber); let request; try { request = await prisma.bankDetailsUpdateRequest.create({ data: { organizationId, employeeId: employee.id, pendingKey: `${organizationId}:${employee.id}`, currentBankSnapshot: { bankCode: employee.bankCode, bankName: employee.bankName, accountNumber: employee.bankAccountNumber, accountName: employee.bankAccountName, accountType: employee.bankAccountType }, proposedBankCode: input.bankCode, proposedBankName: input.bankName, proposedAccountNumber: input.accountNumber, proposedAccountName: input.accountName, proposedAccountType: input.accountType, reason: input.reason } }); } catch (error) { if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw conflict("A bank details update request is already pending"); throw error; } await createAuditLog({ organizationId, actorUserId: user.id, action: "EMPLOYEE_BANK_UPDATE_REQUESTED", resource: "BANK_DETAILS_UPDATE_REQUEST", resourceId: request.id, summary: "Employee requested a bank details update", metadata: { employeeId: employee.id, previousMaskedAccountNumber: maskedCurrent.masked, proposedMaskedAccountNumber: maskedProposed.masked, proposedBankCode: input.bankCode } }); const approvers = await prisma.user.findMany({ where: { organizationId, isActive: true, role: { permissions: { some: { permission: { key: { in: ["hris:employees:update", "payroll:salary:update"] } } } } } }, select: { id: true } }); await Promise.all([...approvers.map((approver) => deliverUserNotification({ organizationId, recipientUserId: approver.id, moduleKey: "hris" as const, categoryKey: "approvals-requests", eventKey: `bank-update:${request.id}:submitted`, type: "EMPLOYEE_BANK_UPDATE_REQUESTED", title: "Bank details update awaiting review", message: `${employee.firstName} ${employee.lastName} submitted a bank details update request.`, metadata: { requestId: request.id, employeeId: employee.id } })), deliverUserNotification({ organizationId, recipientUserId: user.id, moduleKey: "hris", categoryKey: "record-updates", eventKey: `bank-update:${request.id}:confirmation`, type: "EMPLOYEE_BANK_UPDATE_REQUEST_SUBMITTED", title: "Bank details update request submitted", message: "Your bank details update request is awaiting review.", metadata: { requestId: request.id, employeeId: employee.id } })]); return { id: request.id, status: request.status, submittedAt: request.submittedAt } as const; };
+
+const appraisalStages = ["GOAL_SETTING", "SELF_ASSESSMENT", "MANAGER_REVIEW", "HR_APPROVAL", "ACKNOWLEDGMENT"] as const;
+const appraisalWorkflow = (activeStage: string) => appraisalStages.map((stage, index) => ({ stage, status: activeStage === "COMPLETED" || index < appraisalStages.indexOf(activeStage as typeof appraisalStages[number]) ? "COMPLETED" as const : stage === activeStage ? "ACTIVE" as const : "PENDING" as const }));
+const appraisalSnapshot = (value: Prisma.JsonValue | null) => metadataObject(value);
+const appraisalTemplateMetadata = (value: Prisma.JsonValue | null) => metadataObject(appraisalSnapshot(value).templateMetadata as Prisma.JsonValue | null);
+const employeeAppraisalOwner = async (organizationId: string, userId: string, appraisalId?: string, completed?: boolean) => {
+  const employee = await prisma.employee.findFirst({ where: { organizationId, user: { id: userId, organizationId } }, select: { id: true } });
+  if (!employee) throw notFound("Authenticated user is not linked to an employee");
+  if (appraisalId) {
+    const appraisal = await prisma.employeeAppraisal.findFirst({ where: { id: appraisalId, organizationId, employeeId: employee.id, ...(completed ? { status: "COMPLETED" } : {}) }, select: { id: true } });
+    if (!appraisal) throw notFound("Employee appraisal not found");
+  }
+  return employee;
+};
+
+const historicalAppraisalProjection = (row: any) => ({ id: row.id, cycleName: row.cycle.title, periodStart: row.cycle.periodStart, periodEnd: row.cycle.periodEnd, finalScore: row.finalScore == null ? null : Number(row.finalScore), rating: row.rating ? { level: row.ratingValue, label: row.rating } : null, completedAt: row.acknowledgedAt ?? row.updatedAt });
+
+export const getEmployeeAppraisalOverview = async (organizationId: string, user: AuthUser) => {
+  const employee = await employeeAppraisalOwner(organizationId, user.id);
+  const [current, past] = await Promise.all([
+    prisma.employeeAppraisal.findFirst({ where: { organizationId, employeeId: employee.id, status: "IN_PROGRESS" }, orderBy: { cycle: { periodStart: "desc" } }, include: { cycle: true, template: true, goals: { orderBy: { createdAt: "asc" } }, selfAssessment: true } }),
+    prisma.employeeAppraisal.findMany({ where: { organizationId, employeeId: employee.id, status: "COMPLETED" }, orderBy: { acknowledgedAt: "desc" }, take: 10, include: { cycle: true } })
+  ]);
+  if (!current) return { currentAppraisal: null, pastAppraisals: past.map(historicalAppraisalProjection) };
+  return {
+    currentAppraisal: {
+      id: current.id, cycleId: current.cycleId, cycleName: current.cycle.title, templateId: current.templateId, templateName: String(appraisalTemplateMetadata(current.templateSnapshot).name ?? current.template.name),
+      periodStart: current.cycle.periodStart, periodEnd: current.cycle.periodEnd, deadline: current.cycle.deadline ?? current.cycle.periodEnd,
+      status: current.status, currentPhase: current.stage, workflow: appraisalWorkflow(current.stage), goalsConfirmed: Boolean(current.goalsConfirmedAt) || current.stage !== "GOAL_SETTING", goalsConfirmedAt: current.goalsConfirmedAt,
+      goals: current.goals.map((goal) => ({ id: goal.id, title: goal.title, description: goal.description, successCriteria: goal.successCriteria, targetDate: goal.targetDate, status: goal.status })),
+      actions: { canEditGoals: current.stage === "GOAL_SETTING" && !current.goalsConfirmedAt, canConfirmGoals: current.stage === "GOAL_SETTING" && !current.goalsConfirmedAt && current.goals.length > 0, canBeginSelfAssessment: current.stage === "SELF_ASSESSMENT" && !current.selfAssessment, canSaveDraft: current.stage === "SELF_ASSESSMENT", canSubmitSelfAssessment: current.stage === "SELF_ASSESSMENT", canAcknowledge: current.stage === "ACKNOWLEDGMENT" }
+    },
+    pastAppraisals: past.map(historicalAppraisalProjection)
+  };
+};
+
+export const getEmployeeAppraisalGoals = async (organizationId: string, user: AuthUser, appraisalId: string) => {
+  await employeeAppraisalOwner(organizationId, user.id, appraisalId);
+  const appraisal = await prisma.employeeAppraisal.findFirstOrThrow({ where: { id: appraisalId, organizationId }, include: { goals: { orderBy: { createdAt: "asc" } } } });
+  return { appraisalId, stage: appraisal.stage, editable: appraisal.stage === "GOAL_SETTING" && !appraisal.goalsConfirmedAt, confirmationSupported: true, goalsConfirmed: Boolean(appraisal.goalsConfirmedAt) || appraisal.stage !== "GOAL_SETTING", goalsConfirmedAt: appraisal.goalsConfirmedAt, goals: appraisal.goals };
+};
+
+export const createEmployeeAppraisalGoal = async (organizationId: string, user: AuthUser, appraisalId: string, input: unknown) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId); return createAppraisalGoal(organizationId, appraisalId, input, user); };
+export const assessEmployeeAppraisalGoal = async (organizationId: string, user: AuthUser, appraisalId: string, goalId: string, input: unknown) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId); return scoreAppraisalGoal(organizationId, appraisalId, goalId, input, user); };
+export const confirmEmployeeGoals = async (organizationId: string, user: AuthUser, appraisalId: string) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId); return confirmEmployeeAppraisalGoals(organizationId, appraisalId, user); };
+export const getEmployeeSelfAssessment = async (organizationId: string, user: AuthUser, appraisalId: string) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId); const [assessment, detail] = await Promise.all([getSelfAssessment(organizationId, appraisalId, user), getAppraisalDetail(organizationId, appraisalId, user)]); const snapshot = appraisalSnapshot((assessment.template.configuration ?? null) as Prisma.JsonValue | null); return { ...assessment, header: { employee: detail.employee, supervisor: detail.employee.manager }, ratingScale: Array.isArray(snapshot.ratingScale) ? snapshot.ratingScale : [], signOffs: detail.signOffs }; };
+export const saveEmployeeSelfAssessmentDraft = async (organizationId: string, user: AuthUser, appraisalId: string, input: any) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId); return saveSelfAssessment(organizationId, appraisalId, { ...input, submit: false }, user); };
+export const submitEmployeeSelfAssessment = async (organizationId: string, user: AuthUser, appraisalId: string, input: any) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId); return saveSelfAssessment(organizationId, appraisalId, { ...input, submit: true }, user); };
+
+export const listEmployeeAppraisalHistory = async (organizationId: string, user: AuthUser, query: { page: number; limit: number }) => { const employee = await employeeAppraisalOwner(organizationId, user.id); const where = { organizationId, employeeId: employee.id, status: "COMPLETED" as const }; const [rows, total] = await Promise.all([prisma.employeeAppraisal.findMany({ where, include: { cycle: true }, orderBy: { acknowledgedAt: "desc" }, skip: (query.page - 1) * query.limit, take: query.limit }), prisma.employeeAppraisal.count({ where })]); return { appraisals: rows.map(historicalAppraisalProjection), pagination: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) } }; };
+export const getEmployeeAppraisalHistoryDetail = async (organizationId: string, user: AuthUser, appraisalId: string) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId, true); return getAppraisalDetail(organizationId, appraisalId, user); };
+export const acknowledgeEmployeeAppraisal = async (organizationId: string, user: AuthUser, appraisalId: string, input: unknown) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId); return acknowledgeAppraisal(organizationId, appraisalId, input, user); };

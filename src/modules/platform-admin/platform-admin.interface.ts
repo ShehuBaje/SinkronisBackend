@@ -24,6 +24,7 @@ export interface InvoiceListQuery {
   search?: string;
   status?: "PAID" | "OVERDUE" | "DRAFT";
   tenantId?: string;
+  period?: string;
   billingPeriod?: string;
   year?: number;
   month?: number;
