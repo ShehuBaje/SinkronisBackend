@@ -1596,7 +1596,7 @@ const baseJoins = Prisma.sql`
   LEFT JOIN Permission p ON p.id = rp.permissionId`;
 
 const orderSql = (query: PlatformModulesQuery) => ({
-  tenantName: Prisma.raw("o.name"), tenantStatus: Prisma.raw("o.status"), usage: Prisma.raw("usage"),
+  tenantName: Prisma.raw("o.name"), tenantStatus: Prisma.raw("o.status"), usage: Prisma.raw("moduleUsage"),
   hrisUsers: Prisma.raw("hrisUsers"), payrollUsers: Prisma.raw("payrollUsers"), accountingUsers: Prisma.raw("accountingUsers"),
   lastUpdatedAt: Prisma.raw("lastUpdatedAt"), createdAt: Prisma.raw("o.createdAt")
 }[query.sortBy]);
@@ -1615,7 +1615,7 @@ const loadRows = async (query: PlatformModulesQuery) => {
       GREATEST(COALESCE(mh.updatedAt, '1970-01-01'), COALESCE(mp.updatedAt, '1970-01-01'), COALESCE(ma.updatedAt, '1970-01-01')) lastUpdatedAt,
       COALESCE(mh.updatedByUserId, mp.updatedByUserId, ma.updatedByUserId) updatedByUserId,
       GREATEST(COALESCE(mh.rowVersion, 1), COALESCE(mp.rowVersion, 1), COALESCE(ma.rowVersion, 1)) version,
-      (COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("mh")} AND p.key LIKE 'hris:%' THEN u.id END) + COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("mp")} AND p.key LIKE 'payroll:%' THEN u.id END) + COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("ma")} AND p.key LIKE 'accounting:%' THEN u.id END)) usage,
+      (COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("mh")} AND p.key LIKE 'hris:%' THEN u.id END) + COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("mp")} AND p.key LIKE 'payroll:%' THEN u.id END) + COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("ma")} AND p.key LIKE 'accounting:%' THEN u.id END)) moduleUsage,
       COUNT(*) OVER() totalRecords
     FROM Organization o ${baseJoins}
     WHERE ${Prisma.join(clauses, " AND ")}
@@ -1704,7 +1704,10 @@ const DAY_MS = 86_400_000;
 const assertAdmin = (user: AuthUser) => { if (!user.isPlatformAdmin) throw forbidden("Platform Admin access is required"); };
 const eligibleTenantSql = Prisma.sql`o.status <> 'ARCHIVED' AND NOT EXISTS (SELECT 1 FROM User pa WHERE pa.organizationId=o.id AND pa.isPlatformAdmin=true) AND NOT EXISTS (SELECT 1 FROM OrganizationDeletionRequest odr WHERE odr.organizationId=o.id AND odr.status='PENDING_PLATFORM_APPROVAL')`;
 export const monthKeys = (from: Date, to: Date) => { const rows: string[] = []; for (const cursor = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1)); cursor <= to; cursor.setUTCMonth(cursor.getUTCMonth() + 1)) rows.push(cursor.toISOString().slice(0, 7)); return rows; };
-export const calculateDaysInactive = (lastActive: Date | null, createdAt: Date, asOf: Date) => Math.max(0, Math.floor((asOf.getTime() - (lastActive ?? createdAt).getTime()) / DAY_MS));
+export const calculateDaysInactive = (lastActive: Date | string | null, createdAt: Date | string, asOf: Date) => {
+  const activityDate = lastActive instanceof Date ? lastActive : new Date(lastActive ?? createdAt);
+  return Math.max(0, Math.floor((asOf.getTime() - activityDate.getTime()) / DAY_MS));
+};
 export const monthlyRecurringEquivalent = (amount: number, billingCycle: unknown) => String(billingCycle ?? "").toUpperCase() === "YEARLY" ? amount / 12 : amount;
 export const activityScore = (sessions: number, pagesVisited: number | null) => sessions + (pagesVisited ?? 0);
 const endExclusive = (to: Date) => new Date(to.getTime() + DAY_MS);

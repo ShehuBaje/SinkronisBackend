@@ -163,6 +163,11 @@ test("analytics month series includes continuous zero-value month keys across bo
   assert.deepEqual(monthKeys(new Date("2025-12-31T00:00:00.000Z"), new Date("2026-03-01T00:00:00.000Z")), ["2025-12", "2026-01", "2026-02", "2026-03"]);
 });
 
+test("analytics inactivity accepts TiDB calculated date strings", () => {
+  assert.equal(calculateDaysInactive("2026-08-20T00:00:00.000Z", "2026-08-01T00:00:00.000Z", new Date("2026-08-23T00:00:00.000Z")), 3);
+  assert.equal(calculateDaysInactive(null, "2026-08-20T00:00:00.000Z", new Date("2026-08-23T00:00:00.000Z")), 3);
+});
+
 test("MRR normalizes annual recurring charges and preserves monthly charges", () => {
   assert.equal(monthlyRecurringEquivalent(1_200_000, "YEARLY"), 100_000);
   assert.equal(monthlyRecurringEquivalent(80_000, "MONTHLY"), 80_000);
