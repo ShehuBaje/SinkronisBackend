@@ -1,8 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { attendanceMetric, calculateLeaveDays, calculateWeightedAssessmentScore, classifyAttendance, performanceRatingForScore, performanceRatingValueForScore, shiftDateKey, tenantDateKey, trendForDifference, validateAppraisalTemplateConfiguration, zonedDateTimeToUtc } from "./hris.service";
+import { attendanceMetric, calculateLeaveDays, calculateWeightedAssessmentScore, classifyAttendance, inspectEmployeeUpload, mapEmployeeInput, performanceRatingForScore, performanceRatingValueForScore, shiftDateKey, tenantDateKey, trendForDifference, validateAppraisalTemplateConfiguration, zonedDateTimeToUtc } from "./hris.service";
 import { hrisRouter } from "./hris.routes";
-import { appraisalTemplateBodySchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceLogsQuerySchema, attendanceOverrideSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, createAppraisalCycleSchema, createAttendanceDisputeSchema, createConductQuerySchema, createSuspensionSchema, employeeListQuerySchema, hrApprovalSchema, leaveApproveSchema, leaveDecisionParamsSchema, leaveListQuerySchema, managerReviewSchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, submitSelfAssessmentSchema, updateConductStatusSchema, updateEmployeeStatusSchema } from "./hris.validation";
+import { appraisalTemplateBodySchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceLogsQuerySchema, attendanceOverrideSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, createAppraisalCycleSchema, createAttendanceDisputeSchema, createConductQuerySchema, createManagedEmployeeSchema, createSuspensionSchema, employeeDocumentParamsSchema, employeeListQuerySchema, hrApprovalSchema, leaveApproveSchema, leaveDecisionParamsSchema, leaveListQuerySchema, managerReviewSchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, submitSelfAssessmentSchema, updateConductStatusSchema, updateEmployeeStatusSchema } from "./hris.validation";
+
+test("three-step employee UI aliases validate and map to the canonical Employee fields", () => {
+  const input = { employeeId: "EMP-100", firstName: "Amina", lastName: "Bello", personalEmail: "amina@example.com", dateJoined: "2026-08-01", earnings: 250000, employeeStatus: "ACTIVE", nextOfKinFirstName: "Musa", nextOfKinLastName: "Bello", nextOfKinContact: "+2348012345678" };
+  const parsed = createManagedEmployeeSchema.parse(input);
+  const mapped = mapEmployeeInput(parsed);
+  assert.equal(mapped.email, input.personalEmail);
+  assert.equal(mapped.hireDate.toISOString(), "2026-08-01T00:00:00.000Z");
+  assert.equal(mapped.baseSalary, input.earnings);
+  assert.equal(mapped.nextOfKinName, "Musa Bello");
+  assert.equal(mapped.nextOfKinPhone, input.nextOfKinContact);
+});
+
+test("employee wizard aliases reject conflicting duplicate meanings and future dates of birth", () => {
+  const required = { employeeId: "EMP-101", firstName: "Ada", lastName: "Okafor", personalEmail: "ada@example.com" };
+  assert.equal(createManagedEmployeeSchema.safeParse({ ...required, email: "other@example.com" }).success, false);
+  assert.equal(createManagedEmployeeSchema.safeParse({ ...required, dateOfBirth: "2999-01-01" }).success, false);
+});
+
+test("employee uploads verify file signatures instead of trusting MIME metadata", () => {
+  const pdf = { mimetype: "application/pdf", buffer: Buffer.from("%PDF-1.7\n") } as Express.Multer.File;
+  assert.doesNotThrow(() => inspectEmployeeUpload(pdf));
+  assert.throws(() => inspectEmployeeUpload({ mimetype: "application/pdf", buffer: Buffer.from("not a pdf") } as Express.Multer.File));
+  assert.throws(() => inspectEmployeeUpload({ mimetype: "image/jpeg", buffer: Buffer.from("not an image") } as Express.Multer.File));
+});
+
+test("HRIS employee documents use an authenticated tenant-scoped download route", () => {
+  const routes = (hrisRouter as any).stack.filter((layer: any) => layer.route).map((layer: any) => layer.route.path);
+  assert.equal(routes.includes("/employees/:employeeId/documents/:documentId/download"), true);
+  assert.equal(employeeDocumentParamsSchema.safeParse({ employeeId: "employee", documentId: "document" }).success, true);
+  assert.equal(employeeDocumentParamsSchema.safeParse({ employeeId: "employee", documentId: "" }).success, false);
+});
 
 test("HRIS dashboard trends return raw differences and normalized direction", () => {
   assert.deepEqual(attendanceMetric(12, 9), { count: 12, previousDayCount: 9, difference: 3, trend: "UP" });

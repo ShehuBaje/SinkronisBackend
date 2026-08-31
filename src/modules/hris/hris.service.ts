@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { badRequest, conflict, forbidden, notFound } from "../../core/http-error";
 import { prisma } from "../../core/prisma";
 import { createAuditLog } from "../admin/admin.audit";
-import { createObjectKey, deleteObject, uploadObject } from "../../core/object-storage";
+import { createObjectKey, deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { deliverUserNotification } from "../../core/notifications";
 import {
   appraisalCreateSchema,
@@ -466,8 +466,16 @@ export const getManagedEmployeeProfile = async (organizationId: string, employee
     payrollOverview: latestPayslip ? { grossSalary: latestPayslip.grossPay, totalDeductions: latestPayslip.deductions, netPay: latestPayslip.netPay, currency: "NGN", period: latestPayslip.payrollrun.periodEnd } : { available: false, salaryStructure: sensitive ? salary : null },
     nextOfKin: sensitive ? { name: employee.nextOfKinName, phoneNumber: employee.nextOfKinPhone, address: employee.nextOfKinAddress, relationship: employee.nextOfKinRelationship } : null,
     guarantor: sensitive ? { firstName: employee.guarantorFirstName, lastName: employee.guarantorLastName, relationship: employee.guarantorRelationship, phoneNumber: employee.guarantorPhone, address: employee.guarantorAddress } : null,
-    documents: employee.documents.map((document) => ({ id: document.id, type: document.documentType, fileName: document.originalName, mimeType: document.mimeType, size: document.size, fileReference: document.fileReference, uploadedAt: document.createdAt }))
+    documents: employee.documents.map((document) => ({ id: document.id, type: document.documentType, fileName: document.originalName, mimeType: document.mimeType, size: document.size, uploadedAt: document.createdAt, downloadPath: `/hris/employees/${employee.id}/documents/${document.id}/download` }))
   };
+};
+
+export const downloadManagedEmployeeDocument = async (organizationId: string, employeeId: string, documentId: string, user: AuthUser) => {
+  const document = await prisma.employeeDocument.findFirst({ where: { id: documentId, employeeId, organizationId, allowDownload: true }, select: { id: true, fileReference: true, originalName: true, mimeType: true } });
+  if (!document) throw notFound("Employee document not found");
+  const buffer = await readObject(document.fileReference);
+  await createAuditLog({ organizationId, actorUserId: user.id, action: "HRIS_EMPLOYEE_DOCUMENT_DOWNLOADED", resource: "EMPLOYEE_DOCUMENT", resourceId: document.id, summary: "Downloaded an employee document", metadata: { employeeId, documentId } });
+  return { buffer, filename: document.originalName.replace(/[\r\n"\\/]/g, "_"), mimeType: document.mimeType } as const;
 };
 
 const operationalStatuses = new Set(["ACTIVE", "ON_LEAVE", "SUSPENDED", "TERMINATED"]);
@@ -492,10 +500,12 @@ export const updateManagedEmployeeStatus = async (organizationId: string, employ
   return updated;
 };
 
-const mapEmployeeInput = (input: any) => {
+export const mapEmployeeInput = (input: any) => {
   let firstName = input.firstName; let lastName = input.lastName;
   if (input.fullName && (!firstName || !lastName)) { const names = input.fullName.trim().split(/\s+/); firstName ??= names.shift(); lastName ??= names.join(" ") || firstName; }
-  return { employeeNo: input.employeeId ?? input.employeeNo, firstName, lastName, email: input.email, phone: input.phoneNumber, departmentId: input.departmentId, teamId: input.teamId, managerId: input.managerId, jobTitle: input.position ?? input.role, hireDate: input.joinedDate, status: input.operationalStatus, lifecycleStatus: input.lifecycleStatus, baseSalary: input.monthlySalary, bankName: input.bankName, bankCode: input.bankCode, bankAccountNumber: input.accountNumber, bankAccountName: input.accountName, bankAccountType: input.accountType, pensionPin: input.pensionId, taxId: input.taxId, gender: input.gender, employmentType: input.employmentType, dateOfBirth: input.dateOfBirth, address: input.address, city: input.city, nationality: input.nationality, state: input.state, workMode: input.workMode, maritalStatus: input.maritalStatus, profileImageUrl: input.profileImageUrl, nextOfKinName: input.nextOfKinName, nextOfKinPhone: input.nextOfKinPhone, nextOfKinAddress: input.nextOfKinAddress, nextOfKinRelationship: input.nextOfKinRelationship, guarantorFirstName: input.guarantorFirstName, guarantorLastName: input.guarantorLastName, guarantorRelationship: input.guarantorRelationship, guarantorPhone: input.guarantorPhone, guarantorAddress: input.guarantorAddress };
+  const nextOfKinName = input.nextOfKinName ?? ([input.nextOfKinFirstName, input.nextOfKinLastName].filter(Boolean).join(" ") || undefined);
+  const employeeStatus = input.employeeStatus === "INACTIVE" ? "TERMINATED" : input.employeeStatus;
+  return { employeeNo: input.employeeId ?? input.employeeNo, firstName, lastName, email: input.personalEmail ?? input.email, phone: input.phoneNumber, departmentId: input.departmentId, teamId: input.teamId, managerId: input.managerId, jobTitle: input.position ?? input.role, hireDate: input.dateJoined ?? input.joinedDate, status: input.operationalStatus ?? employeeStatus, lifecycleStatus: input.lifecycleStatus, baseSalary: input.earnings ?? input.monthlySalary, bankName: input.bankName, bankCode: input.bankCode, bankAccountNumber: input.accountNumber, bankAccountName: input.accountName, bankAccountType: input.accountType, pensionPin: input.pensionId, taxId: input.taxId, gender: input.gender, employmentType: input.employmentType, dateOfBirth: input.dateOfBirth, address: input.address, city: input.city, nationality: input.nationality, state: input.state, workMode: input.workMode, maritalStatus: input.maritalStatus, profileImageUrl: input.profileImageUrl, nextOfKinName, nextOfKinPhone: input.nextOfKinContact ?? input.nextOfKinPhone, nextOfKinAddress: input.nextOfKinAddress, nextOfKinRelationship: input.nextOfKinRelationship, guarantorFirstName: input.guarantorFirstName, guarantorLastName: input.guarantorLastName, guarantorRelationship: input.guarantorRelationship, guarantorPhone: input.guarantorPhone, guarantorAddress: input.guarantorAddress };
 };
 const withoutUndefined = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 export const createManagedEmployee = async (organizationId: string, input: any, user: AuthUser) => {
@@ -670,9 +680,18 @@ export const importEmployeesCsv = async (organizationId: string, buffer: Buffer,
   return { imported: rows.length, failed: 0 };
 };
 
+export const inspectEmployeeUpload = (file: Express.Multer.File) => {
+  const jpeg = file.buffer.length >= 3 && file.buffer[0] === 0xff && file.buffer[1] === 0xd8 && file.buffer[2] === 0xff;
+  const png = file.buffer.length >= 8 && file.buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const pdf = file.buffer.length >= 5 && file.buffer.subarray(0, 5).toString("ascii") === "%PDF-";
+  const valid = file.mimetype === "image/jpeg" ? jpeg : file.mimetype === "image/png" ? png : file.mimetype === "application/pdf" ? pdf : false;
+  if (!valid) throw badRequest("Employee file content does not match its declared type");
+};
+
 export const createManagedEmployeeWithFiles = async (organizationId: string, input: any, files: Express.Multer.File[], user: AuthUser, publicBaseUrl: string) => {
   const uploaded: Array<{ file: Express.Multer.File; key: string; url: string }> = [];
   try {
+    files.forEach(inspectEmployeeUpload);
     for (const file of files) {
       const stored = await uploadObject({ key: createObjectKey(`hris/${organizationId}/employees`, file.originalname), body: file.buffer, contentType: file.mimetype, publicBaseUrl });
       uploaded.push({ file, key: stored.key, url: stored.url });

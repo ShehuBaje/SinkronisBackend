@@ -57,30 +57,35 @@ export const employeeListQuerySchema = z.object({
 }).strict();
 export const lifecycleQuerySchema = employeeListQuerySchema.extend({ status: z.enum(["PROBATION", "CONFIRMED", "EXITED"]) });
 export const employeeHistoryQuerySchema = z.object({ ...pageFields }).strict();
+export const employeeDocumentParamsSchema = z.object({ employeeId: id, documentId: id }).strict();
 export const updateEmployeeStatusSchema = z.object({
   status: z.enum(["ACTIVE", "INACTIVE", "ON_LEAVE", "SUSPENDED", "CONFIRMED", "PROBATION", "EXITED"]), effectiveDate: dateOnly
 }).strict();
 export const employeeManagementSchema = z.object({
   employeeId: z.string().trim().min(1).max(50).optional(), employeeNo: z.string().trim().min(1).max(50).optional(),
   firstName: z.string().trim().min(1).max(100).optional(), lastName: z.string().trim().min(1).max(100).optional(),
-  fullName: z.string().trim().min(2).max(201).optional(), email: z.string().trim().email().optional(),
+  fullName: z.string().trim().min(2).max(201).optional(), email: z.string().trim().email().optional(), personalEmail: z.string().trim().email().optional(),
   phoneNumber: z.string().trim().regex(/^\+?[1-9]\d{7,14}$/).optional(), departmentId: id.optional(), teamId: id.optional(),
   managerId: id.optional(),
   position: z.string().trim().min(1).max(150).optional(), role: z.string().trim().min(1).max(150).optional(),
-  joinedDate: z.coerce.date().optional(), dateOfBirth: z.coerce.date().optional(), gender: z.enum(["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"]).optional(),
+  joinedDate: z.coerce.date().optional(), dateJoined: z.coerce.date().optional(), dateOfBirth: z.coerce.date().max(new Date(), "Date of birth cannot be in the future").optional(), gender: z.enum(["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"]).optional(),
   employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"]).optional(), workMode: z.enum(["ONSITE", "REMOTE", "HYBRID"]).optional(),
   maritalStatus: z.enum(["SINGLE", "MARRIED", "DIVORCED", "WIDOWED", "OTHER"]).optional(), address: z.string().trim().max(1000).optional(),
   city: z.string().trim().max(100).optional(), state: z.string().trim().max(100).optional(), nationality: z.string().trim().max(100).optional(),
-  monthlySalary: z.coerce.number().finite().min(0).optional(), bankName: z.string().trim().max(150).optional(), bankCode: z.string().trim().max(20).optional(),
+  monthlySalary: z.coerce.number().finite().min(0).optional(), earnings: z.coerce.number().finite().min(0).optional(), bankName: z.string().trim().max(150).optional(), bankCode: z.string().trim().max(20).optional(),
   accountNumber: z.string().trim().regex(/^\d{6,20}$/).optional(), accountName: z.string().trim().min(2).max(150).optional(), accountType: z.enum(["SAVINGS", "CURRENT"]).optional(), taxId: z.string().trim().max(100).optional(), pensionId: z.string().trim().max(100).optional(),
-  lifecycleStatus: z.enum(["PROBATION", "CONFIRMED", "EXITED"]).optional(), operationalStatus: z.enum(["ACTIVE", "ON_LEAVE", "SUSPENDED", "TERMINATED"]).optional(),
-  profileImageUrl: z.string().url().optional(), nextOfKinName: z.string().trim().max(201).optional(), nextOfKinPhone: z.string().trim().regex(/^\+?[1-9]\d{7,14}$/).optional(),
+  lifecycleStatus: z.enum(["PROBATION", "CONFIRMED", "EXITED"]).optional(), operationalStatus: z.enum(["ACTIVE", "ON_LEAVE", "SUSPENDED", "TERMINATED"]).optional(), employeeStatus: z.enum(["ACTIVE", "INACTIVE", "ON_LEAVE", "SUSPENDED", "TERMINATED"]).optional(),
+  profileImageUrl: z.string().url().optional(), nextOfKinName: z.string().trim().max(201).optional(), nextOfKinFirstName: z.string().trim().max(100).optional(), nextOfKinLastName: z.string().trim().max(100).optional(), nextOfKinPhone: z.string().trim().regex(/^\+?[1-9]\d{7,14}$/).optional(), nextOfKinContact: z.string().trim().regex(/^\+?[1-9]\d{7,14}$/).optional(),
   nextOfKinAddress: z.string().trim().max(1000).optional(), nextOfKinRelationship: z.string().trim().max(100).optional(),
   guarantorFirstName: z.string().trim().max(100).optional(), guarantorLastName: z.string().trim().max(100).optional(), guarantorRelationship: z.string().trim().max(100).optional(),
   guarantorPhone: z.string().trim().regex(/^\+?[1-9]\d{7,14}$/).optional(), guarantorAddress: z.string().trim().max(1000).optional()
   ,documentType: z.enum(["IDENTIFICATION", "CERTIFICATE", "CONTRACT", "TAX_DOCUMENT", "PENSION_DOCUMENT", "OTHER"]).optional()
 }).strict();
-export const createManagedEmployeeSchema = employeeManagementSchema.refine((v) => Boolean(v.employeeId ?? v.employeeNo) && Boolean(v.firstName || v.fullName) && Boolean(v.lastName || v.fullName) && Boolean(v.email), "Employee ID, name, and email are required");
+export const createManagedEmployeeSchema = employeeManagementSchema
+  .refine((v) => Boolean(v.employeeId ?? v.employeeNo) && Boolean(v.firstName || v.fullName) && Boolean(v.lastName || v.fullName) && Boolean(v.email ?? v.personalEmail), "Employee ID, name, and personal email are required")
+  .refine((v) => !v.email || !v.personalEmail || v.email.toLowerCase() === v.personalEmail.toLowerCase(), { message: "email and personalEmail must match when both are provided", path: ["personalEmail"] })
+  .refine((v) => !v.joinedDate || !v.dateJoined || v.joinedDate.getTime() === v.dateJoined.getTime(), { message: "joinedDate and dateJoined must match when both are provided", path: ["dateJoined"] })
+  .refine((v) => v.monthlySalary === undefined || v.earnings === undefined || v.monthlySalary === v.earnings, { message: "monthlySalary and earnings must match when both are provided", path: ["earnings"] });
 export const updateManagedEmployeeSchema = employeeManagementSchema.refine((v) => Object.keys(v).length > 0, "At least one field is required");
 export const bankUpdateRequestParamsSchema = z.object({ requestId: id }).strict();
 export const bankUpdateRequestsQuerySchema = z.object({ ...pageFields, status: z.enum(["ALL", "PENDING", "APPROVED", "REJECTED", "CANCELLED"]).default("PENDING") }).strict();

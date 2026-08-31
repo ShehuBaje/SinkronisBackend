@@ -15,7 +15,9 @@ import { acknowledgeAppraisalSchema, appraisalGoalParamsSchema, appraisalListQue
 import { badRequest } from "../../core/http-error";
 import { completeAppraisalCycleController, createAppraisalCycleController, createAppraisalTemplateController, createConductQueryController, createSuspensionController, deleteAppraisalCycleController, deleteAppraisalTemplateController, getAppraisalSettingsController, getAppraisalTemplateController, getConductController, getConductOverviewController, launchAppraisalCycleController, listAppraisalCyclesController, listAppraisalTemplatesController, listConductController, listCycleReviewsController, signOffAppraisalController, updateAppraisalSettingsController, updateAppraisalTemplateController, updateConductStatusController } from "./hris.controller";
 import { openAppraisalSelfAssessmentController } from "./hris.controller";
+import { downloadManagedEmployeeDocumentController } from "./hris.controller";
 import { appraisalCycleParamsSchema, appraisalCyclesQuerySchema, appraisalSettingsSchema, appraisalSignOffSchema, appraisalTemplateBodySchema, appraisalTemplateParamsSchema, appraisalTemplatesQuerySchema, appraisalTemplateUpdateSchema, conductListQuerySchema, conductParamsSchema, createAppraisalCycleSchema, createConductQuerySchema, createSuspensionSchema, deleteAppraisalCycleSchema, launchAppraisalCycleSchema, updateConductStatusSchema } from "./hris.validation";
+import { employeeDocumentParamsSchema } from "./hris.validation";
 
 export const hrisRouter = Router();
 const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 }, fileFilter: (_req, file, callback) => {
@@ -110,6 +112,7 @@ hrisRouter.get("/employees/:employeeId/payroll-history", authorize("hris:employe
 hrisRouter.get("/employees/:employeeId/appraisals", authorize("hris:employees:view", "hris:appraisals:view"), validate({ params: employeeParamsSchema, query: employeeHistoryQuerySchema }), asyncHandler(getEmployeeAppraisalsController));
 hrisRouter.get("/employees/:employeeId/conduct", authorize("hris:employees:view", "hris:conduct:view"), validate({ params: employeeParamsSchema, query: employeeHistoryQuerySchema }), asyncHandler(getEmployeeConductController));
 hrisRouter.get("/employees/:employeeId/activity", authorize("hris:employees:view"), validate({ params: employeeParamsSchema, query: employeeHistoryQuerySchema }), asyncHandler(getEmployeeActivityController));
+hrisRouter.get("/employees/:employeeId/documents/:documentId/download", authorize("hris:employees:view"), validate({ params: employeeDocumentParamsSchema }), asyncHandler(downloadManagedEmployeeDocumentController));
 hrisRouter.get("/employees/:employeeId", authorize("hris:employees:view"), validate({ params: employeeParamsSchema }), asyncHandler(getEmployeeController));
 hrisRouter.patch("/employees/:employeeId", authorize("hris:employees:update"), validate({ params: employeeParamsSchema, body: updateManagedEmployeeSchema }), asyncHandler(updateEmployeeController));
 
