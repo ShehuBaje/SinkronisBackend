@@ -29,7 +29,6 @@ import {
   type PlatformFeatureFlagKey
   ,type InvoiceListQuery,
   type PlatformUsersQuery,
-  type PlatformModulesQuery,
   type SupportTicketStatus
 } from "./platform-admin.interface";
 import {
@@ -1565,88 +1564,46 @@ export const impersonatePlatformUser = async (targetUserId: string, reason: stri
 }
 
 namespace PlatformModulesService {
-type ModuleRow = { id: string; name: string; email: string | null; status: string; createdAt: Date; planKey: string | null; hrisEnabled: number; payrollEnabled: number; accountingEnabled: number; hrisUsers: bigint; payrollUsers: bigint; accountingUsers: bigint; lastUpdatedAt: Date | null; updatedByUserId: string | null; version: number; totalRecords: bigint };
 const assertAdmin = (user: AuthUser) => { if (!user.isPlatformAdmin) throw forbidden("Platform Admin access is required"); };
-const activeJson = (alias: string) => Prisma.sql`UPPER(JSON_UNQUOTE(${Prisma.raw(alias)}.value)) = 'ACTIVE'`;
-const eligibleTenantSql = Prisma.sql`o.status <> 'ARCHIVED' AND NOT EXISTS (SELECT 1 FROM User pa WHERE pa.organizationId = o.id AND pa.isPlatformAdmin = true) AND NOT EXISTS (SELECT 1 FROM OrganizationDeletionRequest odr WHERE odr.organizationId = o.id AND odr.status = 'PENDING_PLATFORM_APPROVAL')`;
-
-const queryClauses = (query: PlatformModulesQuery) => {
-  const clauses: Prisma.Sql[] = [eligibleTenantSql];
-  if (query.search) clauses.push(Prisma.sql`(o.id LIKE ${`%${query.search}%`} OR o.name LIKE ${`%${query.search}%`} OR o.email LIKE ${`%${query.search}%`})`);
-  if (query.tenantId) clauses.push(Prisma.sql`o.id = ${query.tenantId}`);
-  if (query.tenantStatus !== "ALL") clauses.push(Prisma.sql`o.status = ${query.tenantStatus}`);
-  if (query.plan) clauses.push(Prisma.sql`JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.planKey')) = ${query.plan}`);
-  if (query.module && query.enabled !== undefined) {
-    const alias = ({ hris: "mh", payroll: "mp", accounting: "ma" } as const)[query.module];
-    clauses.push(query.enabled ? activeJson(alias) : Prisma.sql`(${Prisma.raw(alias)}.id IS NULL OR NOT (${activeJson(alias)}))`);
-  } else if (query.module) {
-    const alias = ({ hris: "mh", payroll: "mp", accounting: "ma" } as const)[query.module];
-    clauses.push(activeJson(alias));
-  }
-  return clauses;
-};
-
-const baseJoins = Prisma.sql`
-  LEFT JOIN SystemConfig sub ON sub.organizationId = o.id AND sub.key = 'billing.subscription'
-  LEFT JOIN SystemConfig mh ON mh.organizationId = o.id AND mh.key = 'module.hris.status'
-  LEFT JOIN SystemConfig mp ON mp.organizationId = o.id AND mp.key = 'module.payroll.status'
-  LEFT JOIN SystemConfig ma ON ma.organizationId = o.id AND ma.key = 'module.accounting.status'
-  LEFT JOIN User u ON u.organizationId = o.id AND u.isActive = true AND (u.lockedUntil IS NULL OR u.lockedUntil <= CURRENT_TIMESTAMP(3))
-  LEFT JOIN RolePermission rp ON rp.roleId = u.roleId
-  LEFT JOIN Permission p ON p.id = rp.permissionId`;
-
-const orderSql = (query: PlatformModulesQuery) => ({
-  tenantName: Prisma.raw("o.name"), tenantStatus: Prisma.raw("o.status"), usage: Prisma.raw("moduleUsage"),
-  hrisUsers: Prisma.raw("hrisUsers"), payrollUsers: Prisma.raw("payrollUsers"), accountingUsers: Prisma.raw("accountingUsers"),
-  lastUpdatedAt: Prisma.raw("lastUpdatedAt"), createdAt: Prisma.raw("o.createdAt")
-}[query.sortBy]);
-
 export const moduleUsageTotal = (counts: { hrisUsers: number; payrollUsers: number; accountingUsers: number }) => counts.hrisUsers + counts.payrollUsers + counts.accountingUsers;
+const jsonObject = (value: Prisma.JsonValue): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const configActive = (value: Prisma.JsonValue | undefined) => typeof value === "string" ? value.toUpperCase() === "ACTIVE" : String(jsonObject(value ?? null).status ?? "").toUpperCase() === "ACTIVE";
+const subscriptionData = (value: Prisma.JsonValue | undefined) => { const item = jsonObject(value ?? null); return { plan: typeof item.planKey === "string" ? item.planKey : null, active: String(item.status ?? "").toUpperCase() === "ACTIVE" }; };
 
-const loadRows = async (query: PlatformModulesQuery) => {
-  const clauses = queryClauses(query); const offset = (query.page - 1) * query.limit; const direction = query.sortOrder === "asc" ? Prisma.raw("ASC") : Prisma.raw("DESC");
-  return prisma.$queryRaw<ModuleRow[]>(Prisma.sql`
-    SELECT o.id, o.name, o.email, o.status, o.createdAt,
-      JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.planKey')) planKey,
-      ${activeJson("mh")} hrisEnabled, ${activeJson("mp")} payrollEnabled, ${activeJson("ma")} accountingEnabled,
-      COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND ${activeJson("mh")} AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status'))) = 'ACTIVE' AND p.key LIKE 'hris:%' THEN u.id END) hrisUsers,
-      COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND ${activeJson("mp")} AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status'))) = 'ACTIVE' AND p.key LIKE 'payroll:%' THEN u.id END) payrollUsers,
-      COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND ${activeJson("ma")} AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status'))) = 'ACTIVE' AND p.key LIKE 'accounting:%' THEN u.id END) accountingUsers,
-      GREATEST(COALESCE(mh.updatedAt, '1970-01-01'), COALESCE(mp.updatedAt, '1970-01-01'), COALESCE(ma.updatedAt, '1970-01-01')) lastUpdatedAt,
-      COALESCE(mh.updatedByUserId, mp.updatedByUserId, ma.updatedByUserId) updatedByUserId,
-      GREATEST(COALESCE(mh.rowVersion, 1), COALESCE(mp.rowVersion, 1), COALESCE(ma.rowVersion, 1)) version,
-      (COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("mh")} AND p.key LIKE 'hris:%' THEN u.id END) + COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("mp")} AND p.key LIKE 'payroll:%' THEN u.id END) + COUNT(DISTINCT CASE WHEN o.status = 'ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND ${activeJson("ma")} AND p.key LIKE 'accounting:%' THEN u.id END)) moduleUsage,
-      COUNT(*) OVER() totalRecords
-    FROM Organization o ${baseJoins}
-    WHERE ${Prisma.join(clauses, " AND ")}
-    GROUP BY o.id, o.name, o.email, o.status, o.createdAt, sub.value, mh.value, mp.value, ma.value, mh.updatedAt, mp.updatedAt, ma.updatedAt, mh.updatedByUserId, mp.updatedByUserId, ma.updatedByUserId, mh.rowVersion, mp.rowVersion, ma.rowVersion
-    ORDER BY ${orderSql(query)} ${direction}, o.id ${direction}
-    LIMIT ${query.limit} OFFSET ${offset}`);
-};
+const loadTenants = async () => prisma.organization.findMany({
+  where: { status: { not: "ARCHIVED" }, users: { none: { isPlatformAdmin: true } } },
+  select: { id: true, name: true, email: true, status: true, createdAt: true,
+    systemconfig: { where: { key: { in: ["billing.subscription", ...billingModuleKeys.map((module) => `module.${module}.status`)] } }, select: { key: true, value: true, updatedAt: true, updatedByUserId: true, rowVersion: true } },
+    users: { where: { isActive: true }, select: { id: true, lockedUntil: true, role: { select: { permissions: { select: { permission: { select: { key: true } } } } } } } }
+  }
+});
 
-const mapRow = (row: ModuleRow) => {
-  const counts = { hris: Number(row.hrisUsers), payroll: Number(row.payrollUsers), accounting: Number(row.accountingUsers) };
-  const enabled = { hris: Boolean(row.hrisEnabled), payroll: Boolean(row.payrollEnabled), accounting: Boolean(row.accountingEnabled) };
-  return { id: row.id, name: row.name, email: row.email, status: row.status, plan: row.planKey, modules: billingModuleKeys.map((module) => ({ module: module.toUpperCase(), enabled: enabled[module], activeUserCount: enabled[module] ? counts[module] : 0 })), enabledModules: billingModuleKeys.filter((module) => enabled[module]).map((module) => module.toUpperCase()), disabledModules: billingModuleKeys.filter((module) => !enabled[module]).map((module) => module.toUpperCase()), usage: moduleUsageTotal({ hrisUsers: counts.hris, payrollUsers: counts.payroll, accountingUsers: counts.accounting }), uniqueActiveUsers: null, lastUpdatedAt: row.lastUpdatedAt, updatedByUserId: row.updatedByUserId, createdAt: row.createdAt, version: row.version };
+type TenantSource = Awaited<ReturnType<typeof loadTenants>>[number];
+const mapTenant = (tenant: TenantSource) => {
+  const configs = new Map(tenant.systemconfig.map((item) => [item.key, item])); const subscription = subscriptionData(configs.get("billing.subscription")?.value);
+  const enabled = Object.fromEntries(billingModuleKeys.map((module) => [module, configActive(configs.get(`module.${module}.status`)?.value)])) as Record<BillingModuleKey, boolean>;
+  const counts = Object.fromEntries(billingModuleKeys.map((module) => [module, tenant.users.filter((candidate) => !candidate.lockedUntil || candidate.lockedUntil <= new Date()).some((candidate) => candidate.role.permissions.some((item) => item.permission.key.startsWith(`${module}:`))) ? tenant.users.filter((candidate) => (!candidate.lockedUntil || candidate.lockedUntil <= new Date()) && candidate.role.permissions.some((item) => item.permission.key.startsWith(`${module}:`))).length : 0])) as Record<BillingModuleKey, number>;
+  const operational = tenant.status === "ACTIVE" && subscription.active; const moduleConfigs = billingModuleKeys.map((module) => configs.get(`module.${module}.status`)).filter(Boolean) as NonNullable<ReturnType<typeof configs.get>>[];
+  const lastConfig = [...moduleConfigs].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+  return { id: tenant.id, name: tenant.name, email: tenant.email, status: tenant.status, plan: subscription.plan, modules: billingModuleKeys.map((module) => ({ module: module.toUpperCase(), enabled: enabled[module], activeUserCount: operational && enabled[module] ? counts[module] : 0 })), enabledModules: billingModuleKeys.filter((module) => enabled[module]).map((module) => module.toUpperCase()), disabledModules: billingModuleKeys.filter((module) => !enabled[module]).map((module) => module.toUpperCase()), usage: operational ? moduleUsageTotal({ hrisUsers: enabled.hris ? counts.hris : 0, payrollUsers: enabled.payroll ? counts.payroll : 0, accountingUsers: enabled.accounting ? counts.accounting : 0 }) : 0, uniqueActiveUsers: null, lastUpdatedAt: lastConfig?.updatedAt ?? null, updatedByUserId: lastConfig?.updatedByUserId ?? null, createdAt: tenant.createdAt, version: Math.max(1, ...moduleConfigs.map((item) => item.rowVersion)), _counts: counts, _enabled: enabled };
 };
 
 export const getPlatformModuleAnalytics = async (user: AuthUser) => {
-  assertAdmin(user);
-  const rows = await prisma.$queryRaw<Array<{ module: string; tenantCount: bigint; activeUserCount: bigint }>>(Prisma.sql`
-    SELECT module_data.module, COUNT(DISTINCT CASE WHEN module_data.enabled=1 THEN module_data.organizationId END) tenantCount, COUNT(DISTINCT module_data.userId) activeUserCount FROM (
-      SELECT 'HRIS' module, o.id organizationId, IF(${activeJson("mc")} AND o.status='ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE', 1, 0) enabled,
-        CASE WHEN ${activeJson("mc")} AND o.status='ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND u.isActive=true AND (u.lockedUntil IS NULL OR u.lockedUntil <= CURRENT_TIMESTAMP(3)) AND p.key LIKE 'hris:%' THEN u.id END userId
-      FROM Organization o LEFT JOIN SystemConfig sub ON sub.organizationId=o.id AND sub.key='billing.subscription' LEFT JOIN SystemConfig mc ON mc.organizationId=o.id AND mc.key='module.hris.status' LEFT JOIN User u ON u.organizationId=o.id LEFT JOIN RolePermission rp ON rp.roleId=u.roleId LEFT JOIN Permission p ON p.id=rp.permissionId WHERE ${eligibleTenantSql}
-      UNION ALL SELECT 'PAYROLL', o.id, IF(${activeJson("mc")} AND o.status='ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE', 1, 0), CASE WHEN ${activeJson("mc")} AND o.status='ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND u.isActive=true AND (u.lockedUntil IS NULL OR u.lockedUntil <= CURRENT_TIMESTAMP(3)) AND p.key LIKE 'payroll:%' THEN u.id END FROM Organization o LEFT JOIN SystemConfig sub ON sub.organizationId=o.id AND sub.key='billing.subscription' LEFT JOIN SystemConfig mc ON mc.organizationId=o.id AND mc.key='module.payroll.status' LEFT JOIN User u ON u.organizationId=o.id LEFT JOIN RolePermission rp ON rp.roleId=u.roleId LEFT JOIN Permission p ON p.id=rp.permissionId WHERE ${eligibleTenantSql}
-      UNION ALL SELECT 'ACCOUNTING', o.id, IF(${activeJson("mc")} AND o.status='ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE', 1, 0), CASE WHEN ${activeJson("mc")} AND o.status='ACTIVE' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.status')))='ACTIVE' AND u.isActive=true AND (u.lockedUntil IS NULL OR u.lockedUntil <= CURRENT_TIMESTAMP(3)) AND p.key LIKE 'accounting:%' THEN u.id END FROM Organization o LEFT JOIN SystemConfig sub ON sub.organizationId=o.id AND sub.key='billing.subscription' LEFT JOIN SystemConfig mc ON mc.organizationId=o.id AND mc.key='module.accounting.status' LEFT JOIN User u ON u.organizationId=o.id LEFT JOIN RolePermission rp ON rp.roleId=u.roleId LEFT JOIN Permission p ON p.id=rp.permissionId WHERE ${eligibleTenantSql}
-    ) module_data GROUP BY module_data.module`);
-  const byModule = new Map(rows.map((row) => [row.module, row]));
-  return { modules: ["HRIS", "PAYROLL", "ACCOUNTING"].map((module) => ({ module, tenantCount: Number(byModule.get(module)?.tenantCount ?? 0), activeUserCount: Number(byModule.get(module)?.activeUserCount ?? 0) })) };
+  assertAdmin(user); const tenants = (await loadTenants()).map(mapTenant);
+  return { modules: billingModuleKeys.map((module) => ({ module: module.toUpperCase(), tenantCount: tenants.filter((tenant) => tenant.status === "ACTIVE" && tenant._enabled[module]).length, activeUserCount: tenants.reduce((sum, tenant) => sum + (tenant.status === "ACTIVE" && tenant._enabled[module] ? tenant._counts[module] : 0), 0) })) };
 };
 
 export const getPlatformModuleTenants = async (input: unknown, user: AuthUser) => {
-  assertAdmin(user); const query = platformModulesQuerySchema.parse(input); const rows = await loadRows(query); const total = Number(rows[0]?.totalRecords ?? 0); const totalPages = Math.ceil(total / query.limit);
-  return { tenants: rows.map(mapRow), pagination: { currentPage: query.page, pageSize: query.limit, totalPages, totalRecords: total, hasNextPage: query.page < totalPages, hasPreviousPage: query.page > 1 }, appliedFilters: query };
+  assertAdmin(user); const query = platformModulesQuerySchema.parse(input); let tenants = (await loadTenants()).map(mapTenant);
+  if (query.search) { const term = query.search.toLowerCase(); tenants = tenants.filter((tenant) => [tenant.id, tenant.name, tenant.email ?? ""].some((value) => value.toLowerCase().includes(term))); }
+  if (query.tenantId) tenants = tenants.filter((tenant) => tenant.id === query.tenantId);
+  if (query.tenantStatus !== "ALL") tenants = tenants.filter((tenant) => tenant.status === query.tenantStatus);
+  if (query.plan) tenants = tenants.filter((tenant) => tenant.plan === query.plan);
+  if (query.module) tenants = tenants.filter((tenant) => query.enabled === undefined ? tenant._enabled[query.module!] : tenant._enabled[query.module!] === query.enabled);
+  const value = (tenant: typeof tenants[number]) => ({ tenantName: tenant.name, tenantStatus: tenant.status, usage: tenant.usage, hrisUsers: tenant._counts.hris, payrollUsers: tenant._counts.payroll, accountingUsers: tenant._counts.accounting, lastUpdatedAt: tenant.lastUpdatedAt?.getTime() ?? 0, createdAt: tenant.createdAt.getTime() }[query.sortBy]);
+  tenants.sort((a, b) => { const left = value(a); const right = value(b); const compared = typeof left === "string" ? left.localeCompare(String(right)) : Number(left) - Number(right); return (query.sortOrder === "asc" ? compared : -compared) || a.id.localeCompare(b.id); });
+  const total = tenants.length; const totalPages = Math.ceil(total / query.limit); const page = tenants.slice((query.page - 1) * query.limit, query.page * query.limit).map(({ _counts, _enabled, ...tenant }) => tenant);
+  return { tenants: page, pagination: { currentPage: query.page, pageSize: query.limit, totalPages, totalRecords: total, hasNextPage: query.page < totalPages, hasPreviousPage: query.page > 1 }, appliedFilters: query };
 };
 
 export const getPlatformModuleTenant = async (tenantId: string, user: AuthUser) => {
@@ -1702,7 +1659,6 @@ export const getPlatformModulesOverview = async (input: unknown, user: AuthUser)
 namespace PlatformAnalyticsService {
 const DAY_MS = 86_400_000;
 const assertAdmin = (user: AuthUser) => { if (!user.isPlatformAdmin) throw forbidden("Platform Admin access is required"); };
-const eligibleTenantSql = Prisma.sql`o.status <> 'ARCHIVED' AND NOT EXISTS (SELECT 1 FROM User pa WHERE pa.organizationId=o.id AND pa.isPlatformAdmin=true) AND NOT EXISTS (SELECT 1 FROM OrganizationDeletionRequest odr WHERE odr.organizationId=o.id AND odr.status='PENDING_PLATFORM_APPROVAL')`;
 export const monthKeys = (from: Date, to: Date) => { const rows: string[] = []; for (const cursor = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1)); cursor <= to; cursor.setUTCMonth(cursor.getUTCMonth() + 1)) rows.push(cursor.toISOString().slice(0, 7)); return rows; };
 export const calculateDaysInactive = (lastActive: Date | string | null, createdAt: Date | string, asOf: Date) => {
   const activityDate = lastActive instanceof Date ? lastActive : new Date(lastActive ?? createdAt);
@@ -1714,16 +1670,25 @@ const endExclusive = (to: Date) => new Date(to.getTime() + DAY_MS);
 
 export const getPlatformAnalytics = async (input: unknown, user: AuthUser) => {
   assertAdmin(user); const range = platformAnalyticsQuerySchema.parse(input); const until = endExclusive(range.to); const months = monthKeys(range.from, range.to); const now = new Date(); const riskAsOf = range.to < now ? until : now; const riskCutoff = new Date(riskAsOf.getTime() - 3 * DAY_MS);
-  const [tenantRows, revenueRows, churnRows, topRows, riskRows, moduleRows] = await Promise.all([
-    prisma.$queryRaw<Array<{ month: string; count: bigint }>>(Prisma.sql`SELECT DATE_FORMAT(o.createdAt, '%Y-%m') month, COUNT(*) count FROM Organization o WHERE ${eligibleTenantSql} AND o.createdAt >= ${range.from} AND o.createdAt < ${until} GROUP BY month ORDER BY month`),
-    prisma.$queryRaw<Array<{ month: string; mrr: Prisma.Decimal }>>(Prisma.sql`SELECT DATE_FORMAT(b.billedAt, '%Y-%m') month, SUM(CASE WHEN UPPER(JSON_UNQUOTE(JSON_EXTRACT(b.metadata, '$.billingCycle')))='YEARLY' THEN b.amount/12 ELSE b.amount END) mrr FROM BillingHistory b JOIN Organization o ON o.id=b.organizationId WHERE ${eligibleTenantSql} AND b.billedAt >= ${range.from} AND b.billedAt < ${until} AND UPPER(b.status) IN ('PAID','COMPLETED','SUCCESS') GROUP BY month ORDER BY month`),
-    prisma.$queryRaw<Array<{ plan: string; churnedTenants: bigint }>>(Prisma.sql`SELECT JSON_UNQUOTE(JSON_EXTRACT(sc.value, '$.planKey')) plan, COUNT(DISTINCT sc.organizationId) churnedTenants FROM SystemConfig sc JOIN Organization o ON o.id=sc.organizationId WHERE ${eligibleTenantSql} AND sc.key='billing.subscription' AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(sc.value, '$.status'))) IN ('CANCELLED','EXPIRED') AND STR_TO_DATE(LEFT(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(sc.value, '$.cancelledAt')), JSON_UNQUOTE(JSON_EXTRACT(sc.value, '$.expiredAt')), JSON_UNQUOTE(JSON_EXTRACT(sc.value, '$.renewalDate'))), 10), '%Y-%m-%d') >= ${range.from} AND STR_TO_DATE(LEFT(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(sc.value, '$.cancelledAt')), JSON_UNQUOTE(JSON_EXTRACT(sc.value, '$.expiredAt')), JSON_UNQUOTE(JSON_EXTRACT(sc.value, '$.renewalDate'))), 10), '%Y-%m-%d') < ${until} GROUP BY plan`),
-    prisma.$queryRaw<Array<{ tenantId: string; company: string; lastLogin: Date | null; sessionsThisMonth: bigint; pagesVisited: Prisma.Decimal | null }>>(Prisma.sql`SELECT o.id tenantId, o.name company, logins.lastLogin, COALESCE(sessions.sessionCount,0) sessionsThisMonth, views.pageViews FROM Organization o LEFT JOIN (SELECT organizationId, MAX(lastLoginAt) lastLogin FROM User GROUP BY organizationId) logins ON logins.organizationId=o.id LEFT JOIN (SELECT organizationId, COUNT(*) sessionCount FROM UserSession WHERE createdAt >= ${range.from} AND createdAt < ${until} GROUP BY organizationId) sessions ON sessions.organizationId=o.id LEFT JOIN (SELECT organizationId, SUM(pageViews) pageViews FROM TenantUsageDaily WHERE usageDate >= ${range.from} AND usageDate < ${until} GROUP BY organizationId) views ON views.organizationId=o.id WHERE ${eligibleTenantSql} ORDER BY (COALESCE(sessions.sessionCount,0)+COALESCE(views.pageViews,0)) DESC, logins.lastLogin DESC LIMIT 10`),
-    prisma.$queryRaw<Array<{ tenantId: string; company: string; createdAt: Date; plan: string | null; lastActive: Date | null }>>(Prisma.sql`SELECT activity.* FROM (SELECT o.id tenantId, o.name company, o.createdAt, JSON_UNQUOTE(JSON_EXTRACT(sub.value, '$.planKey')) plan, NULLIF(GREATEST(COALESCE(logins.lastLogin,'1970-01-01'),COALESCE(sessions.lastSeen,'1970-01-01'),COALESCE(views.lastActivity,'1970-01-01')),'1970-01-01') lastActive FROM Organization o LEFT JOIN SystemConfig sub ON sub.organizationId=o.id AND sub.key='billing.subscription' LEFT JOIN (SELECT organizationId,MAX(lastLoginAt) lastLogin FROM User GROUP BY organizationId) logins ON logins.organizationId=o.id LEFT JOIN (SELECT organizationId,MAX(lastSeenAt) lastSeen FROM UserSession GROUP BY organizationId) sessions ON sessions.organizationId=o.id LEFT JOIN (SELECT organizationId,MAX(lastActivityAt) lastActivity FROM TenantUsageDaily GROUP BY organizationId) views ON views.organizationId=o.id WHERE ${eligibleTenantSql} AND o.status='ACTIVE') activity WHERE (activity.lastActive IS NULL AND activity.createdAt <= ${riskCutoff}) OR activity.lastActive <= ${riskCutoff} ORDER BY COALESCE(activity.lastActive,activity.createdAt) ASC LIMIT 100`),
-    prisma.$queryRaw<Array<{ month: string; moduleKey: string; tenantCount: Prisma.Decimal }>>(Prisma.sql`SELECT snapshots.month, snapshots.moduleKey, SUM(snapshots.enabled) tenantCount FROM (SELECT DATE_FORMAT(snapshotDate,'%Y-%m') month, organizationId, moduleKey, enabled, ROW_NUMBER() OVER(PARTITION BY organizationId,moduleKey,DATE_FORMAT(snapshotDate,'%Y-%m') ORDER BY snapshotDate DESC) rowNumber FROM TenantModuleDailySnapshot WHERE snapshotDate >= ${range.from} AND snapshotDate < ${until}) snapshots WHERE snapshots.rowNumber=1 GROUP BY snapshots.month,snapshots.moduleKey`)
+  const organizations = await prisma.organization.findMany({ where: { status: { not: "ARCHIVED" }, users: { none: { isPlatformAdmin: true } } }, select: { id: true, name: true, status: true, createdAt: true, systemconfig: { where: { key: "billing.subscription" }, select: { value: true } }, users: { select: { lastLoginAt: true } }, usersession: { select: { createdAt: true, lastSeenAt: true } }, billinghistory: { where: { billedAt: { gte: range.from, lt: until }, status: { in: ["PAID", "COMPLETED", "SUCCESS"] } }, select: { billedAt: true, amount: true, metadata: true } } } });
+  const tenantIds = organizations.map((item) => item.id);
+  const optionalTelemetry = async <T>(load: () => Promise<T[]>): Promise<T[]> => { try { return await load(); } catch (error) { if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2021") return []; throw error; } };
+  const [moduleRows, usageRows] = await Promise.all([
+    tenantIds.length ? optionalTelemetry(() => prisma.tenantModuleDailySnapshot.findMany({ where: { organizationId: { in: tenantIds }, snapshotDate: { gte: range.from, lt: until } }, orderBy: { snapshotDate: "asc" } })) : [],
+    tenantIds.length ? optionalTelemetry(() => prisma.tenantUsageDaily.findMany({ where: { organizationId: { in: tenantIds } }, select: { organizationId: true, usageDate: true, pageViews: true, lastActivityAt: true } })) : []
   ]);
-  const tenantsByMonth = new Map(tenantRows.map((row) => [row.month, Number(row.count)])); const revenueByMonth = new Map(revenueRows.map((row) => [row.month, Number(row.mrr)])); const churnByPlan = new Map(churnRows.map((row) => [row.plan, Number(row.churnedTenants)]));
-  const modulesByMonth = new Map<string, Map<string, number>>(); for (const row of moduleRows) { if (!modulesByMonth.has(row.month)) modulesByMonth.set(row.month, new Map()); modulesByMonth.get(row.month)!.set(row.moduleKey, Number(row.tenantCount)); }
+  const tenantsByMonth = new Map<string, number>(); const revenueByMonth = new Map<string, number>(); const churnByPlan = new Map<string, number>();
+  const subscription = (tenant: typeof organizations[number]) => { const value = tenant.systemconfig[0]?.value; return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; };
+  for (const tenant of organizations) {
+    if (tenant.createdAt >= range.from && tenant.createdAt < until) { const month = tenant.createdAt.toISOString().slice(0, 7); tenantsByMonth.set(month, (tenantsByMonth.get(month) ?? 0) + 1); }
+    for (const billing of tenant.billinghistory) { const month = billing.billedAt.toISOString().slice(0, 7); const metadata = billing.metadata && typeof billing.metadata === "object" && !Array.isArray(billing.metadata) ? billing.metadata as Record<string, unknown> : {}; revenueByMonth.set(month, (revenueByMonth.get(month) ?? 0) + monthlyRecurringEquivalent(Number(billing.amount), metadata.billingCycle)); }
+    const config = subscription(tenant); const lifecycleDate = new Date(String(config.cancelledAt ?? config.expiredAt ?? config.renewalDate ?? "")); const plan = typeof config.planKey === "string" ? config.planKey : null; if (plan && ["CANCELLED", "EXPIRED"].includes(String(config.status ?? "").toUpperCase()) && !Number.isNaN(lifecycleDate.getTime()) && lifecycleDate >= range.from && lifecycleDate < until) churnByPlan.set(plan, (churnByPlan.get(plan) ?? 0) + 1);
+  }
+  const latestSnapshots = new Map<string, typeof moduleRows[number]>(); for (const row of moduleRows) latestSnapshots.set(`${row.snapshotDate.toISOString().slice(0, 7)}:${row.organizationId}:${row.moduleKey}`, row);
+  const modulesByMonth = new Map<string, Map<string, number>>(); for (const row of latestSnapshots.values()) { if (!row.enabled) continue; const month = row.snapshotDate.toISOString().slice(0, 7); if (!modulesByMonth.has(month)) modulesByMonth.set(month, new Map()); modulesByMonth.get(month)!.set(row.moduleKey, (modulesByMonth.get(month)!.get(row.moduleKey) ?? 0) + 1); }
+  const activity = organizations.map((tenant) => { const usage = usageRows.filter((row) => row.organizationId === tenant.id); const sessionsInRange = tenant.usersession.filter((session) => session.createdAt >= range.from && session.createdAt < until).length; const pagesVisited = usage.filter((row) => row.usageDate >= range.from && row.usageDate < until).reduce((sum, row) => sum + row.pageViews, 0); const dates = [...tenant.users.map((item) => item.lastLoginAt), ...tenant.usersession.map((item) => item.lastSeenAt), ...usage.map((item) => item.lastActivityAt)].filter((item): item is Date => Boolean(item)); const lastActive = dates.sort((a, b) => b.getTime() - a.getTime())[0] ?? null; return { tenantId: tenant.id, company: tenant.name, createdAt: tenant.createdAt, status: tenant.status, plan: typeof subscription(tenant).planKey === "string" ? String(subscription(tenant).planKey) : null, lastLogin: tenant.users.map((item) => item.lastLoginAt).filter((item): item is Date => Boolean(item)).sort((a, b) => b.getTime() - a.getTime())[0] ?? null, sessionsThisMonth: sessionsInRange, pagesVisited, lastActive }; });
+  const topRows = [...activity].sort((a, b) => activityScore(b.sessionsThisMonth, b.pagesVisited) - activityScore(a.sessionsThisMonth, a.pagesVisited) || (b.lastLogin?.getTime() ?? 0) - (a.lastLogin?.getTime() ?? 0)).slice(0, 10);
+  const riskRows = activity.filter((row) => row.status === "ACTIVE" && (row.lastActive ? row.lastActive <= riskCutoff : row.createdAt <= riskCutoff)).sort((a, b) => (a.lastActive ?? a.createdAt).getTime() - (b.lastActive ?? b.createdAt).getTime()).slice(0, 100);
   return {
     range: { from: range.from, to: range.to, timezone: "UTC", toInclusive: true },
     newTenantsOverTime: months.map((month) => ({ month, newTenants: tenantsByMonth.get(month) ?? 0 })),
@@ -1731,7 +1696,7 @@ export const getPlatformAnalytics = async (input: unknown, user: AuthUser) => {
     moduleUsageByMonth: months.map((month) => modulesByMonth.has(month) ? { month, modules: Object.fromEntries(billingModuleKeys.map((module) => [module.toUpperCase(), modulesByMonth.get(month)?.get(module) ?? 0])), availability: "TRACKED_MONTH_END" } : { month, modules: null, availability: "NOT_TRACKED" }),
     churnByPlan: billingPlanKeys.map((plan) => ({ plan: plan.toUpperCase().replace(/-/g, "_"), churnedTenants: churnByPlan.get(plan) ?? 0 })),
     totalChurn: [...churnByPlan.values()].reduce((sum, count) => sum + count, 0),
-    topTenantsByActivity: topRows.map((row) => ({ tenantId: row.tenantId, company: row.company, lastLogin: row.lastLogin, sessionsThisMonth: Number(row.sessionsThisMonth), pagesVisited: row.pagesVisited === null ? null : Number(row.pagesVisited) })),
+    topTenantsByActivity: topRows.map((row) => ({ tenantId: row.tenantId, company: row.company, lastLogin: row.lastLogin, sessionsThisMonth: row.sessionsThisMonth, pagesVisited: row.pagesVisited })),
     atRiskTenants: riskRows.map((row) => ({ tenantId: row.tenantId, company: row.company, plan: row.plan?.toUpperCase().replace(/-/g, "_") ?? null, lastActive: row.lastActive, daysInactive: calculateDaysInactive(row.lastActive, row.createdAt, riskAsOf), activityState: row.lastActive ? "INACTIVE" : "NEVER_ACTIVE", status: "AT_RISK" })),
     telemetry: { pageViews: "AVAILABLE_AFTER_FRONTEND_INSTRUMENTATION", historicalModuleUsage: "AVAILABLE_FROM_ANALYTICS_MIGRATION_BASELINE" }
   };
