@@ -159,6 +159,14 @@ test("analytics date ranges are UTC, inclusive, bounded, and ordered", () => {
   assert.equal(platformAnalyticsQuerySchema.safeParse({ from: "01/01/2026" }).success, false);
 });
 
+test("analytics query validation is idempotent across route middleware and service", () => {
+  const routeValidated = platformAnalyticsQuerySchema.parse({ from: "2026-02-01", to: "2026-07-31" });
+  const serviceValidated = platformAnalyticsQuerySchema.parse(routeValidated);
+  assert.equal(serviceValidated.from.toISOString(), "2026-02-01T00:00:00.000Z");
+  assert.equal(serviceValidated.to.toISOString(), "2026-07-31T00:00:00.000Z");
+  assert.doesNotThrow(() => JSON.stringify({ success: true, data: { range: serviceValidated, amount: 0, rows: [], nullableActivity: null } }));
+});
+
 test("analytics month series includes continuous zero-value month keys across boundaries", () => {
   assert.deepEqual(monthKeys(new Date("2025-12-31T00:00:00.000Z"), new Date("2026-03-01T00:00:00.000Z")), ["2025-12", "2026-01", "2026-02", "2026-03"]);
 });

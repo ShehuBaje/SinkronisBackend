@@ -335,7 +335,10 @@ export type PlatformModulesQuery = z.infer<typeof platformModulesQuerySchema>;
 }
 
 namespace PlatformAnalyticsValidation2 {
-const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").transform((value) => new Date(`${value}T00:00:00.000Z`));
+const dateOnly = z.union([
+  z.date(),
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").transform((value) => new Date(`${value}T00:00:00.000Z`))
+]);
 export const platformAnalyticsQuerySchema = z.object({ from: dateOnly.optional(), to: dateOnly.optional() }).strict().transform((value) => {
   const today = new Date(); const currentDay = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
   const to = value.to ?? currentDay; const from = value.from ?? new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth() - 11, 1));
