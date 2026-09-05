@@ -46,7 +46,17 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
     /^(GET|PATCH|DELETE) \/api\/v1\/hris\/attendance\/\{\}$/.test(operation) ||
     operation === "POST /api/v1/hris/attendance" ||
     operation === "DELETE /api/v1/hris/employees/{}";
-  const implementedPayroll = (operation: string) => operation === "GET /api/v1/payroll/dashboard" || operation.includes(" /api/v1/payroll/employees");
+  const implementedPayroll = (operation: string) => operation === "GET /api/v1/payroll/dashboard"
+    || operation.includes(" /api/v1/payroll/settings")
+    || operation.includes(" /api/v1/payroll/employees")
+    || operation.includes(" /api/v1/payroll/payees")
+    || operation.includes(" /api/v1/payroll/pay-runs")
+    || operation.includes(" /api/v1/payroll/payslips")
+    || operation.includes(" /api/v1/payroll/deductions")
+    || operation.includes(" /api/v1/payroll/wallet")
+    || operation.includes(" /api/v1/payroll/tax")
+    || operation.includes(" /api/v1/payroll/pension")
+    || operation.includes(" /api/v1/payroll/reports");
   const ignored = (operation: string) =>
     operation === "GET /" ||
     /\/(docs|docs\.json)(\/|$)|favicon/.test(operation) ||

@@ -1,21 +1,40 @@
 import { Router } from "express";
 import multer from "multer";
 import { asyncHandler } from "../../core/async-handler";
-import { createCrudRouter } from "../../core/crud-router";
 import { validate } from "../../core/validate";
 import { authorize } from "../../middleware/rbac.middleware";
-import { createPayrollDeductionController, createPayrollEmployeeController, createPayrollLoanController, enrollPayrollEmployeeController, exportPayrollEmployeesController, exportPayrollHistoryController, generatePayslipsController, getPayrollBikController, getPayrollDashboardController, getPayrollEmployeeController, getPayrollHistoryController, importPayrollEmployeesController, listPayrollEmployeesController, payrollBulkTemplateController, removePayrollDeductionController, removePayrollEmployeeController, updatePayrollBikController, updatePayrollSalaryController, updatePayrollStatutoryController } from "./payroll.controller";
-import {
-  loansCrudOptions,
-  payslipsCrudOptions,
-  runsCrudOptions,
-  salaryStructuresCrudOptions,
-  statutoryCrudOptions
-} from "./payroll.service";
-import { generatePayslipParamsSchema, payrollBikSchema, payrollCreateEmployeeSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeeDeductionParamsSchema, payrollEmployeeParamsSchema, payrollEmployeesQuerySchema, payrollEnrollmentRemoveSchema, payrollHistoryQuerySchema, payrollLoanSchema, payrollSalaryStructureSchema, payrollStatutoryProfileSchema } from "./payroll.validation";
+import { createPayrollDeductionController, createPayrollEmployeeController, createPayrollLoanController, enrollPayrollEmployeeController, exportPayrollEmployeesController, exportPayrollHistoryController, getPayrollBikController, getPayrollDashboardController, getPayrollEmployeeController, getPayrollHistoryController, importPayrollEmployeesController, listPayrollEmployeesController, payrollBulkTemplateController, removePayrollDeductionController, removePayrollEmployeeController, updatePayrollBikController, updatePayrollSalaryController, updatePayrollStatutoryController } from "./payroll.controller";
+import { createPayrollPayeeController, downloadPayrollPayeeDocumentController, exportPayrollPayeeHistoryController, exportPayrollPayeesController, getPayrollPayeeController, getPayrollPayeeHistoryController, listPayrollPayeeDocumentsController, listPayrollPayeesController, removePayrollPayeeController, updatePayrollPayeeController, uploadPayrollPayeeDocumentController } from "./payroll.controller";
+import { approvePayRunController, createPayRunController, exportPayRunController, getPayRunController, getPayRunEligibilityController, listPayRunsController } from "./payroll.controller";
+import { adjustPayrollLoanController, closePayrollLoanController, createCustomDeductionController, createPayrollLoanForDeductionsController, downloadAdminPayslipController, exportAdminPayslipsController, exportPayrollLoanController, getAdminPayslipController, getPayrollLoanController, listAdminPayslipsController, listCustomDeductionsController, listPayrollLoansController, pausePayrollLoanController, removeCustomDeductionController, resumePayrollLoanController } from "./payroll.controller";
+import { downloadPayrollTaxReceiptController, exportPayrollTaxAnnualReturnsController, exportPayrollWalletTransactionsController, fundPayrollWalletController, getPayrollTaxAnnualReturnsController, getPayrollTaxConfigController, getPayrollTaxEmployeesController, getPayrollTaxOverviewController, getPayrollWalletController, getPayrollWalletTransactionController, listPayrollTaxRemittancesController, listPayrollWalletObligationsController, listPayrollWalletTransactionsController, payPayrollWalletObligationController } from "./payroll.controller";
+import { advancePayrollPfaTransferController, createPayrollAvcController, createPayrollPfaTransferController, exportPayrollPensionController, exportPayrollReportController, getPayrollBankScheduleController, getPayrollDepartmentCostController, getPayrollPensionOverviewController, getPayrollPensionRemittanceController, getPayrollPfaTransferController, getPayrollReportSummaryController, getPayrollVarianceController, getPayrollYtdController, listPayrollAvcsController, listPayrollPensionContributionsController, listPayrollPensionRemittancesController, listPayrollPfasController, listPayrollPfaTransfersController, markPayrollPensionRemittedController, pausePayrollAvcController, remitPayrollPensionController, resumePayrollAvcController } from "./payroll.controller";
+import { payrollBikSchema, payrollCreateEmployeeSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeeDeductionParamsSchema, payrollEmployeeParamsSchema, payrollEmployeesQuerySchema, payrollEnrollmentRemoveSchema, payrollHistoryQuerySchema, payrollLoanSchema, payrollSalaryStructureSchema, payrollStatutoryProfileSchema } from "./payroll.validation";
+import { payrollPayeeDocumentParamsSchema, payrollPayeeDocumentSchema, payrollPayeeHistoryQuerySchema, payrollPayeeParamsSchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema } from "./payroll.validation";
+import { payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunItemsQuerySchema, payrollPayRunParamsSchema, payrollPayRunsQuerySchema } from "./payroll.validation";
+import { payrollAdjustLoanSchema, payrollCloseLoanSchema, payrollCreateCustomDeductionSchema, payrollCreateLoanSchema, payrollCustomDeductionParamsSchema, payrollCustomDeductionsQuerySchema, payrollLoanParamsSchema, payrollLoansQuerySchema, payrollPayslipParamsSchema, payrollPayslipsQuerySchema } from "./payroll.validation";
+import { payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxQuerySchema, payrollTaxRemittanceParamsSchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletObligationParamsSchema, payrollWalletTransactionParamsSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
+import { payrollAvcCreateSchema, payrollPensionMarkRemittedSchema, payrollPensionParamsSchema, payrollPensionQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportExportParamsSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema } from "./payroll.validation";
+import { payrollAllowanceTypeSchema, payrollAllowanceTypeUpdateSchema, payrollDeductionTypeSchema, payrollDeductionTypeUpdateSchema, payrollPayPeriodSettingsSchema, payrollSettingsTypeParamsSchema } from "./payroll.validation";
+import { createPayrollAllowanceTypeController, createPayrollDeductionTypeController, getPayrollPayPeriodSettingsController, getPayrollSettingsController, getPayrollStatutoryRatesController, listPayrollAllowanceTypesController, listPayrollDeductionTypesController, removePayrollAllowanceTypeController, removePayrollDeductionTypeController, updatePayrollAllowanceTypeController, updatePayrollDeductionTypeController, updatePayrollPayPeriodSettingsController } from "./payroll.controller";
 
 export const payrollRouter = Router();
 const payrollCsv = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ["text/csv", "application/vnd.ms-excel"].includes(file.mimetype)) });
+const payrollPayeeDocument = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ["application/pdf", "image/jpeg", "image/png"].includes(file.mimetype)) });
+
+payrollRouter.get("/settings", authorize("payroll:statutory:view"), asyncHandler(getPayrollSettingsController));
+payrollRouter.get("/settings/pay-period", authorize("payroll:statutory:view"), asyncHandler(getPayrollPayPeriodSettingsController));
+payrollRouter.put("/settings/pay-period", authorize("payroll:statutory:update"), validate({ body: payrollPayPeriodSettingsSchema }), asyncHandler(updatePayrollPayPeriodSettingsController));
+payrollRouter.get("/settings/allowance-types", authorize("payroll:salary:view"), asyncHandler(listPayrollAllowanceTypesController));
+payrollRouter.post("/settings/allowance-types", authorize("payroll:salary:update"), validate({ body: payrollAllowanceTypeSchema }), asyncHandler(createPayrollAllowanceTypeController));
+payrollRouter.patch("/settings/allowance-types/:id", authorize("payroll:salary:update"), validate({ params: payrollSettingsTypeParamsSchema, body: payrollAllowanceTypeUpdateSchema }), asyncHandler(updatePayrollAllowanceTypeController));
+payrollRouter.delete("/settings/allowance-types/:id", authorize("payroll:salary:update"), validate({ params: payrollSettingsTypeParamsSchema }), asyncHandler(removePayrollAllowanceTypeController));
+payrollRouter.get("/settings/deduction-types", authorize("payroll:salary:view"), asyncHandler(listPayrollDeductionTypesController));
+payrollRouter.post("/settings/deduction-types", authorize("payroll:salary:update"), validate({ body: payrollDeductionTypeSchema }), asyncHandler(createPayrollDeductionTypeController));
+payrollRouter.patch("/settings/deduction-types/:id", authorize("payroll:salary:update"), validate({ params: payrollSettingsTypeParamsSchema, body: payrollDeductionTypeUpdateSchema }), asyncHandler(updatePayrollDeductionTypeController));
+payrollRouter.delete("/settings/deduction-types/:id", authorize("payroll:salary:update"), validate({ params: payrollSettingsTypeParamsSchema }), asyncHandler(removePayrollDeductionTypeController));
+payrollRouter.get("/settings/statutory-rates", authorize("payroll:statutory:view"), asyncHandler(getPayrollStatutoryRatesController));
+
 
 payrollRouter.get(
   "/dashboard",
@@ -23,6 +42,17 @@ payrollRouter.get(
   validate({ query: payrollDashboardQuerySchema }),
   asyncHandler(getPayrollDashboardController)
 );
+payrollRouter.get("/payees/export", authorize("payroll:salary:view"), validate({ query: payrollPayeesQuerySchema }), asyncHandler(exportPayrollPayeesController));
+payrollRouter.get("/payees", authorize("payroll:salary:view"), validate({ query: payrollPayeesQuerySchema }), asyncHandler(listPayrollPayeesController));
+payrollRouter.post("/payees", authorize("payroll:salary:update"), validate({ body: payrollPayeeSchema }), asyncHandler(createPayrollPayeeController));
+payrollRouter.get("/payees/:payeeId/payment-history/export", authorize("payroll:salary:view"), validate({ params: payrollPayeeParamsSchema, query: payrollPayeeHistoryQuerySchema }), asyncHandler(exportPayrollPayeeHistoryController));
+payrollRouter.get("/payees/:payeeId/payment-history", authorize("payroll:salary:view"), validate({ params: payrollPayeeParamsSchema, query: payrollPayeeHistoryQuerySchema }), asyncHandler(getPayrollPayeeHistoryController));
+payrollRouter.get("/payees/:payeeId/documents", authorize("payroll:salary:view"), validate({ params: payrollPayeeParamsSchema }), asyncHandler(listPayrollPayeeDocumentsController));
+payrollRouter.post("/payees/:payeeId/documents", authorize("payroll:salary:update"), payrollPayeeDocument.single("file"), validate({ params: payrollPayeeParamsSchema, body: payrollPayeeDocumentSchema }), asyncHandler(uploadPayrollPayeeDocumentController));
+payrollRouter.get("/payees/:payeeId/documents/:documentId/download", authorize("payroll:salary:view"), validate({ params: payrollPayeeDocumentParamsSchema }), asyncHandler(downloadPayrollPayeeDocumentController));
+payrollRouter.get("/payees/:payeeId", authorize("payroll:salary:view"), validate({ params: payrollPayeeParamsSchema }), asyncHandler(getPayrollPayeeController));
+payrollRouter.patch("/payees/:payeeId", authorize("payroll:salary:update"), validate({ params: payrollPayeeParamsSchema, body: payrollPayeeUpdateSchema }), asyncHandler(updatePayrollPayeeController));
+payrollRouter.delete("/payees/:payeeId", authorize("payroll:salary:update"), validate({ params: payrollPayeeParamsSchema }), asyncHandler(removePayrollPayeeController));
 payrollRouter.get("/employees/bulk-template", authorize("payroll:salary:view"), asyncHandler(payrollBulkTemplateController));
 payrollRouter.post("/employees/bulk-upload", authorize("hris:employees:create", "payroll:salary:create"), payrollCsv.single("file"), asyncHandler(importPayrollEmployeesController));
 payrollRouter.get("/employees/export", authorize("payroll:salary:view"), validate({ query: payrollEmployeesQuerySchema }), asyncHandler(exportPayrollEmployeesController));
@@ -41,34 +71,60 @@ payrollRouter.put("/employees/:employeeId/bik", authorize("payroll:salary:update
 payrollRouter.get("/employees/:employeeId/payroll-history/export", authorize("payroll:payslips:view"), validate({ params: payrollEmployeeParamsSchema, query: payrollHistoryQuerySchema }), asyncHandler(exportPayrollHistoryController));
 payrollRouter.get("/employees/:employeeId/payroll-history", authorize("payroll:payslips:view"), validate({ params: payrollEmployeeParamsSchema, query: payrollHistoryQuerySchema }), asyncHandler(getPayrollHistoryController));
 
-payrollRouter.use(
-  "/runs",
-  createCrudRouter(runsCrudOptions)
-);
-
-payrollRouter.post(
-  "/runs/:id/generate-payslips",
-  authorize("payroll:runs:update", "payroll:payslips:create"),
-  validate({ params: generatePayslipParamsSchema }),
-  asyncHandler(generatePayslipsController)
-);
-
-payrollRouter.use(
-  "/salary-structures",
-  createCrudRouter(salaryStructuresCrudOptions)
-);
-
-payrollRouter.use(
-  "/statutory",
-  createCrudRouter(statutoryCrudOptions)
-);
-
-payrollRouter.use(
-  "/payslips",
-  createCrudRouter(payslipsCrudOptions)
-);
-
-payrollRouter.use(
-  "/loans-advances",
-  createCrudRouter(loansCrudOptions)
-);
+payrollRouter.get("/pay-runs/eligibility", authorize("payroll:runs:view"), validate({ query: payrollPayRunEligibilityQuerySchema }), asyncHandler(getPayRunEligibilityController));
+payrollRouter.get("/pay-runs", authorize("payroll:runs:view"), validate({ query: payrollPayRunsQuerySchema }), asyncHandler(listPayRunsController));
+payrollRouter.post("/pay-runs", authorize("payroll:runs:create"), validate({ body: payrollPayRunCreateSchema }), asyncHandler(createPayRunController));
+payrollRouter.get("/pay-runs/:payRunId/export", authorize("payroll:runs:view"), validate({ params: payrollPayRunParamsSchema }), asyncHandler(exportPayRunController));
+payrollRouter.post("/pay-runs/:payRunId/approve", authorize("payroll:runs:approve"), validate({ params: payrollPayRunParamsSchema }), asyncHandler(approvePayRunController));
+payrollRouter.get("/pay-runs/:payRunId", authorize("payroll:runs:view"), validate({ params: payrollPayRunParamsSchema, query: payrollPayRunItemsQuerySchema }), asyncHandler(getPayRunController));
+payrollRouter.get("/payslips/export", authorize("payroll:payslips:view"), validate({ query: payrollPayslipsQuerySchema }), asyncHandler(exportAdminPayslipsController));
+payrollRouter.get("/payslips", authorize("payroll:payslips:view"), validate({ query: payrollPayslipsQuerySchema }), asyncHandler(listAdminPayslipsController));
+payrollRouter.get("/payslips/:payslipId/download", authorize("payroll:payslips:view"), validate({ params: payrollPayslipParamsSchema }), asyncHandler(downloadAdminPayslipController));
+payrollRouter.get("/payslips/:payslipId", authorize("payroll:payslips:view"), validate({ params: payrollPayslipParamsSchema }), asyncHandler(getAdminPayslipController));
+payrollRouter.get("/deductions/loans", authorize("payroll:loans:view"), validate({ query: payrollLoansQuerySchema }), asyncHandler(listPayrollLoansController));
+payrollRouter.post("/deductions/loans", authorize("payroll:loans:create"), validate({ body: payrollCreateLoanSchema }), asyncHandler(createPayrollLoanForDeductionsController));
+payrollRouter.get("/deductions/loans/:loanId/export", authorize("payroll:loans:view"), validate({ params: payrollLoanParamsSchema }), asyncHandler(exportPayrollLoanController));
+payrollRouter.post("/deductions/loans/:loanId/adjust-repayment", authorize("payroll:loans:update"), validate({ params: payrollLoanParamsSchema, body: payrollAdjustLoanSchema }), asyncHandler(adjustPayrollLoanController));
+payrollRouter.post("/deductions/loans/:loanId/pause", authorize("payroll:loans:update"), validate({ params: payrollLoanParamsSchema }), asyncHandler(pausePayrollLoanController));
+payrollRouter.post("/deductions/loans/:loanId/resume", authorize("payroll:loans:update"), validate({ params: payrollLoanParamsSchema }), asyncHandler(resumePayrollLoanController));
+payrollRouter.post("/deductions/loans/:loanId/close-early", authorize("payroll:loans:update"), validate({ params: payrollLoanParamsSchema, body: payrollCloseLoanSchema }), asyncHandler(closePayrollLoanController));
+payrollRouter.get("/deductions/loans/:loanId", authorize("payroll:loans:view"), validate({ params: payrollLoanParamsSchema }), asyncHandler(getPayrollLoanController));
+payrollRouter.get("/deductions/custom", authorize("payroll:salary:view"), validate({ query: payrollCustomDeductionsQuerySchema }), asyncHandler(listCustomDeductionsController));
+payrollRouter.post("/deductions/custom", authorize("payroll:salary:update"), validate({ body: payrollCreateCustomDeductionSchema }), asyncHandler(createCustomDeductionController));
+payrollRouter.delete("/deductions/custom/:deductionId", authorize("payroll:salary:update"), validate({ params: payrollCustomDeductionParamsSchema }), asyncHandler(removeCustomDeductionController));
+payrollRouter.get("/wallet", authorize("payroll:statutory:view"), asyncHandler(getPayrollWalletController));
+payrollRouter.post("/wallet/fund", authorize("payroll:statutory:update"), validate({ body: payrollWalletFundSchema }), asyncHandler(fundPayrollWalletController));
+payrollRouter.get("/wallet/transactions/export", authorize("payroll:statutory:view"), validate({ query: payrollWalletTransactionsQuerySchema }), asyncHandler(exportPayrollWalletTransactionsController));
+payrollRouter.get("/wallet/transactions", authorize("payroll:statutory:view"), validate({ query: payrollWalletTransactionsQuerySchema }), asyncHandler(listPayrollWalletTransactionsController));
+payrollRouter.get("/wallet/transactions/:transactionId", authorize("payroll:statutory:view"), validate({ params: payrollWalletTransactionParamsSchema }), asyncHandler(getPayrollWalletTransactionController));
+payrollRouter.get("/wallet/obligations", authorize("payroll:statutory:view"), asyncHandler(listPayrollWalletObligationsController));
+payrollRouter.post("/wallet/obligations/:obligationId/pay", authorize("payroll:statutory:update"), validate({ params: payrollWalletObligationParamsSchema }), asyncHandler(payPayrollWalletObligationController));
+payrollRouter.get("/tax/overview", authorize("payroll:statutory:view"), validate({ query: payrollTaxQuerySchema }), asyncHandler(getPayrollTaxOverviewController));
+payrollRouter.get("/tax/employees-by-state", authorize("payroll:statutory:view"), validate({ query: payrollTaxEmployeesQuerySchema }), asyncHandler(getPayrollTaxEmployeesController));
+payrollRouter.get("/tax/remittances", authorize("payroll:statutory:view"), validate({ query: payrollTaxRemittancesQuerySchema }), asyncHandler(listPayrollTaxRemittancesController));
+payrollRouter.get("/tax/remittances/:remittanceId/receipt", authorize("payroll:statutory:view"), validate({ params: payrollTaxRemittanceParamsSchema }), asyncHandler(downloadPayrollTaxReceiptController));
+payrollRouter.get("/tax/annual-returns/export", authorize("payroll:statutory:view"), validate({ query: payrollTaxAnnualQuerySchema }), asyncHandler(exportPayrollTaxAnnualReturnsController));
+payrollRouter.get("/tax/annual-returns", authorize("payroll:statutory:view"), validate({ query: payrollTaxAnnualQuerySchema }), asyncHandler(getPayrollTaxAnnualReturnsController));
+payrollRouter.get("/tax/config", authorize("payroll:statutory:view"), validate({ query: payrollTaxQuerySchema }), asyncHandler(getPayrollTaxConfigController));
+payrollRouter.get("/pension/overview", authorize("payroll:statutory:view"), validate({ query: payrollPensionQuerySchema }), asyncHandler(getPayrollPensionOverviewController));
+payrollRouter.get("/pension/contributions", authorize("payroll:statutory:view"), validate({ query: payrollPensionQuerySchema }), asyncHandler(listPayrollPensionContributionsController));
+payrollRouter.get("/pension/pfas", authorize("payroll:statutory:view"), asyncHandler(listPayrollPfasController));
+payrollRouter.get("/pension/remittances", authorize("payroll:statutory:view"), validate({ query: payrollPensionQuerySchema }), asyncHandler(listPayrollPensionRemittancesController));
+payrollRouter.get("/pension/remittances/:id", authorize("payroll:statutory:view"), validate({ params: payrollPensionParamsSchema }), asyncHandler(getPayrollPensionRemittanceController));
+payrollRouter.post("/pension/remittances/:id/remit", authorize("payroll:statutory:update"), validate({ params: payrollPensionParamsSchema }), asyncHandler(remitPayrollPensionController));
+payrollRouter.post("/pension/remittances/:id/mark-remitted", authorize("payroll:statutory:update"), validate({ params: payrollPensionParamsSchema, body: payrollPensionMarkRemittedSchema }), asyncHandler(markPayrollPensionRemittedController));
+payrollRouter.get("/pension/avc", authorize("payroll:statutory:view"), validate({ query: payrollPensionQuerySchema }), asyncHandler(listPayrollAvcsController));
+payrollRouter.post("/pension/avc", authorize("payroll:statutory:update"), validate({ body: payrollAvcCreateSchema }), asyncHandler(createPayrollAvcController));
+payrollRouter.post("/pension/avc/:id/pause", authorize("payroll:statutory:update"), validate({ params: payrollPensionParamsSchema }), asyncHandler(pausePayrollAvcController));
+payrollRouter.post("/pension/avc/:id/resume", authorize("payroll:statutory:update"), validate({ params: payrollPensionParamsSchema }), asyncHandler(resumePayrollAvcController));
+payrollRouter.get("/pension/pfa-transfers", authorize("payroll:statutory:view"), validate({ query: payrollPensionQuerySchema }), asyncHandler(listPayrollPfaTransfersController));
+payrollRouter.post("/pension/pfa-transfers", authorize("payroll:statutory:update"), validate({ body: payrollPfaTransferCreateSchema }), asyncHandler(createPayrollPfaTransferController));
+payrollRouter.get("/pension/pfa-transfers/:id", authorize("payroll:statutory:view"), validate({ params: payrollPensionParamsSchema }), asyncHandler(getPayrollPfaTransferController));
+payrollRouter.post("/pension/pfa-transfers/:id/advance", authorize("payroll:statutory:update"), validate({ params: payrollPensionParamsSchema, body: payrollPfaTransferAdvanceSchema }), asyncHandler(advancePayrollPfaTransferController));
+payrollRouter.get("/pension/export", authorize("payroll:statutory:view"), validate({ query: payrollPensionQuerySchema }), asyncHandler(exportPayrollPensionController));
+payrollRouter.get("/reports/summary", authorize("payroll:runs:view"), validate({ query: payrollReportsSummaryQuerySchema }), asyncHandler(getPayrollReportSummaryController));
+payrollRouter.get("/reports/department-cost", authorize("payroll:runs:view"), validate({ query: payrollReportsDepartmentQuerySchema }), asyncHandler(getPayrollDepartmentCostController));
+payrollRouter.get("/reports/monthly-variance", authorize("payroll:runs:view"), validate({ query: payrollReportsVarianceQuerySchema }), asyncHandler(getPayrollVarianceController));
+payrollRouter.get("/reports/bank-payment-schedule", authorize("payroll:runs:view"), validate({ query: payrollReportsBankQuerySchema }), asyncHandler(getPayrollBankScheduleController));
+payrollRouter.get("/reports/ytd-earnings", authorize("payroll:runs:view"), validate({ query: payrollReportsYtdQuerySchema }), asyncHandler(getPayrollYtdController));
+payrollRouter.get("/reports/:report/export", authorize("payroll:runs:view"), validate({ params: payrollReportExportParamsSchema }), asyncHandler(exportPayrollReportController));

@@ -1,21 +1,25 @@
 import { z } from "zod";
-import {
-  loanCreateSchema,
-  loanUpdateSchema,
-  payslipCreateSchema,
-  payslipUpdateSchema,
-  payrollRunCreateSchema,
-  payrollRunUpdateSchema,
-  salaryCreateSchema,
-  salaryUpdateSchema,
-  taxReportCreateSchema,
-  taxReportUpdateSchema
-} from "../common.schemas";
+
+const payrollMoney = z.coerce.number().finite().min(0).max(1_000_000_000);
+const payrollDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export const generatePayslipParamsSchema = z.object({ id: z.string().min(1) });
 export const payrollDashboardQuerySchema = z.object({}).strict();
-const payrollMoney = z.coerce.number().finite().min(0).max(1_000_000_000);
-const payrollDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+export const payrollPayRunParamsSchema = z.object({ payRunId: z.string().cuid() }).strict();
+export const payrollPayRunCreateSchema = z.object({ periodLabel: z.string().trim().min(2).max(100), from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), payDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }).strict().superRefine((value, context) => { if (value.from > value.to) context.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "To date must be on or after from date" }); });
+export const payrollPayRunsQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), search: z.string().trim().max(100).optional(), status: z.enum(["DRAFT", "PROCESSING", "PENDING_APPROVAL", "APPROVED", "PENDING_DISBURSEMENT", "DISBURSING", "DISBURSED", "FAILED", "PAID", "CANCELLED"]).optional(), sortBy: z.enum(["period", "createdAt", "employees", "gross", "netPay", "paye", "status"]).default("createdAt"), sortOrder: z.enum(["asc", "desc"]).default("desc") }).strict();
+export const payrollPayRunItemsQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(50), search: z.string().trim().max(100).optional() }).strict();
+export const payrollPayRunEligibilityQuerySchema = z.object({ from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).strict().superRefine((value, context) => { if (value.from > value.to) context.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "To date must be on or after from date" }); });
+export const payrollPayslipParamsSchema = z.object({ payslipId: z.string().cuid() }).strict();
+export const payrollPayslipsQuerySchema = z.object({ year: z.coerce.number().int().min(2000).max(2200).optional(), quarter: z.enum(["Q1", "Q2", "Q3", "Q4"]).optional(), month: z.coerce.number().int().min(1).max(12).optional(), departmentId: z.string().cuid().optional(), status: z.enum(["PAID", "PENDING", "FAILED", "READY"]).optional(), search: z.string().trim().max(100).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20) }).strict();
+export const payrollLoanParamsSchema = z.object({ loanId: z.string().cuid() }).strict();
+export const payrollLoansQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), search: z.string().trim().max(100).optional(), status: z.enum(["ACTIVE", "PAUSED", "COMPLETED", "CLOSED_EARLY", "CANCELLED"]).optional(), sortBy: z.enum(["employee", "principal", "outstanding", "monthly", "status", "startDate"]).default("startDate"), sortOrder: z.enum(["asc", "desc"]).default("desc") }).strict();
+export const payrollCreateLoanSchema = z.object({ employeeId: z.string().cuid(), purpose: z.string().trim().min(2).max(500), principalAmount: payrollMoney.refine((value) => value > 0), monthlyRepayment: payrollMoney.refine((value) => value > 0), startDate: payrollDate }).strict().refine((value) => value.monthlyRepayment <= value.principalAmount, { path: ["monthlyRepayment"], message: "Monthly repayment cannot exceed principal" });
+export const payrollAdjustLoanSchema = z.object({ monthlyRepayment: payrollMoney.refine((value) => value > 0), effectiveFrom: payrollDate.optional() }).strict();
+export const payrollCloseLoanSchema = z.object({ reason: z.string().trim().min(3).max(1000) }).strict();
+export const payrollCustomDeductionsQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), search: z.string().trim().max(100).optional(), active: z.enum(["true", "false"]).transform((value) => value === "true").optional() }).strict();
+export const payrollCreateCustomDeductionSchema = z.object({ employeeId: z.string().cuid(), deductionTypeId: z.string().uuid().optional(), name: z.string().trim().min(2).max(150).optional(), amount: payrollMoney.refine((value) => value > 0), type: z.literal("RECURRING").default("RECURRING") }).strict().refine((value) => Boolean(value.deductionTypeId || value.name), { message: "deductionTypeId is required", path: ["deductionTypeId"] });
+export const payrollCustomDeductionParamsSchema = z.object({ deductionId: z.string().cuid() }).strict();
 export const payrollEmployeeParamsSchema = z.object({ employeeId: z.string().cuid() }).strict();
 export const payrollEmployeeDeductionParamsSchema = z.object({ employeeId: z.string().cuid(), deductionId: z.string().cuid() }).strict();
 export const payrollEmployeesQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), search: z.string().trim().max(100).optional(), departmentId: z.string().cuid().optional(), status: z.enum(["ACTIVE", "INACTIVE", "ON_LEAVE", "SUSPENDED", "TERMINATED"]).optional(), employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT"]).optional(), payrollStatus: z.enum(["ON_PAYROLL", "OFF_PAYROLL"]).optional(), sortBy: z.enum(["name", "department", "gross", "netPay", "status"]).default("name"), sortOrder: z.enum(["asc", "desc"]).default("asc") }).strict();
@@ -23,20 +27,58 @@ export const payrollHistoryQuerySchema = z.object({ page: z.coerce.number().int(
 export const payrollEnrollmentRemoveSchema = z.object({ reason: z.string().trim().min(3).max(1000).optional() }).strict();
 export const payrollSalaryStructureSchema = z.object({ basicSalary: payrollMoney, housingAllowance: payrollMoney.default(0), transportAllowance: payrollMoney.default(0), otherAllowance: payrollMoney.default(0), additionalAllowances: z.array(z.object({ name: z.string().trim().min(2).max(100), amount: payrollMoney, taxable: z.boolean().default(true) }).strict()).max(30).default([]), effectiveFrom: payrollDate.optional(), proration: z.object({ resumeDate: payrollDate.nullable().default(null), method: z.enum(["WORKING_DAYS", "CALENDAR_DAYS"]).nullable().default(null) }).strict().default({ resumeDate: null, method: null }) }).strict();
 export const payrollStatutoryProfileSchema = z.object({ taxState: z.string().trim().max(100).nullable().optional(), taxStatus: z.enum(["PAYE", "EXEMPT", "CONTRACTOR"]).default("PAYE"), tin: z.string().trim().max(100).nullable().optional(), pensionPin: z.string().trim().max(100).nullable().optional(), nhfNumber: z.string().trim().max(100).nullable().optional(), pfaName: z.string().trim().max(150).nullable().optional() }).strict();
-export const payrollDeductionSchema = z.object({ name: z.string().trim().min(2).max(150), amount: payrollMoney.refine((value) => value > 0), frequency: z.enum(["MONTHLY", "ONE_OFF"]).default("MONTHLY"), effectiveFrom: payrollDate.optional(), effectiveTo: payrollDate.optional() }).strict();
+export const payrollDeductionSchema = z.object({ deductionTypeId: z.string().uuid().optional(), name: z.string().trim().min(2).max(150).optional(), amount: payrollMoney.refine((value) => value > 0), frequency: z.enum(["MONTHLY", "ONE_OFF"]).default("MONTHLY"), effectiveFrom: payrollDate.optional(), effectiveTo: payrollDate.optional() }).strict().refine((value) => Boolean(value.deductionTypeId || value.name), { message: "deductionTypeId is required", path: ["deductionTypeId"] });
 export const payrollLoanSchema = z.object({ purpose: z.string().trim().min(2).max(500), type: z.enum(["RECURRING", "ONE_OFF"]), principal: payrollMoney.refine((value) => value > 0), monthlyRepayment: payrollMoney.optional(), startDate: payrollDate }).strict().superRefine((value, context) => { if (value.type === "RECURRING" && (!value.monthlyRepayment || value.monthlyRepayment > value.principal)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["monthlyRepayment"], message: "Recurring repayment must be greater than zero and no more than principal" }); });
 export const payrollBikSchema = z.object({ hmoHealthInsurance: payrollMoney.default(0), airtimeAllowance: payrollMoney.default(0), mealAllowance: payrollMoney.default(0), thirteenthMonthAnnual: payrollMoney.default(0) }).strict();
 export const payrollCreateEmployeeSchema = z.object({ fullName: z.string().trim().min(2).max(200), role: z.string().trim().min(2).max(150), departmentId: z.string().cuid().optional(), email: z.string().email(), phone: z.string().trim().max(30).optional(), state: z.string().trim().max(100).optional(), employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT"]), employeeStatus: z.enum(["ACTIVE", "INACTIVE", "ON_LEAVE", "SUSPENDED"]).default("ACTIVE"), taxStatus: z.enum(["PAYE", "EXEMPT", "CONTRACTOR"]).default("PAYE"), bankName: z.string().trim().max(150).optional(), accountNumber: z.string().trim().regex(/^\d{6,20}$/).optional(), salary: payrollSalaryStructureSchema, enroll: z.boolean().default(false) }).strict();
 
-export {
-  loanCreateSchema,
-  loanUpdateSchema,
-  payslipCreateSchema,
-  payslipUpdateSchema,
-  payrollRunCreateSchema,
-  payrollRunUpdateSchema,
-  salaryCreateSchema,
-  salaryUpdateSchema,
-  taxReportCreateSchema,
-  taxReportUpdateSchema
-};
+const payeeType = z.enum(["CONTRACTOR", "VENDOR", "DIRECTOR", "BOARD_MEMBER"]);
+const payeeStatus = z.enum(["ACTIVE", "INACTIVE"]);
+const payeeOptionalText = (max: number) => z.string().trim().min(1).max(max).nullable().optional();
+export const payrollPayeeParamsSchema = z.object({ payeeId: z.string().cuid() }).strict();
+export const payrollPayeeDocumentParamsSchema = z.object({ payeeId: z.string().cuid(), documentId: z.string().cuid() }).strict();
+export const payrollPayeesQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), search: z.string().trim().max(100).optional(), type: payeeType.optional(), status: payeeStatus.optional(), taxable: z.enum(["true", "false"]).transform((value) => value === "true").optional(), sortBy: z.enum(["name", "type", "amount", "status"]).default("name"), sortOrder: z.enum(["asc", "desc"]).default("asc") }).strict();
+export const payrollPayeeHistoryQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), sortOrder: z.enum(["asc", "desc"]).default("desc") }).strict();
+export const payrollPayeeSchema = z.object({ name: z.string().trim().min(2).max(200), type: payeeType, status: payeeStatus.default("ACTIVE"), email: z.string().trim().email().transform((value) => value.toLowerCase()).nullable().optional(), phone: z.string().trim().regex(/^\+?[1-9]\d{7,14}$/).nullable().optional(), bankName: payeeOptionalText(150), bankCode: payeeOptionalText(20), accountNumber: z.string().trim().regex(/^\d{6,20}$/).nullable().optional(), accountName: payeeOptionalText(200), tin: payeeOptionalText(100), monthlyAmount: payrollMoney.refine((value) => value > 0, "Monthly amount must be greater than zero"), isTaxable: z.boolean().default(false) }).strict();
+export const payrollPayeeUpdateSchema = payrollPayeeSchema.partial().refine((value) => Object.keys(value).length > 0, "At least one field is required");
+export const payrollPayeeDocumentSchema = z.object({ documentName: z.string().trim().min(2).max(200) }).strict();
+
+const walletTransactionType = z.enum(["FUNDING", "PAYROLL_DISBURSEMENT", "PAYE_REMITTANCE", "PENSION_REMITTANCE", "NHF_REMITTANCE", "PAYEE_PAYMENT", "REVERSAL"]);
+export const payrollWalletTransactionsQuerySchema = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20), search: z.string().trim().max(100).optional(), type: walletTransactionType.optional(), direction: z.enum(["CREDIT", "DEBIT"]).optional(), from: payrollDate.optional(), to: payrollDate.optional() }).strict().superRefine((value, context) => { if (value.from && value.to && value.from > value.to) context.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "To date must be on or after from date" }); });
+export const payrollWalletFundSchema = z.object({ amount: payrollMoney.refine((value) => value > 0), transferReference: z.string().trim().min(3).max(100) }).strict();
+export const payrollWalletTransactionParamsSchema = z.object({ transactionId: z.string().cuid() }).strict();
+export const payrollWalletObligationParamsSchema = z.object({ obligationId: z.string().trim().min(3).max(250) }).strict();
+export const payrollTaxQuerySchema = z.object({ year: z.coerce.number().int().min(2000).max(2200).default(new Date().getUTCFullYear()), period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional() }).strict();
+export const payrollTaxEmployeesQuerySchema = payrollTaxQuerySchema.extend({ search: z.string().trim().max(100).optional(), state: z.string().trim().max(100).optional(), authority: z.string().trim().max(100).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20) }).strict();
+export const payrollTaxRemittancesQuerySchema = payrollTaxQuerySchema.extend({ status: z.enum(["DUE", "OVERDUE", "REMITTED"]).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20) }).strict();
+export const payrollTaxAnnualQuerySchema = payrollTaxQuerySchema.extend({ search: z.string().trim().max(100).optional(), state: z.string().trim().max(100).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(50) }).strict();
+export const payrollTaxRemittanceParamsSchema = z.object({ remittanceId: z.string().cuid() }).strict();
+
+const payrollPeriod = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+const payrollYear = z.coerce.number().int().min(2000).max(2200);
+const payrollPage = { page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(20) };
+export const payrollPensionQuerySchema = z.object({ period: payrollPeriod.optional(), search: z.string().trim().max(100).optional(), pfa: z.string().trim().max(150).optional(), ...payrollPage }).strict();
+export const payrollPensionParamsSchema = z.object({ id: z.string().cuid() }).strict();
+export const payrollAvcCreateSchema = z.object({ employeeId: z.string().cuid(), monthlyAmount: payrollMoney.refine((value) => value > 0), startDate: payrollDate }).strict();
+export const payrollPfaTransferCreateSchema = z.object({ employeeId: z.string().cuid(), currentPfa: z.string().trim().min(2).max(150), newPfa: z.string().trim().min(2).max(150), externalReference: z.string().trim().max(100).optional() }).strict().refine((value) => value.currentPfa.toLowerCase() !== value.newPfa.toLowerCase(), { path: ["newPfa"], message: "New PFA must differ from current PFA" });
+export const payrollPfaTransferAdvanceSchema = z.object({ nextStatus: z.enum(["PENCOM_REVIEW", "OLD_PFA_PROCESSING", "NEW_PFA_CONFIRMATION", "COMPLETED"]), externalReference: z.string().trim().max(100).optional() }).strict();
+export const payrollPensionMarkRemittedSchema = z.object({ paymentReference: z.string().trim().min(3).max(100), remittedAt: payrollDate, receiptReference: z.string().trim().max(500).optional() }).strict();
+export const payrollReportsSummaryQuerySchema = z.object({ year: payrollYear.default(new Date().getUTCFullYear()), period: payrollPeriod.optional() }).strict();
+export const payrollReportsDepartmentQuerySchema = z.object({ period: payrollPeriod, ...payrollPage }).strict();
+export const payrollReportsVarianceQuerySchema = z.object({ previousPeriod: payrollPeriod, currentPeriod: payrollPeriod, search: z.string().trim().max(100).optional(), ...payrollPage }).strict().refine((value) => value.previousPeriod !== value.currentPeriod, { path: ["currentPeriod"], message: "Comparison periods must differ" });
+export const payrollReportsBankQuerySchema = z.object({ period: payrollPeriod, status: z.enum(["PENDING", "PROCESSING", "PAID", "FAILED"]).optional(), search: z.string().trim().max(100).optional(), ...payrollPage }).strict();
+export const payrollReportsYtdQuerySchema = z.object({ year: payrollYear.default(new Date().getUTCFullYear()), search: z.string().trim().max(100).optional(), departmentId: z.string().cuid().optional(), ...payrollPage }).strict();
+export const payrollReportExportParamsSchema = z.object({ report: z.enum(["summary", "department", "variance", "bank", "ytd"]) }).strict();
+
+export const payrollPayPeriodSettingsSchema = z.object({
+  payFrequency: z.literal("MONTHLY"),
+  defaultPayDay: z.coerce.number().int().min(1).max(31)
+}).strict();
+export const payrollSettingsTypeParamsSchema = z.object({ id: z.string().trim().min(1).max(100) }).strict();
+export const payrollAllowanceTypeSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  taxTreatment: z.enum(["TAXABLE", "TAX_EXEMPT"])
+}).strict();
+export const payrollAllowanceTypeUpdateSchema = payrollAllowanceTypeSchema.partial().refine((value) => Object.keys(value).length > 0, "At least one field is required");
+export const payrollDeductionTypeSchema = z.object({ name: z.string().trim().min(2).max(100) }).strict();
+export const payrollDeductionTypeUpdateSchema = payrollDeductionTypeSchema.partial().refine((value) => Object.keys(value).length > 0, "At least one field is required");

@@ -2,7 +2,7 @@ import type { Request } from "express";
 import type { Prisma } from "@prisma/client";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { badRequest, notFound } from "../../core/http-error";
+import { badRequest, conflict, notFound } from "../../core/http-error";
 import { deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { getPagination } from "../../core/pagination";
 import { prisma } from "../../core/prisma";
@@ -12,7 +12,7 @@ import { createAuditLog, extractEntityId } from "./admin.audit";
 import { deriveActiveModules, syncSystemAlerts } from "./admin.dashboard";
 import { billingPlans as sharedBillingPlans, calculateBillingAmount, type BillingCycle, type BillingPlanDefinition, type BillingPlanKey } from "../billing/billing.catalog";
 import { getEffectivePlanCatalogue, resolveRecurringPrices } from "../billing/pricing.service";
-import { sendSubscriptionRenewalEmail } from "../auth/auth.mailer";
+import { sendSubscriptionRenewalEmail, sendWorkspaceInvitationEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
 import { deriveSubscriptionStatus, isRenewalReminderDue } from "../billing/billing.rules";
 import { supportedCurrencies, supportedDateFormats, supportedLanguages, type AdminAuditLogInput, type AuditLogRow, type BrandingSettingsResponse, type LocaleSettingsResponse, type NotificationChannelPreferences, type PlatformAnnouncementResponse, type QuickAction, type SystemAlertRow, type TenantNotificationChannelKey } from "./admin.interface";
 import {
@@ -96,6 +96,12 @@ type AgentInvitationRow = {
   token: string;
   moduleAccess?: unknown;
   status: string;
+  deliveryStatus?: "PENDING" | "SENT" | "FAILED";
+  deliveryAttemptedAt?: Date | null;
+  deliveredAt?: Date | null;
+  deliveryProvider?: string | null;
+  deliveryErrorCode?: string | null;
+  deliveryErrorMessage?: string | null;
   expiresAt: Date;
   acceptedAt: Date | null;
   createdAt: Date;
@@ -3109,26 +3115,38 @@ export const inviteUser = async (req: Request) => {
   });
 
   if (existingUser) {
-    throw badRequest("A user with this email already exists in this organization");
+    throw conflict("A user with this email already exists in this organization");
   }
 
-  const invitation = await invitationDelegate.create({
-    data: {
-      organizationId: req.organizationId!,
-      roleId: payload.roleId,
-      invitedByUserId: req.user?.id,
-      email: payload.email.toLowerCase(),
-      token: crypto.randomBytes(32).toString("hex"),
-      moduleAccess: payload.moduleAccess,
-      status: "PENDING",
-      expiresAt: new Date(Date.now() + invitationTtlDays * 24 * 60 * 60 * 1000)
-    },
-    include: {
-      role: {
-        select: { id: true, name: true }
-      }
-    }
+  const pendingInvitation = await prisma.agentInvitation.findFirst({ where: { organizationId: req.organizationId, email: payload.email.toLowerCase(), status: "PENDING", expiresAt: { gt: new Date() } }, select: { id: true, deliveryStatus: true } });
+  if (pendingInvitation) throw conflict("An active invitation already exists for this email; use resend", { invitationId: pendingInvitation.id, deliveryStatus: pendingInvitation.deliveryStatus });
+
+  const email = payload.email.toLowerCase();
+  const [organization, employee] = await Promise.all([
+    prisma.organization.findUnique({ where: { id: req.organizationId! }, select: { name: true } }),
+    prisma.employee.findFirst({ where: { organizationId: req.organizationId, email }, select: { id: true, firstName: true, lastName: true } })
+  ]);
+  if (!organization) throw badRequest("Organization not found");
+  const localPart = email.split("@")[0].split(/[._-]+/).filter(Boolean);
+  const temporaryPasswordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 12);
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + invitationTtlDays * 24 * 60 * 60 * 1000);
+  const created = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({ data: { organizationId: req.organizationId!, roleId: payload.roleId, employeeId: employee?.id, email, firstName: employee?.firstName ?? localPart[0] ?? "Invited", lastName: employee?.lastName ?? (localPart.slice(1).join(" ") || "User"), passwordHash: temporaryPasswordHash, isActive: true } });
+    const invitation = await tx.agentInvitation.create({ data: { organizationId: req.organizationId!, roleId: payload.roleId, invitedByUserId: req.user?.id, email, token, moduleAccess: payload.moduleAccess, status: "PENDING", expiresAt }, include: { role: { select: { id: true, name: true } } } });
+    return { user, invitation };
   });
+  const invitation = created.invitation;
+  try {
+    const delivery = await sendWorkspaceInvitationEmail({ to: invitation.email, organizationName: organization.name, roleName: invitation.role?.name ?? role.name, setupUrl: workspaceInvitationSetupUrl(invitation.token), expiresAt: invitation.expiresAt });
+    await prisma.agentInvitation.update({ where: { id: invitation.id }, data: { deliveryStatus: "SENT", deliveryAttemptedAt: new Date(), deliveredAt: new Date(), deliveryProvider: "SMTP", providerMessageId: delivery.messageId, deliveryErrorCode: null, deliveryErrorMessage: null } });
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "EMAIL_DELIVERY_FAILED";
+    const message = error instanceof Error ? error.message.slice(0, 500) : "Email delivery failed";
+    await prisma.agentInvitation.update({ where: { id: invitation.id }, data: { deliveryStatus: "FAILED", deliveryAttemptedAt: new Date(), deliveryProvider: "SMTP", deliveryErrorCode: code, deliveryErrorMessage: message } });
+    console.error("[invitation-email] delivery failed", { invitationId: invitation.id, organizationId: invitation.organizationId, recipient: invitation.email, provider: "SMTP", code, message });
+    throw error;
+  }
 
   await logAdminActivity({
     organizationId: req.organizationId,
@@ -3149,7 +3167,8 @@ export const inviteUser = async (req: Request) => {
     role: invitation.role?.name ?? null,
     moduleAccess: payload.moduleAccess,
     sentDate: invitation.createdAt,
-    status: deriveInvitationStatus(invitation.status, invitation.expiresAt)
+    status: deriveInvitationStatus(invitation.status, invitation.expiresAt),
+    delivery: "SENT"
   };
 };
 
@@ -3190,7 +3209,12 @@ export const listPendingInvitations = async (req: Request) => {
       role: invitation.role?.name ?? null,
       moduleAccess: Array.isArray(invitation.moduleAccess) ? invitation.moduleAccess : [],
       sentDate: invitation.createdAt,
-      status: deriveInvitationStatus(invitation.status, invitation.expiresAt)
+      status: deriveInvitationStatus(invitation.status, invitation.expiresAt),
+      deliveryStatus: invitation.deliveryStatus ?? "PENDING",
+      deliveryAttemptedAt: invitation.deliveryAttemptedAt ?? null,
+      deliveredAt: invitation.deliveredAt ?? null,
+      deliveryProvider: invitation.deliveryProvider ?? null,
+      deliveryErrorCode: invitation.deliveryErrorCode ?? null
     }))
     .filter((row) => (statusFilter ? row.status === statusFilter : true));
 
@@ -3227,9 +3251,40 @@ export const resendInvitation = async (req: Request) => {
     data: {
       token: crypto.randomBytes(32).toString("hex"),
       status: "PENDING",
+      deliveryStatus: "PENDING",
+      deliveryAttemptedAt: null,
+      deliveredAt: null,
+      providerMessageId: null,
+      deliveryErrorCode: null,
+      deliveryErrorMessage: null,
       expiresAt: new Date(Date.now() + invitationTtlDays * 24 * 60 * 60 * 1000)
     }
   });
+
+  const [organization, existingInvitee, employee] = await Promise.all([
+    prisma.organization.findUnique({ where: { id: req.organizationId! }, select: { name: true } }),
+    prisma.user.findFirst({ where: { organizationId: req.organizationId, email: updated.email }, select: { id: true } }),
+    prisma.employee.findFirst({ where: { organizationId: req.organizationId, email: updated.email }, select: { id: true, firstName: true, lastName: true } })
+  ]);
+  if (!organization) throw badRequest("Organization not found");
+  let createdUserId: string | null = null;
+  if (!existingInvitee) {
+    if (!updated.roleId) throw badRequest("Invitation has no role assignment");
+    const localPart = updated.email.split("@")[0].split(/[._-]+/).filter(Boolean);
+    const created = await prisma.user.create({ data: { organizationId: req.organizationId!, roleId: updated.roleId, employeeId: employee?.id, email: updated.email, firstName: employee?.firstName ?? localPart[0] ?? "Invited", lastName: employee?.lastName ?? (localPart.slice(1).join(" ") || "User"), passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 12), isActive: true } });
+    createdUserId = created.id;
+  }
+  try {
+    const delivery = await sendWorkspaceInvitationEmail({ to: updated.email, organizationName: organization.name, roleName: existing.role?.name ?? "Workspace user", setupUrl: workspaceInvitationSetupUrl(updated.token), expiresAt: updated.expiresAt });
+    await prisma.agentInvitation.update({ where: { id: updated.id }, data: { deliveryStatus: "SENT", deliveryAttemptedAt: new Date(), deliveredAt: new Date(), deliveryProvider: "SMTP", providerMessageId: delivery.messageId } });
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "EMAIL_DELIVERY_FAILED";
+    const message = error instanceof Error ? error.message.slice(0, 500) : "Email delivery failed";
+    await prisma.agentInvitation.update({ where: { id: updated.id }, data: { deliveryStatus: "FAILED", deliveryAttemptedAt: new Date(), deliveryProvider: "SMTP", deliveryErrorCode: code, deliveryErrorMessage: message } });
+    console.error("[invitation-email] resend failed", { invitationId: updated.id, organizationId: updated.organizationId, recipient: updated.email, provider: "SMTP", code, message });
+    if (createdUserId) await prisma.user.delete({ where: { id: createdUserId } });
+    throw error;
+  }
 
   await logAdminActivity({
     organizationId: req.organizationId,
@@ -3244,7 +3299,8 @@ export const resendInvitation = async (req: Request) => {
     id: updated.id,
     email: updated.email,
     message: "Invitation resent successfully",
-    lastSentAt: updated.updatedAt
+    lastSentAt: updated.updatedAt,
+    delivery: "SENT"
   };
 };
 

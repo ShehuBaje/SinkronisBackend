@@ -2,10 +2,9 @@ import { Queue } from "bullmq";
 import { serviceUnavailable } from "../core/http-error";
 import { redisConnectionOptions } from "../config/redis";
 
-export const PAYROLL_QUEUE_NAME = "payroll";
 export const NOTIFICATION_QUEUE_NAME = "notifications";
 
-type QueueName = typeof PAYROLL_QUEUE_NAME | typeof NOTIFICATION_QUEUE_NAME;
+type QueueName = typeof NOTIFICATION_QUEUE_NAME;
 
 let queues: Queue[] = [];
 let queueMap: Partial<Record<QueueName, Queue>> = {};
@@ -22,10 +21,6 @@ export const initializeQueues = () => {
     return queues;
   }
 
-  const payrollQueue = new Queue(PAYROLL_QUEUE_NAME, {
-    connection: redisConnectionOptions
-  });
-
   const notificationQueue = new Queue(NOTIFICATION_QUEUE_NAME, {
     connection: redisConnectionOptions
   });
@@ -39,9 +34,8 @@ export const initializeQueues = () => {
     { name: "subscription-lifecycle", data: {} }
   ).catch((error) => console.error("[queue:notifications] Could not schedule subscription lifecycle", error));
 
-  queues = [payrollQueue, notificationQueue];
+  queues = [notificationQueue];
   queueMap = {
-    [PAYROLL_QUEUE_NAME]: payrollQueue,
     [NOTIFICATION_QUEUE_NAME]: notificationQueue
   };
 

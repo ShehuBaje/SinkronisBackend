@@ -8,25 +8,33 @@ datasource db {
 }
 
 model AgentInvitation {
-  id              String                 @id @default(cuid())
-  organizationId  String
-  email           String
-  token           String                 @unique(map: "AgentInvitation_token_key")
-  status          agentinvitation_status @default(PENDING)
-  expiresAt       DateTime
-  acceptedAt      DateTime?
-  createdAt       DateTime               @default(now())
-  updatedAt       DateTime               @updatedAt
-  roleId          String?
-  invitedByUserId String?
-  moduleAccess    Json?
-  user            User?                  @relation(fields: [invitedByUserId], references: [id], map: "AgentInvitation_invitedByUserId_fkey")
-  organization    Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AgentInvitation_organizationId_fkey")
-  role            Role?                  @relation(fields: [roleId], references: [id], map: "AgentInvitation_roleId_fkey")
+  id                   String                     @id @default(cuid())
+  organizationId       String
+  email                String
+  token                String                     @unique(map: "AgentInvitation_token_key")
+  status               agentinvitation_status     @default(PENDING)
+  deliveryStatus       invitation_delivery_status @default(PENDING)
+  deliveryAttemptedAt  DateTime?
+  deliveredAt          DateTime?
+  deliveryProvider     String?
+  providerMessageId    String?
+  deliveryErrorCode    String?
+  deliveryErrorMessage String?                    @db.VarChar(500)
+  expiresAt            DateTime
+  acceptedAt           DateTime?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  roleId               String?
+  invitedByUserId      String?
+  moduleAccess         Json?
+  user                 User?                      @relation(fields: [invitedByUserId], references: [id], map: "AgentInvitation_invitedByUserId_fkey")
+  organization         Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AgentInvitation_organizationId_fkey")
+  role                 Role?                      @relation(fields: [roleId], references: [id], map: "AgentInvitation_roleId_fkey")
 
   @@index([invitedByUserId], map: "AgentInvitation_invitedByUserId_fkey")
   @@index([organizationId, roleId], map: "AgentInvitation_organizationId_roleId_idx")
   @@index([organizationId, status], map: "AgentInvitation_organizationId_status_idx")
+  @@index([organizationId, deliveryStatus, createdAt], map: "AgentInvitation_org_delivery_idx")
   @@index([roleId], map: "AgentInvitation_roleId_fkey")
   @@map("AgentInvitation")
 }
@@ -635,6 +643,8 @@ model Employee {
   payrollStatutoryProfile PayrollStatutoryProfile?
   payrollDeductions       EmployeeDeduction[]
   payrollBik              EmployeeBenefitInKind?
+  payrollAvcs             PayrollAvcContribution[]
+  pfaTransfers            PayrollPfaTransfer[]
 
   @@unique([organizationId, email], map: "Employee_organizationId_email_key")
   @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
@@ -827,38 +837,62 @@ model LeaveBalance {
 }
 
 model LoanAdvance {
-  id             String   @id @default(cuid())
-  organizationId String
-  employeeId     String
-  amount         Decimal  @db.Decimal(14, 2)
-  outstanding    Decimal  @db.Decimal(14, 2)
-  reason         String?  @db.Text
-  issuedAt       DateTime
-  loanType       String   @default("RECURRING")
-  monthlyRepayment Decimal? @db.Decimal(14, 2)
-  status         String   @default("ACTIVE")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LoanAdvance_employeeId_fkey")
+  id               String          @id @default(cuid())
+  organizationId   String
+  employeeId       String
+  amount           Decimal         @db.Decimal(14, 2)
+  outstanding      Decimal         @db.Decimal(14, 2)
+  reason           String?         @db.Text
+  issuedAt         DateTime
+  loanType         String          @default("RECURRING")
+  monthlyRepayment Decimal?        @db.Decimal(14, 2)
+  status           String          @default("ACTIVE")
+  pausedAt         DateTime?
+  adjustedAt       DateTime?
+  closedAt         DateTime?
+  closedById       String?
+  closeReason      String?         @db.Text
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  employee         Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LoanAdvance_employeeId_fkey")
+  repayments       LoanRepayment[]
 
   @@index([employeeId], map: "LoanAdvance_employeeId_fkey")
   @@index([organizationId, employeeId], map: "LoanAdvance_organizationId_employeeId_idx")
   @@map("LoanAdvance")
 }
 
-model PayrollEnrollment {
-  id             String   @id @default(cuid())
+model LoanRepayment {
+  id             String       @id @default(cuid())
   organizationId String
-  employeeId     String   @unique(map: "PayrollEnrollment_employeeId_key")
-  isActive       Boolean  @default(true)
-  enrolledAt     DateTime @default(now())
+  loanId         String
+  payrollRunId   String?
+  amount         Decimal      @db.Decimal(14, 2)
+  repaymentDate  DateTime
+  status         String       @default("POSTED")
+  createdAt      DateTime     @default(now())
+  loan           LoanAdvance  @relation(fields: [loanId], references: [id], onDelete: Cascade, map: "LoanRepayment_loanId_fkey")
+  payrollRun     PayrollRun?  @relation(fields: [payrollRunId], references: [id], map: "LoanRepayment_payrollRunId_fkey")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "LoanRepayment_organizationId_fkey")
+
+  @@unique([loanId, payrollRunId], map: "LoanRepayment_loan_run_key")
+  @@index([organizationId, loanId, repaymentDate], map: "LoanRepayment_org_loan_date_idx")
+  @@map("LoanRepayment")
+}
+
+model PayrollEnrollment {
+  id             String    @id @default(cuid())
+  organizationId String
+  employeeId     String    @unique(map: "PayrollEnrollment_employeeId_key")
+  isActive       Boolean   @default(true)
+  enrolledAt     DateTime  @default(now())
   enrolledById   String?
   removedAt      DateTime?
   removedById    String?
-  removedReason  String?  @db.Text
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "PayrollEnrollment_employeeId_fkey")
+  removedReason  String?   @db.Text
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  employee       Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "PayrollEnrollment_employeeId_fkey")
 
   @@index([organizationId, isActive], map: "PayrollEnrollment_org_active_idx")
   @@map("PayrollEnrollment")
@@ -883,20 +917,22 @@ model PayrollStatutoryProfile {
 }
 
 model EmployeeDeduction {
-  id             String   @id @default(cuid())
-  organizationId String
-  employeeId     String
-  name           String
-  amount         Decimal  @db.Decimal(14, 2)
-  frequency      String   @default("MONTHLY")
-  active         Boolean  @default(true)
-  effectiveFrom  DateTime @default(now())
-  effectiveTo    DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  employee       Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDeduction_employeeId_fkey")
+  id              String    @id @default(cuid())
+  deductionTypeId String?
+  organizationId  String
+  employeeId      String
+  name            String
+  amount          Decimal   @db.Decimal(14, 2)
+  frequency       String    @default("MONTHLY")
+  active          Boolean   @default(true)
+  effectiveFrom   DateTime  @default(now())
+  effectiveTo     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  employee        Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDeduction_employeeId_fkey")
 
   @@index([organizationId, employeeId, active], map: "EmployeeDeduction_org_employee_active_idx")
+  @@index([organizationId, deductionTypeId], map: "EmployeeDeduction_org_type_idx")
   @@map("EmployeeDeduction")
 }
 
@@ -1028,6 +1064,10 @@ model Organization {
   checkIns                     TenantCheckIn[]
   moduleSnapshots              TenantModuleDailySnapshot[]
   payrollrun                   PayrollRun[]
+  payees                       Payee[]
+  payeePayments                PayeePayment[]
+  payeeDocuments               PayeeDocument[]
+  loanRepayments               LoanRepayment[]
   platformimpersonationsession PlatformImpersonationSession[]
   role                         Role[]
   salarystructure              SalaryStructure[]
@@ -1044,6 +1084,11 @@ model Organization {
   userNotifications            UserNotification[]
   usersession                  UserSession[]
   walletaccount                WalletAccount[]
+  walletTransactions           WalletTransaction[]
+  payrollTaxRemittances        PayrollTaxRemittance[]
+  payrollAvcs                  PayrollAvcContribution[]
+  payrollPfaTransfers          PayrollPfaTransfer[]
+  payrollPensionRemittances    PayrollPensionRemittance[]
   workschedule                 WorkSchedule?
   AppraisalSetting             AppraisalSetting?
 
@@ -1264,17 +1309,35 @@ model PaymentRequest {
 }
 
 model PayrollRun {
-  id             String            @id @default(cuid())
-  organizationId String
-  name           String
-  periodStart    DateTime
-  periodEnd      DateTime
-  payDate        DateTime?
-  status         payrollrun_status @default(DRAFT)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollRun_organizationId_fkey")
-  payslip        Payslip[]
+  id                   String                     @id @default(cuid())
+  organizationId       String
+  name                 String
+  periodStart          DateTime
+  periodEnd            DateTime
+  payDate              DateTime?
+  status               payrollrun_status          @default(DRAFT)
+  employeeCount        Int                        @default(0)
+  totalGross           Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalPaye            Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalPension         Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalEmployerPension Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalNhf             Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalLoans           Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalOtherDeductions Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalNetPay          Decimal                    @default(0.00) @db.Decimal(14, 2)
+  computedAt           DateTime?
+  approvedAt           DateTime?
+  approvedById         String?
+  disbursedAt          DateTime?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  organization         Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollRun_organizationId_fkey")
+  payslip              Payslip[]
+  payeePayments        PayeePayment[]
+  loanRepayments       LoanRepayment[]
+  walletTransactions   WalletTransaction[]
+  taxRemittances       PayrollTaxRemittance[]
+  pensionRemittances   PayrollPensionRemittance[]
 
   @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
   @@index([organizationId, periodEnd], map: "PayrollRun_organizationId_periodEnd_idx")
@@ -1282,34 +1345,123 @@ model PayrollRun {
 }
 
 model Payslip {
-  id                 String     @id @default(cuid())
-  organizationId     String
-  payrollRunId       String
-  employeeId         String
-  grossPay           Decimal    @db.Decimal(14, 2)
-  payeTax            Decimal    @default(0.00) @db.Decimal(14, 2)
-  pension            Decimal    @default(0.00) @db.Decimal(14, 2)
-  employerPension    Decimal    @default(0.00) @db.Decimal(14, 2)
-  nhf                Decimal    @default(0.00) @db.Decimal(14, 2)
-  nsitf              Decimal    @default(0.00) @db.Decimal(14, 2)
-  deductions         Decimal    @default(0.00) @db.Decimal(14, 2)
-  netPay             Decimal    @db.Decimal(14, 2)
-  currency           String?
-  earningsSnapshot   Json?
-  deductionsSnapshot Json?
-  pdfFileReference   String?
-  departmentIdSnapshot String?
+  id                     String     @id @default(cuid())
+  organizationId         String
+  payrollRunId           String
+  employeeId             String
+  grossPay               Decimal    @db.Decimal(14, 2)
+  payeTax                Decimal    @default(0.00) @db.Decimal(14, 2)
+  pension                Decimal    @default(0.00) @db.Decimal(14, 2)
+  employerPension        Decimal    @default(0.00) @db.Decimal(14, 2)
+  nhf                    Decimal    @default(0.00) @db.Decimal(14, 2)
+  nsitf                  Decimal    @default(0.00) @db.Decimal(14, 2)
+  deductions             Decimal    @default(0.00) @db.Decimal(14, 2)
+  netPay                 Decimal    @db.Decimal(14, 2)
+  currency               String?
+  earningsSnapshot       Json?
+  deductionsSnapshot     Json?
+  statutoryRuleSnapshot  Json?
+  pdfFileReference       String?
+  departmentIdSnapshot   String?
   departmentNameSnapshot String?
-  createdAt          DateTime   @default(now())
-  updatedAt          DateTime   @updatedAt
-  employee           Employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
-  payrollrun         PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
+  employeeNoSnapshot     String?
+  employeeNameSnapshot   String?
+  roleSnapshot           String?
+  bankSnapshot           Json?
+  taxStateSnapshot       String?
+  taxAuthoritySnapshot   Json?
+  tinSnapshot            String?
+  pfaNameSnapshot        String?
+  pensionPinSnapshot     String?
+  avcContribution        Decimal    @default(0.00) @db.Decimal(14, 2)
+  loanDeduction          Decimal    @default(0.00) @db.Decimal(14, 2)
+  customDeduction        Decimal    @default(0.00) @db.Decimal(14, 2)
+  paymentStatus          String     @default("PENDING")
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+  employee               Employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
+  payrollrun             PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
 
   @@unique([payrollRunId, employeeId], map: "Payslip_payrollRunId_employeeId_key")
   @@index([employeeId], map: "Payslip_employeeId_fkey")
   @@index([organizationId, employeeId], map: "Payslip_organizationId_employeeId_idx")
   @@index([organizationId, payrollRunId], map: "Payslip_organizationId_payrollRunId_idx")
   @@map("Payslip")
+}
+
+model Payee {
+  id              String          @id @default(cuid())
+  organizationId  String
+  name            String
+  type            String
+  status          String          @default("ACTIVE")
+  email           String?
+  phone           String?
+  bankName        String?
+  bankCode        String?
+  accountNumber   String?
+  accountName     String?
+  tin             String?
+  monthlyAmount   Decimal         @db.Decimal(14, 2)
+  isTaxable       Boolean         @default(false)
+  deletedAt       DateTime?
+  removedByUserId String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Payee_organizationId_fkey")
+  payments        PayeePayment[]
+  documents       PayeeDocument[]
+
+  @@index([organizationId, deletedAt, status], map: "Payee_org_deleted_status_idx")
+  @@index([organizationId, type, status], map: "Payee_org_type_status_idx")
+  @@index([organizationId, name], map: "Payee_org_name_idx")
+  @@map("Payee")
+}
+
+model PayeePayment {
+  id                String       @id @default(cuid())
+  organizationId    String
+  payrollRunId      String
+  payeeId           String
+  payeeNameSnapshot String
+  payeeTypeSnapshot String
+  grossAmount       Decimal      @db.Decimal(14, 2)
+  payeTax           Decimal      @default(0.00) @db.Decimal(14, 2)
+  netAmount         Decimal      @db.Decimal(14, 2)
+  currency          String       @default("NGN")
+  isTaxableSnapshot Boolean
+  bankSnapshot      Json?
+  status            String       @default("PENDING")
+  paymentDate       DateTime?
+  paymentReference  String?      @unique(map: "PayeePayment_paymentReference_key")
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayeePayment_organizationId_fkey")
+  payrollRun        PayrollRun   @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "PayeePayment_payrollRunId_fkey")
+  payee             Payee        @relation(fields: [payeeId], references: [id], map: "PayeePayment_payeeId_fkey")
+
+  @@unique([payrollRunId, payeeId], map: "PayeePayment_run_payee_key")
+  @@index([organizationId, payeeId, createdAt], map: "PayeePayment_org_payee_created_idx")
+  @@index([organizationId, status], map: "PayeePayment_org_status_idx")
+  @@map("PayeePayment")
+}
+
+model PayeeDocument {
+  id             String       @id @default(cuid())
+  organizationId String
+  payeeId        String
+  documentName   String
+  fileReference  String
+  originalName   String
+  mimeType       String
+  size           Int
+  uploadedById   String?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayeeDocument_organizationId_fkey")
+  payee          Payee        @relation(fields: [payeeId], references: [id], onDelete: Cascade, map: "PayeeDocument_payeeId_fkey")
+
+  @@index([organizationId, payeeId, createdAt], map: "PayeeDocument_org_payee_created_idx")
+  @@map("PayeeDocument")
 }
 
 model Permission {
@@ -1393,23 +1545,23 @@ model RolePermission {
 }
 
 model SalaryStructure {
-  id             String       @id @default(cuid())
-  organizationId String
-  employeeId     String
-  title          String
-  basic          Decimal      @db.Decimal(14, 2)
-  housing        Decimal      @default(0.00) @db.Decimal(14, 2)
-  transport      Decimal      @default(0.00) @db.Decimal(14, 2)
-  otherAllowance Decimal      @default(0.00) @db.Decimal(14, 2)
+  id                   String       @id @default(cuid())
+  organizationId       String
+  employeeId           String
+  title                String
+  basic                Decimal      @db.Decimal(14, 2)
+  housing              Decimal      @default(0.00) @db.Decimal(14, 2)
+  transport            Decimal      @default(0.00) @db.Decimal(14, 2)
+  otherAllowance       Decimal      @default(0.00) @db.Decimal(14, 2)
   additionalAllowances Json?
-  prorationResumeDate DateTime?
-  prorationMethod String?
-  effectiveFrom  DateTime
-  effectiveTo    DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  employee       Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "SalaryStructure_employeeId_fkey")
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SalaryStructure_organizationId_fkey")
+  prorationResumeDate  DateTime?
+  prorationMethod      String?
+  effectiveFrom        DateTime
+  effectiveTo          DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  employee             Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "SalaryStructure_employeeId_fkey")
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SalaryStructure_organizationId_fkey")
 
   @@index([employeeId], map: "SalaryStructure_employeeId_fkey")
   @@index([organizationId, employeeId], map: "SalaryStructure_organizationId_employeeId_idx")
@@ -1744,9 +1896,141 @@ model WalletAccount {
   updatedAt          DateTime             @updatedAt
   organization       Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletAccount_organizationId_fkey")
   walletdisbursement WalletDisbursement[]
+  transactions       WalletTransaction[]
 
   @@index([organizationId], map: "WalletAccount_organizationId_idx")
   @@map("WalletAccount")
+}
+
+model WalletTransaction {
+  id                String                @id @default(cuid())
+  organizationId    String
+  walletAccountId   String
+  payrollRunId      String?
+  taxRemittanceId   String?
+  type              String
+  direction         String
+  amount            Decimal               @db.Decimal(14, 2)
+  balanceBefore     Decimal               @db.Decimal(14, 2)
+  balanceAfter      Decimal               @db.Decimal(14, 2)
+  reference         String
+  transferReference String?
+  description       String
+  sourceType        String?
+  sourceId          String?
+  reversalOfId      String?
+  createdById       String?
+  createdAt         DateTime              @default(now())
+  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletTransaction_org_fkey")
+  wallet            WalletAccount         @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletTransaction_wallet_fkey")
+  payrollRun        PayrollRun?           @relation(fields: [payrollRunId], references: [id], map: "WalletTransaction_run_fkey")
+  taxRemittance     PayrollTaxRemittance? @relation(fields: [taxRemittanceId], references: [id], map: "WalletTransaction_remittance_fkey")
+  reversalOf        WalletTransaction?    @relation("WalletTransactionReversal", fields: [reversalOfId], references: [id], map: "WalletTransaction_reversal_fkey")
+  reversals         WalletTransaction[]   @relation("WalletTransactionReversal")
+
+  @@unique([organizationId, reference], map: "WalletTransaction_org_reference_key")
+  @@unique([organizationId, transferReference], map: "WalletTransaction_org_transfer_key")
+  @@unique([walletAccountId, sourceType, sourceId, type], map: "WalletTransaction_source_key")
+  @@index([organizationId, createdAt], map: "WalletTransaction_org_created_idx")
+  @@index([organizationId, type, direction], map: "WalletTransaction_org_type_direction_idx")
+  @@map("WalletTransaction")
+}
+
+model PayrollTaxRemittance {
+  id                 String              @id @default(cuid())
+  organizationId     String
+  payrollRunId       String
+  period             String              @db.Char(7)
+  state              String
+  authorityCode      String
+  authorityName      String?
+  employeeCount      Int
+  amount             Decimal             @db.Decimal(14, 2)
+  dueDate            DateTime?
+  status             String              @default("DUE")
+  remittedAt         DateTime?
+  paymentReference   String?
+  receiptReference   String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollTaxRemittance_org_fkey")
+  payrollRun         PayrollRun          @relation(fields: [payrollRunId], references: [id], map: "PayrollTaxRemittance_run_fkey")
+  walletTransactions WalletTransaction[]
+
+  @@unique([organizationId, payrollRunId, authorityCode], map: "PayrollTaxRemittance_org_run_authority_key")
+  @@index([organizationId, period, status], map: "PayrollTaxRemittance_org_period_status_idx")
+  @@map("PayrollTaxRemittance")
+}
+
+model PayrollAvcContribution {
+  id             String       @id @default(cuid())
+  organizationId String
+  employeeId     String
+  monthlyAmount  Decimal      @db.Decimal(14, 2)
+  startDate      DateTime
+  endDate        DateTime?
+  status         String       @default("ACTIVE")
+  pausedAt       DateTime?
+  resumedAt      DateTime?
+  createdById    String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollAvcContribution_org_fkey")
+  employee       Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "PayrollAvcContribution_employee_fkey")
+
+  @@index([organizationId, status, startDate], map: "PayrollAvcContribution_org_status_start_idx")
+  @@index([organizationId, employeeId, status], map: "PayrollAvcContribution_org_employee_status_idx")
+  @@map("PayrollAvcContribution")
+}
+
+model PayrollPfaTransfer {
+  id                String       @id @default(cuid())
+  organizationId    String
+  employeeId        String
+  fromPfaName       String
+  toPfaName         String
+  status            String       @default("INITIATED")
+  initiatedAt       DateTime     @default(now())
+  completedAt       DateTime?
+  createdById       String?
+  updatedById       String?
+  externalReference String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollPfaTransfer_org_fkey")
+  employee          Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "PayrollPfaTransfer_employee_fkey")
+
+  @@index([organizationId, status, initiatedAt], map: "PayrollPfaTransfer_org_status_date_idx")
+  @@index([organizationId, employeeId, status], map: "PayrollPfaTransfer_org_employee_status_idx")
+  @@map("PayrollPfaTransfer")
+}
+
+model PayrollPensionRemittance {
+  id                   String       @id @default(cuid())
+  organizationId       String
+  payrollRunId         String
+  period               String       @db.Char(7)
+  pfaName              String
+  memberCount          Int
+  employeeContribution Decimal      @db.Decimal(14, 2)
+  employerContribution Decimal      @db.Decimal(14, 2)
+  avcContribution      Decimal      @default(0.00) @db.Decimal(14, 2)
+  totalAmount          Decimal      @db.Decimal(14, 2)
+  dueDate              DateTime?
+  status               String       @default("PENDING")
+  remittedAt           DateTime?
+  paymentReference     String?
+  receiptReference     String?
+  markedById           String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollPensionRemittance_org_fkey")
+  payrollRun           PayrollRun   @relation(fields: [payrollRunId], references: [id], map: "PayrollPensionRemittance_run_fkey")
+
+  @@unique([organizationId, payrollRunId, pfaName], map: "PayrollPensionRemittance_org_run_pfa_key")
+  @@unique([organizationId, paymentReference], map: "PayrollPensionRemittance_org_payment_ref_key")
+  @@index([organizationId, period, status], map: "PayrollPensionRemittance_org_period_status_idx")
+  @@map("PayrollPensionRemittance")
 }
 
 model WalletDisbursement {
@@ -1794,6 +2078,12 @@ enum agentinvitation_status {
   ACCEPTED
   EXPIRED
   REVOKED
+}
+
+enum invitation_delivery_status {
+  PENDING
+  SENT
+  FAILED
 }
 
 enum appraisalcycle_status {

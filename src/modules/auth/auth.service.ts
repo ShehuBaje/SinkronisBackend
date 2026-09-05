@@ -1074,7 +1074,7 @@ export const acceptTenantAdminInvitation = async (input: z.infer<typeof acceptTe
     await tx.userSession.updateMany({ where: { organizationId: invitation.organizationId, userId: user.id, revokedAt: null }, data: { revokedAt: acceptedAt, revokeReason: "Tenant invitation password established" } });
   });
   await createAuditLog({ organizationId: invitation.organizationId, actorUserId: user.id, action: "TENANT_ADMIN_INVITATION_ACCEPTED", resource: "INVITATION", resourceId: invitation.id, summary: "Tenant Admin accepted workspace invitation", metadata: { userId: user.id } });
-  return { message: "Tenant Admin password created successfully", organization: { name: invitation.organization.name, slug: invitation.organization.slug }, email: invitation.email };
+  return { message: "Workspace password created successfully", organization: { name: invitation.organization.name, slug: invitation.organization.slug }, email: invitation.email, role: invitation.role?.name ?? null };
 };
 
 export const getTwoFactorStatus = async (userId?: string) => {

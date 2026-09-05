@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import { payrollRouter } from "./payroll.routes";
-import { calculatePayrollPreview, parsePayrollCsv, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollProrationFactor, sanitizePayrollCsv, statutoryObligationStatus } from "./payroll.service";
-import { payrollBikSchema, payrollCreateEmployeeSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollRunCreateSchema, payrollSalaryStructureSchema } from "./payroll.validation";
+import { buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, inspectPayrollPayeeDocument, parsePayrollCsv, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
+import { effectiveMonthlyPayDate } from "./payroll.service";
+import { payrollAllowanceTypeSchema, payrollDeductionTypeSchema, payrollPayPeriodSettingsSchema } from "./payroll.validation";
+import { payrollAdjustLoanSchema, payrollAvcCreateSchema, payrollBikSchema, payrollCreateCustomDeductionSchema, payrollCreateEmployeeSchema, payrollCreateLoanSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollLoansQuerySchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema, payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunsQuerySchema, payrollPayslipsQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema, payrollSalaryStructureSchema, payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
 
 const money = (value: number | string) => new Prisma.Decimal(value);
 
@@ -42,12 +44,6 @@ test("statutory remittance remains separate from employee payroll disbursement",
   assert.equal(statutoryObligationStatus({ submittedAt: new Date("2026-08-25T00:00:00.000Z"), dueDate: new Date("2026-08-26T00:00:00.000Z") }, now), "REMITTED");
 });
 
-test("pay run validation supports the expanded UI workflow without removing legacy statuses", () => {
-  for (const status of ["DRAFT", "PROCESSING", "PENDING_APPROVAL", "APPROVED", "PENDING_DISBURSEMENT", "DISBURSING", "DISBURSED", "FAILED", "PAID", "CANCELLED"]) {
-    assert.equal(payrollRunCreateSchema.safeParse({ name: "Monthly payroll", periodStart: "2026-08-01", periodEnd: "2026-08-31", status }).success, true, status);
-  }
-});
-
 test("Payroll Employee routes reuse the shared Payroll module", () => {
   const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
   for (const route of ["GET /employees", "POST /employees", "GET /employees/:employeeId", "POST /employees/:employeeId/enroll", "DELETE /employees/:employeeId/enrollment", "PUT /employees/:employeeId/salary-structure", "PUT /employees/:employeeId/statutory-profile", "POST /employees/:employeeId/deductions", "POST /employees/:employeeId/loans", "PUT /employees/:employeeId/bik", "GET /employees/:employeeId/payroll-history", "POST /employees/bulk-upload", "GET /employees/export"]) assert.ok(routes.includes(route), route);
@@ -80,15 +76,58 @@ test("one centralized preview reconciles list/detail values and keeps employer c
   const first = calculatePayrollPreview(input); const second = calculatePayrollPreview(input);
   assert.deepEqual(first, second);
   assert.equal(first.gross, 1400);
-  assert.equal(first.paye, 140);
-  assert.equal(first.employeePension, 112);
+  assert.equal(first.paye, 0);
+  assert.equal(first.employeePension, 96);
   assert.equal(first.customDeductions, 50);
   assert.equal(first.loanDeductions, 30);
-  assert.equal(first.netPay, 1068);
-  assert.equal(first.employerPension, 0);
-  assert.equal(first.nsitf, 0);
-  assert.equal(first.employerCost, first.gross);
+  assert.equal(first.netPay, 1199);
+  assert.equal(first.employerPension, 120);
+  assert.equal(first.nsitf, 14);
+  assert.equal(first.employerCost, 1534);
   assert.equal(input.loans[0].outstanding.toString(), "80", "preview does not commit repayment");
+});
+
+test("Payroll Settings routes stay in the existing Payroll module", () => {
+  const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
+  for (const route of ["GET /settings", "GET /settings/pay-period", "PUT /settings/pay-period", "GET /settings/allowance-types", "POST /settings/allowance-types", "PATCH /settings/allowance-types/:id", "DELETE /settings/allowance-types/:id", "GET /settings/deduction-types", "POST /settings/deduction-types", "PATCH /settings/deduction-types/:id", "DELETE /settings/deduction-types/:id", "GET /settings/statutory-rates"]) assert.ok(routes.includes(route), route);
+});
+
+test("superseded generic Payroll CRUD and queued generation routes are not exposed", () => {
+  const routePaths = (payrollRouter as any).stack.filter((layer: any) => layer.route).map((layer: any) => String(layer.route.path));
+  assert.equal(routePaths.some((path: string) => path.startsWith("/salary-structures")), false);
+  assert.equal(routePaths.some((path: string) => path.startsWith("/statutory")), false);
+  assert.equal(routePaths.some((path: string) => path.includes("generate-payslips")), false);
+});
+
+test("pay-period settings expose only supported monthly payroll and validate day", () => {
+  assert.equal(payrollPayPeriodSettingsSchema.safeParse({ payFrequency: "MONTHLY", defaultPayDay: 31 }).success, true);
+  assert.equal(payrollPayPeriodSettingsSchema.safeParse({ payFrequency: "WEEKLY", defaultPayDay: 25 }).success, false);
+  assert.equal(payrollPayPeriodSettingsSchema.safeParse({ payFrequency: "MONTHLY", defaultPayDay: 0 }).success, false);
+  assert.equal(payrollPayPeriodSettingsSchema.safeParse({ payFrequency: "MONTHLY", defaultPayDay: 32 }).success, false);
+});
+
+test("monthly pay day clamps safely to each calendar month", () => {
+  assert.equal(effectiveMonthlyPayDate("2027-01", 31).toISOString(), "2027-01-31T00:00:00.000Z");
+  assert.equal(effectiveMonthlyPayDate("2027-02", 31).toISOString(), "2027-02-28T00:00:00.000Z");
+  assert.equal(effectiveMonthlyPayDate("2028-02", 31).toISOString(), "2028-02-29T00:00:00.000Z");
+  assert.equal(effectiveMonthlyPayDate("2027-04", 31).toISOString(), "2027-04-30T00:00:00.000Z");
+});
+
+test("allowance and deduction setting payloads reject ownership and system flags", () => {
+  assert.equal(payrollAllowanceTypeSchema.safeParse({ name: "Field allowance", taxTreatment: "TAXABLE" }).success, true);
+  assert.equal(payrollAllowanceTypeSchema.safeParse({ name: "Field allowance", taxTreatment: "TAX_EXEMPT" }).success, true);
+  assert.equal(payrollAllowanceTypeSchema.safeParse({ name: "Field allowance", taxTreatment: "TAXABLE", tenantId: "other" }).success, false);
+  assert.equal(payrollDeductionTypeSchema.safeParse({ name: "Cooperative dues" }).success, true);
+  assert.equal(payrollDeductionTypeSchema.safeParse({ name: "Fake PAYE", category: "STATUTORY" }).success, false);
+});
+
+test("tax-exempt additional allowances increase gross but not PAYE base", () => {
+  const base = { basic: money(100000), housing: money(0), transport: money(0), otherAllowance: money(0), prorationResumeDate: null, prorationMethod: null } as any;
+  const taxable = calculatePayrollPreview({ salary: { ...base, additionalAllowances: [{ name: "Field", amount: 10000, taxable: true }] }, deductions: [], loans: [], period: "2027-01" });
+  const exempt = calculatePayrollPreview({ salary: { ...base, additionalAllowances: [{ name: "Field", amount: 10000, taxable: false }] }, deductions: [], loans: [], period: "2027-01" });
+  assert.equal(taxable.gross, exempt.gross);
+  assert.ok(taxable.paye > exempt.paye);
+  assert.equal(taxable.statutoryRuleVersion, "NG-2026-NTA");
 });
 
 test("Payroll CSV template is data-free, parser validates quoted values, and exports mitigate formula injection", () => {
@@ -96,4 +135,149 @@ test("Payroll CSV template is data-free, parser validates quoted values, and exp
   assert.equal(payrollBulkTemplate().split(/\r?\n/).filter(Boolean).length, 1);
   assert.equal(sanitizePayrollCsv("=HYPERLINK('bad')").startsWith("\"'="), true);
   assert.throws(() => parsePayrollCsv('"unterminated'));
+});
+
+test("Payroll Payee routes remain inside the shared Payroll module", () => {
+  const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
+  for (const route of ["GET /payees", "POST /payees", "GET /payees/export", "GET /payees/:payeeId", "PATCH /payees/:payeeId", "DELETE /payees/:payeeId", "GET /payees/:payeeId/payment-history", "GET /payees/:payeeId/payment-history/export", "GET /payees/:payeeId/documents", "POST /payees/:payeeId/documents", "GET /payees/:payeeId/documents/:documentId/download"]) assert.ok(routes.includes(route), route);
+});
+
+test("Payee creation supports only the four UI types and explicit taxability", () => {
+  for (const type of ["CONTRACTOR", "VENDOR", "DIRECTOR", "BOARD_MEMBER"]) assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type, monthlyAmount: "100000.25", isTaxable: type === "DIRECTOR" }).success, true, type);
+  assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type: "EMPLOYEE", monthlyAmount: 100 }).success, false);
+  assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type: "VENDOR" }).success, false);
+  assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type: "VENDOR", monthlyAmount: "₦100,000" }).success, false);
+  assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type: "VENDOR", monthlyAmount: -1 }).success, false);
+  assert.equal(payrollPayeeUpdateSchema.safeParse({ isTaxable: false }).success, true);
+});
+
+test("Payee list filters combine safely and reject tenant or unsafe sort input", () => {
+  assert.equal(payrollPayeesQuerySchema.safeParse({ search: "tech", type: "CONTRACTOR", status: "ACTIVE", taxable: "false", sortBy: "amount", sortOrder: "desc", page: 1, limit: 20 }).success, true);
+  assert.equal(payrollPayeesQuerySchema.safeParse({ tenantId: "another-tenant" }).success, false);
+  assert.equal(payrollPayeesQuerySchema.safeParse({ sortBy: "accountNumber" }).success, false);
+  assert.equal(payrollPayeesQuerySchema.safeParse({ limit: 101 }).success, false);
+});
+
+test("Payee payroll uses Decimal snapshots and taxability without mutating configuration", () => {
+  const taxable = calculatePayeePayroll(money("100000.25"), true);
+  const nonTaxable = calculatePayeePayroll(money("100000.25"), false);
+  assert.equal(taxable.grossAmount.toString(), "100000.25");
+  assert.equal(taxable.payeTax.toString(), "10000.025");
+  assert.equal(taxable.netAmount.toString(), "90000.225");
+  assert.equal(nonTaxable.payeTax.toString(), "0");
+  assert.equal(nonTaxable.netAmount.toString(), "100000.25");
+});
+
+test("Payee documents validate file signatures instead of MIME labels alone", () => {
+  assert.doesNotThrow(() => inspectPayrollPayeeDocument({ mimetype: "application/pdf", buffer: Buffer.from("%PDF-1.7\n") } as Express.Multer.File));
+  assert.throws(() => inspectPayrollPayeeDocument({ mimetype: "application/pdf", buffer: Buffer.from("not a PDF") } as Express.Multer.File));
+});
+
+test("Pay Run UI routes use explicit workflow endpoints inside Payroll", () => {
+  const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
+  for (const route of ["GET /pay-runs/eligibility", "GET /pay-runs", "POST /pay-runs", "GET /pay-runs/:payRunId", "POST /pay-runs/:payRunId/approve", "GET /pay-runs/:payRunId/export"]) assert.ok(routes.includes(route), route);
+});
+
+test("Pay Run input validates dates, filters, sorting, and rejects tenant manipulation", () => {
+  assert.equal(payrollPayRunCreateSchema.safeParse({ periodLabel: "Monthly payroll", from: "2026-08-01", to: "2026-08-31" }).success, true);
+  assert.equal(payrollPayRunCreateSchema.safeParse({ periodLabel: "Monthly payroll", from: "2026-08-31", to: "2026-08-01" }).success, false);
+  assert.equal(payrollPayRunEligibilityQuerySchema.safeParse({ from: "2026-08-01", to: "2026-08-31" }).success, true);
+  assert.equal(payrollPayRunsQuerySchema.safeParse({ status: "PENDING_APPROVAL", sortBy: "netPay", sortOrder: "desc" }).success, true);
+  assert.equal(payrollPayRunsQuerySchema.safeParse({ tenantId: "other-tenant" }).success, false);
+  assert.equal(payrollPayRunsQuerySchema.safeParse({ sortBy: "approvedById" }).success, false);
+});
+
+test("Review is deterministic only for pending approval Pay Runs", () => {
+  assert.deepEqual(payRunAvailableActions("PENDING_APPROVAL", false), ["REVIEW"]);
+  assert.deepEqual(payRunAvailableActions("PENDING_APPROVAL", true), ["REVIEW", "APPROVE"]);
+  for (const status of ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSED", "PAID", "CANCELLED"]) assert.deepEqual(payRunAvailableActions(status, true), ["VIEW"]);
+});
+
+test("Payroll Payslip and Deduction routes remain explicit inside the shared module", () => {
+  const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
+  for (const route of ["GET /payslips", "GET /payslips/export", "GET /payslips/:payslipId", "GET /payslips/:payslipId/download", "GET /deductions/loans", "POST /deductions/loans", "GET /deductions/loans/:loanId", "POST /deductions/loans/:loanId/adjust-repayment", "POST /deductions/loans/:loanId/pause", "POST /deductions/loans/:loanId/resume", "POST /deductions/loans/:loanId/close-early", "GET /deductions/loans/:loanId/export", "GET /deductions/custom", "POST /deductions/custom", "DELETE /deductions/custom/:deductionId"]) assert.ok(routes.includes(route), route);
+});
+
+test("Payslip UI filters validate year, quarter, month, status and reject identity manipulation", () => {
+  assert.equal(payrollPayslipsQuerySchema.safeParse({ year: 2026, quarter: "Q2", month: 5, status: "PAID", search: "Finance" }).success, true);
+  assert.equal(payrollPayslipsQuerySchema.safeParse({ quarter: "Q5" }).success, false);
+  assert.equal(payrollPayslipsQuerySchema.safeParse({ month: 13 }).success, false);
+  assert.equal(payrollPayslipsQuerySchema.safeParse({ tenantId: "other" }).success, false);
+});
+
+test("Loan schedule reaches zero without a negative final installment", () => {
+  const schedule = buildLoanSchedule(money("1000"), money("300"), new Date("2026-01-01T00:00:00.000Z"));
+  assert.equal(schedule.length, 4);
+  assert.equal(schedule[3].repayment, 100);
+  assert.equal(schedule[3].closingBalance, 0);
+  assert.equal(schedule.every((row) => row.closingBalance >= 0), true);
+});
+
+test("Loan and custom deduction commands enforce Payroll boundaries", () => {
+  assert.equal(payrollCreateLoanSchema.safeParse({ employeeId: "cm1234567890123456789012", purpose: "Advance", principalAmount: 1000, monthlyRepayment: 200, startDate: "2026-09-01" }).success, true);
+  assert.equal(payrollCreateLoanSchema.safeParse({ employeeId: "cm1234567890123456789012", purpose: "Advance", principalAmount: 1000, monthlyRepayment: 1200, startDate: "2026-09-01" }).success, false);
+  assert.equal(payrollAdjustLoanSchema.safeParse({ monthlyRepayment: 0 }).success, false);
+  assert.equal(payrollLoansQuerySchema.safeParse({ status: "PAUSED", search: "employee", sortBy: "outstanding" }).success, true);
+  assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "Recurring deduction", amount: 50 }).success, true);
+  assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "Recurring deduction", amount: -1 }).success, false);
+});
+
+test("Payroll Wallet and PAYE routes remain in the shared Payroll module", () => {
+  const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
+  for (const route of ["GET /wallet", "POST /wallet/fund", "GET /wallet/transactions", "GET /wallet/transactions/export", "GET /wallet/transactions/:transactionId", "GET /wallet/obligations", "POST /wallet/obligations/:obligationId/pay", "GET /tax/overview", "GET /tax/employees-by-state", "GET /tax/remittances", "GET /tax/remittances/:remittanceId/receipt", "GET /tax/annual-returns", "GET /tax/annual-returns/export", "GET /tax/config"]) assert.ok(routes.includes(route), route);
+});
+
+test("wallet arithmetic is Decimal-safe and never reports a negative shortfall", () => {
+  assert.equal(walletBalanceAfter("100.10", "20.05", "CREDIT").toString(), "120.15");
+  assert.equal(walletBalanceAfter("100.10", "20.05", "DEBIT").toString(), "80.05");
+  assert.equal(payrollWalletShortfall("100", "125.55").toString(), "25.55");
+  assert.equal(payrollWalletShortfall("200", "125.55").toString(), "0");
+});
+
+test("wallet inputs are bounded, source-safe and reject tenant manipulation", () => {
+  assert.equal(payrollWalletFundSchema.safeParse({ amount: "100000.25", transferReference: "BANK-REFERENCE-1" }).success, true);
+  assert.equal(payrollWalletFundSchema.safeParse({ amount: 0, transferReference: "BANK-REFERENCE-1" }).success, false);
+  assert.equal(payrollWalletTransactionsQuerySchema.safeParse({ type: "PAYE_REMITTANCE", direction: "DEBIT", search: "PAYE", page: 1, limit: 20 }).success, true);
+  assert.equal(payrollWalletTransactionsQuerySchema.safeParse({ tenantId: "another-tenant" }).success, false);
+  assert.equal(payrollWalletTransactionsQuerySchema.safeParse({ type: "ARBITRARY" }).success, false);
+});
+
+test("PAYE queries enforce year, period, filters and pagination without tenant input", () => {
+  assert.equal(payrollTaxEmployeesQuerySchema.safeParse({ year: 2026, period: "2026-08", state: "Lagos", search: "employee", page: 1, limit: 20 }).success, true);
+  assert.equal(payrollTaxRemittancesQuerySchema.safeParse({ year: 2026, status: "OVERDUE" }).success, true);
+  assert.equal(payrollTaxAnnualQuerySchema.safeParse({ year: 2026, state: "Lagos" }).success, true);
+  assert.equal(payrollTaxEmployeesQuerySchema.safeParse({ year: 1999 }).success, false);
+  assert.equal(payrollTaxEmployeesQuerySchema.safeParse({ tenantId: "another-tenant" }).success, false);
+});
+
+test("Pension and Reports routes remain inside the shared Payroll module", () => {
+  const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
+  for (const route of ["GET /pension/overview", "GET /pension/contributions", "GET /pension/pfas", "GET /pension/remittances", "POST /pension/remittances/:id/remit", "POST /pension/remittances/:id/mark-remitted", "GET /pension/avc", "POST /pension/avc", "POST /pension/avc/:id/pause", "POST /pension/avc/:id/resume", "GET /pension/pfa-transfers", "POST /pension/pfa-transfers", "POST /pension/pfa-transfers/:id/advance", "GET /pension/export", "GET /reports/summary", "GET /reports/department-cost", "GET /reports/monthly-variance", "GET /reports/bank-payment-schedule", "GET /reports/ytd-earnings", "GET /reports/:report/export"]) assert.ok(routes.includes(route), route);
+});
+
+test("Pension totals preserve employee, employer and AVC distinctions", () => {
+  assert.deepEqual(payrollPensionSnapshotTotals([{ pension: money("80.10"), employerPension: money("100.20"), avcContribution: money("20.30") }, { pension: money("40"), employerPension: money("50"), avcContribution: money("10") }]), { employeeContribution: 120.1, employerContribution: 150.2, avcContribution: 30.3, totalContribution: 300.6 });
+});
+
+test("variance classifies increases, decreases, unchanged, new and removed employees", () => {
+  assert.equal(payrollVariance("100", "125").changeType, "INCREASE");
+  assert.equal(payrollVariance("100", "75").changeType, "DECREASE");
+  assert.equal(payrollVariance("100", "100").changeType, "NO_CHANGE");
+  assert.equal(payrollVariance(null, "100").changeType, "NEW_EMPLOYEE");
+  assert.equal(payrollVariance("100", null).changeType, "REMOVED_EMPLOYEE");
+  assert.equal(payrollVariance("100", "125").percentageChange, 25);
+});
+
+test("AVC, PFA transfer and report inputs reject unsafe or ambiguous values", () => {
+  const employeeId = "cm1234567890123456789012";
+  assert.equal(payrollAvcCreateSchema.safeParse({ employeeId, monthlyAmount: "5000.25", startDate: "2026-09-01" }).success, true);
+  assert.equal(payrollAvcCreateSchema.safeParse({ employeeId, monthlyAmount: 0, startDate: "2026-09-01" }).success, false);
+  assert.equal(payrollPfaTransferCreateSchema.safeParse({ employeeId, currentPfa: "Current PFA", newPfa: "Current PFA" }).success, false);
+  assert.equal(payrollPfaTransferAdvanceSchema.safeParse({ nextStatus: "COMPLETED" }).success, true);
+  assert.equal(payrollReportsSummaryQuerySchema.safeParse({ year: 2026, period: "2026-09" }).success, true);
+  assert.equal(payrollReportsDepartmentQuerySchema.safeParse({ period: "2026-09" }).success, true);
+  assert.equal(payrollReportsVarianceQuerySchema.safeParse({ previousPeriod: "2026-08", currentPeriod: "2026-09" }).success, true);
+  assert.equal(payrollReportsVarianceQuerySchema.safeParse({ previousPeriod: "2026-09", currentPeriod: "2026-09" }).success, false);
+  assert.equal(payrollReportsBankQuerySchema.safeParse({ period: "2026-09", status: "PAID" }).success, true);
+  assert.equal(payrollReportsYtdQuerySchema.safeParse({ year: 2026, tenantId: "other" }).success, false);
 });

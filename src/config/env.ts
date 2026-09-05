@@ -37,6 +37,7 @@ const envSchema = z.object({
     .default("true")
     .transform((value) => value === "true"),
   CORS_ORIGIN: z.string().default("*"),
+  FRONTEND_URL: z.string().url().optional(),
   STORAGE_PROVIDER: z.enum(["local", "vercel-blob"]).default("local"),
   BLOB_READ_WRITE_TOKEN: z.string().optional(),
   UPLOAD_DIR: z.string().default("uploads"),

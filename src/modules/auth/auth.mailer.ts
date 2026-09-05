@@ -162,6 +162,24 @@ export const sendTenantAdminInvitationEmail = async (input: { to: string; organi
   await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html });
 };
 
+export const workspaceInvitationSetupUrl = (token: string) => {
+  const origin = env.FRONTEND_URL ?? env.CORS_ORIGIN.split(",").map((value) => value.trim()).find((value) => value && value !== "*") ?? "http://localhost:3000";
+  return `${origin.replace(/\/$/, "")}/setup-password?token=${encodeURIComponent(token)}`;
+};
+
+type InvitationMailTransport = { sendMail: (message: Record<string, unknown>) => Promise<{ messageId?: string; accepted: unknown[] }> };
+export const sendWorkspaceInvitationEmail = async (input: { to: string; organizationName: string; roleName: string; setupUrl: string; expiresAt: Date }, options?: { transport?: InvitationMailTransport | null; nodeEnv?: "development" | "test" | "production" }) => {
+  const transport = options && "transport" in options ? options.transport : getTransporter();
+  const subject = `You're invited to ${input.organizationName} on ${env.APP_NAME}`;
+  const expiry = input.expiresAt.toISOString();
+  const text = ["Hello,", "", `You have been invited to ${input.organizationName} as ${input.roleName}.`, `Create your password and join the workspace: ${input.setupUrl}`, `This one-time invitation expires at ${expiry}.`, "", "If you were not expecting this invitation, ignore this email."].join("\n");
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto"><h2>You're invited to ${input.organizationName}</h2><p>You have been invited as <strong>${input.roleName}</strong>.</p><p><a href="${input.setupUrl}" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Create password and join</a></p><p>This one-time invitation expires at ${expiry}.</p><p>If you were not expecting this invitation, ignore this email.</p></div>`;
+  if (!transport) { if ((options?.nodeEnv ?? env.NODE_ENV) === "production") throw new Error("SMTP credentials are not configured"); console.log(`[dev-email] to=${input.to} workspace-invitation=${input.setupUrl}`); return { messageId: "development-console", accepted: [input.to] }; }
+  const result = await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html });
+  if (!result.accepted.map(String).some((address: string) => address.toLowerCase() === input.to.toLowerCase())) throw new Error(`SMTP provider did not accept invitation recipient ${input.to}`);
+  return { messageId: result.messageId ?? "smtp-accepted", accepted: result.accepted.map(String) };
+};
+
 export const sendSubscriptionRenewalEmail = async (input: { to: string; organizationName: string; planName: string; renewalDate: Date; amount: number; currency: string }) => {
   const transport = getTransporter();
   const date = input.renewalDate.toISOString().slice(0, 10);
