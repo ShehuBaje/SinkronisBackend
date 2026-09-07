@@ -1473,19 +1473,6 @@ const options: swaggerJSDoc.Options = {
           "500": { description: "Unexpected server error" }
         }
       } },
-      [`${hrisBase}/leave-requests/{id}/approve`]: { patch: {
-        tags: ["HRIS Leave"], summary: "Approve a pending tenant leave request",
-        description: "Requires hris:leave:approve. The resource is resolved using both the path ID and authenticated tenant ID. The pending-state update is atomic and audited.",
-        security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "id", required: true, schema: { type: "string" } }],
-        responses: { "200": { description: "Leave request approved" }, "400": { description: "Invalid identifier" }, "401": { description: "Authentication required" }, "403": { description: "Approval permission required" }, "404": { description: "Tenant-owned leave request not found" }, "409": { description: "Already reviewed or concurrent decision" }, "500": { description: "Unexpected server error" } }
-      } },
-      [`${hrisBase}/leave-requests/{id}/reject`]: { patch: {
-        tags: ["HRIS Leave"], summary: "Reject a pending tenant leave request",
-        description: "Requires hris:leave:approve. The optional reason is recorded in the audit metadata and never accepted as tenant authority.",
-        security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "id", required: true, schema: { type: "string" } }],
-        requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { reason: { type: "string", minLength: 3, maxLength: 1000 } } } } } },
-        responses: { "200": { description: "Leave request rejected" }, "400": { description: "Invalid identifier or reason" }, "401": { description: "Authentication required" }, "403": { description: "Approval permission required" }, "404": { description: "Tenant-owned leave request not found" }, "409": { description: "Already reviewed or concurrent decision" }, "500": { description: "Unexpected server error" } }
-      } },
       [`${hrisBase}/leaves/overview`]: { get: { tags: ["HRIS Leave"], summary: "Get tenant leave analytics", description: "Counts authenticated-tenant pending, approved, and rejected requests.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Leave overview", content: { "application/json": { schema: { $ref: "#/components/schemas/LeaveOverview" } } } }, "401": { description: "Authentication required" }, "403": { description: "hris:leave:view required" } } } },
       [`${hrisBase}/leaves`]: {
         get: { tags: ["HRIS Leave"], summary: "List tenant leave requests", security: [{ bearerAuth: [] }], parameters: [{ in: "query", name: "page", schema: { type: "integer", minimum: 1 } }, { in: "query", name: "limit", schema: { type: "integer", minimum: 1, maximum: 100 } }, { in: "query", name: "status", schema: { type: "string", enum: ["ALL", "PENDING", "APPROVED", "REJECTED"] } }], responses: { "200": { description: "Paginated leave requests" }, "400": { description: "Invalid status/pagination" } } },

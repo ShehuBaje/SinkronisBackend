@@ -43,6 +43,7 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
   const excludedLegacyCrud = (operation: string) =>
     /^\w+ \/api\/v1\/admin\/(staff|teams|system-config)(\/\{\})?$/.test(operation) ||
     /^\w+ \/api\/v1\/hris\/leave(\/\{\})?$/.test(operation) ||
+    /^PATCH \/api\/v1\/hris\/leave-requests\/\{\}\/(approve|reject)$/.test(operation) ||
     /^(GET|PATCH|DELETE) \/api\/v1\/hris\/attendance\/\{\}$/.test(operation) ||
     operation === "POST /api/v1/hris/attendance" ||
     operation === "DELETE /api/v1/hris/employees/{}";
@@ -76,4 +77,8 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
   assert.deepEqual(forbidden, [], `Unimplemented Accounting/Payroll operations must not be published:\n${forbidden.join("\n")}`);
   assert.equal(runtime.has("PATCH /api/v1/subscriptions/current/seats"), false);
   assert.equal(documented.has("PATCH /api/v1/subscriptions/current/seats"), false);
+  assert.equal(documented.has("PATCH /api/v1/hris/leave-requests/{}/approve"), false);
+  assert.equal(documented.has("PATCH /api/v1/hris/leave-requests/{}/reject"), false);
+  assert.equal(documented.has("PATCH /api/v1/hris/leaves/{}/approve"), true);
+  assert.equal(documented.has("PATCH /api/v1/hris/leaves/{}/reject"), true);
 });
