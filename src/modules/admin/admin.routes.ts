@@ -55,8 +55,10 @@ import {
   listUsersTableController,
   removeUserController,
   resendInvitationController,
+  revokeInvitationController,
   revokeSessionController,
   revokeSessionsBulkController,
+  revokeAllOtherSessionsController,
   removeIpAllowlistEntryController,
   getOrganizationController,
   getSystemAlertsController,
@@ -269,6 +271,12 @@ adminRouter.patch(
   authorize("admin:organization:update"),
   validate({ params: moduleParamsSchema, body: moduleStatusUpdateSchema }),
   asyncHandler(updateModuleStatusController)
+);
+
+adminRouter.post(
+  "/security/sessions/revoke-all-others",
+  authorize("admin:security:sessions:revoke"),
+  asyncHandler(revokeAllOtherSessionsController)
 );
 
 adminRouter.delete(
@@ -579,6 +587,13 @@ adminRouter.post(
   authorize("admin:staff:update"),
   validate({ params: actionParamsSchema }),
   asyncHandler(resendInvitationController)
+);
+
+adminRouter.delete(
+  "/users/invitations/:id",
+  authorize("admin:staff:update"),
+  validate({ params: actionParamsSchema }),
+  asyncHandler(revokeInvitationController)
 );
 
 adminRouter.get(

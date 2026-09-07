@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { BlockList, isIP } from "node:net";
 import { Prisma } from "@prisma/client";
 import crypto from "crypto";
 import { env } from "../../config/env";
@@ -122,6 +123,7 @@ const resolveDeviceName = (userAgent?: string | null): string => {
 };
 
 const extractClientIp = (requestMeta?: { headers?: Record<string, unknown>; ip?: string | null }): string | null => {
+  if (requestMeta?.ip) return requestMeta.ip.replace(/^::ffff:/, "");
   const forwarded = requestMeta?.headers?.["x-forwarded-for"];
   if (typeof forwarded === "string" && forwarded.length > 0) {
     return forwarded.split(",")[0]?.trim() ?? null;
@@ -135,34 +137,20 @@ const extractClientIp = (requestMeta?: { headers?: Record<string, unknown>; ip?:
   return requestMeta?.ip ?? null;
 };
 
-const isIpAllowed = (ip: string, allowlist: string[]): boolean => {
+export const isIpAllowed = (ip: string, allowlist: string[]): boolean => {
   if (!ip || allowlist.length === 0) return false;
-
+  const family = isIP(ip);
+  if (!family) return false;
   return allowlist.some((entry) => {
-    const value = entry.trim();
-    if (value === ip) return true;
-
-    if (!value.includes("/")) return false;
-
-    const [base, maskBitsRaw] = value.split("/");
-    const maskBits = Number(maskBitsRaw);
-    if (!base || Number.isNaN(maskBits) || maskBits < 0 || maskBits > 32) return false;
-
-    const toInt = (part: string) => {
-      const octets = part.split(".").map(Number);
-      if (octets.length !== 4 || octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) {
-        return null;
-      }
-
-      return ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
-    };
-
-    const ipInt = toInt(ip);
-    const baseInt = toInt(base);
-    if (ipInt === null || baseInt === null) return false;
-
-    const mask = maskBits === 0 ? 0 : (0xffffffff << (32 - maskBits)) >>> 0;
-    return (ipInt & mask) === (baseInt & mask);
+    const [address, prefix] = entry.trim().split("/");
+    const entryFamily = isIP(address);
+    if (!entryFamily || entryFamily !== family) return false;
+    if (prefix === undefined) return address === ip;
+    try {
+      const blockList = new BlockList();
+      blockList.addSubnet(address, Number(prefix), family === 4 ? "ipv4" : "ipv6");
+      return blockList.check(ip, family === 4 ? "ipv4" : "ipv6");
+    } catch { return false; }
   });
 };
 
@@ -256,12 +244,12 @@ const logAuthEvent = async (input: {
   });
 };
 
-const signTokens = (user: { id: string; organizationId: string }) => ({
-  accessToken: jwt.sign({ organizationId: user.organizationId }, env.JWT_ACCESS_SECRET, {
+export const signTokens = (user: { id: string; organizationId: string }, sessionId?: string) => ({
+  accessToken: jwt.sign({ organizationId: user.organizationId, ...(sessionId ? { sessionId } : {}) }, env.JWT_ACCESS_SECRET, {
     subject: user.id,
     expiresIn: env.JWT_ACCESS_EXPIRES_IN as jwt.SignOptions["expiresIn"]
   }),
-  refreshToken: jwt.sign({ organizationId: user.organizationId }, env.JWT_REFRESH_SECRET, {
+  refreshToken: jwt.sign({ organizationId: user.organizationId, ...(sessionId ? { sessionId } : {}) }, env.JWT_REFRESH_SECRET, {
     subject: user.id,
     jwtid: crypto.randomUUID(),
     expiresIn: env.JWT_REFRESH_EXPIRES_IN as jwt.SignOptions["expiresIn"]
@@ -305,7 +293,7 @@ export const refreshAuthenticationTokens = async (input: z.infer<typeof refreshT
     throw unauthorized("Refresh session is no longer valid");
   }
 
-  const tokens = signTokens(session.user);
+  const tokens = signTokens(session.user, session.id);
   const rotated = await prisma.userSession.updateMany({
     where: { id: session.id, refreshTokenHash, revokedAt: null, expiresAt: { gt: now } },
     data: {
@@ -510,7 +498,8 @@ const completeLoginSuccess = async (
   const clientIp = extractClientIp(requestMeta);
   const clientUserAgent = typeof requestMeta?.headers?.["user-agent"] === "string" ? requestMeta.headers["user-agent"] : null;
 
-  const tokens = signTokens(user);
+  const sessionId = crypto.randomUUID();
+  const tokens = signTokens(user, sessionId);
 
   const updatedUser = await prismaAny.user.update({
     where: { id: user.id },
@@ -535,6 +524,7 @@ const completeLoginSuccess = async (
     }),
     prismaAny.userSession.create({
       data: {
+        id: sessionId,
         organizationId: user.organizationId,
         userId: user.id,
         refreshTokenHash: hashRefreshToken(tokens.refreshToken),
@@ -542,7 +532,7 @@ const completeLoginSuccess = async (
         deviceName: resolveDeviceName(clientUserAgent),
         ipAddress: clientIp,
         isCurrent: true,
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+        expiresAt: tokenExpiresAt(tokens.refreshToken)
       }
     })
   ]);
@@ -660,6 +650,10 @@ export const registerOrganization = async (input: z.infer<typeof registerOrganiz
       }))
     });
 
+    const sessionId = crypto.randomUUID();
+    const tokens = signTokens(user, sessionId);
+    await tx.userSession.create({ data: { id: sessionId, organizationId: organization.id, userId: user.id, refreshTokenHash: hashRefreshToken(tokens.refreshToken), deviceName: "Registration", isCurrent: true, expiresAt: tokenExpiresAt(tokens.refreshToken) } });
+
     return {
       organization,
       user: {
@@ -673,7 +667,7 @@ export const registerOrganization = async (input: z.infer<typeof registerOrganiz
         status: "TRIAL",
         activeModules: []
       },
-      tokens: signTokens(user)
+      tokens
     };
   });
 };
@@ -1062,7 +1056,7 @@ export const resetPassword = async (input: z.infer<typeof resetPasswordSchema>) 
 export const acceptTenantAdminInvitation = async (input: z.infer<typeof acceptTenantInvitationSchema>) => {
   const invitation = await prisma.agentInvitation.findFirst({ where: { token: input.token, status: "PENDING", expiresAt: { gt: new Date() } }, include: { organization: { select: { id: true, name: true, slug: true, status: true } }, role: { select: { id: true, name: true } } } });
   if (!invitation || invitation.organization.status !== "ACTIVE") throw badRequest("Invitation is invalid or expired");
-  const user = await prisma.user.findFirst({ where: { organizationId: invitation.organizationId, email: invitation.email, roleId: invitation.roleId ?? undefined, isActive: true }, select: { id: true } });
+  const user = await prisma.user.findFirst({ where: { organizationId: invitation.organizationId, email: invitation.email, roleId: invitation.roleId ?? undefined }, select: { id: true } });
   if (!user) throw badRequest("Invitation is invalid or expired");
   const securityPolicy = await getSecurityPolicyForOrganization(invitation.organizationId);
   validatePasswordAgainstPolicy(input.password, securityPolicy);
@@ -1070,7 +1064,7 @@ export const acceptTenantAdminInvitation = async (input: z.infer<typeof acceptTe
   await prisma.$transaction(async (tx) => {
     const consumed = await tx.agentInvitation.updateMany({ where: { id: invitation.id, status: "PENDING", expiresAt: { gt: acceptedAt } }, data: { status: "ACCEPTED", acceptedAt } });
     if (consumed.count !== 1) throw badRequest("Invitation is invalid or expired");
-    await tx.user.update({ where: { id: user.id }, data: { passwordHash, passwordChangedAt: acceptedAt } });
+    await tx.user.update({ where: { id: user.id }, data: { passwordHash, passwordChangedAt: acceptedAt, isActive: true } });
     await tx.userSession.updateMany({ where: { organizationId: invitation.organizationId, userId: user.id, revokedAt: null }, data: { revokedAt: acceptedAt, revokeReason: "Tenant invitation password established" } });
   });
   await createAuditLog({ organizationId: invitation.organizationId, actorUserId: user.id, action: "TENANT_ADMIN_INVITATION_ACCEPTED", resource: "INVITATION", resourceId: invitation.id, summary: "Tenant Admin accepted workspace invitation", metadata: { userId: user.id } });

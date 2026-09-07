@@ -47,8 +47,10 @@ import {
   listUsersTable,
   removeUser,
   resendInvitation,
+  revokeInvitation,
   revokeSession,
   revokeSessionsBulk,
+  revokeAllOtherSessions,
   removeIpAllowlistEntry,
   saveWorkSchedule,
   cancelMyPlanSubscription,
@@ -157,6 +159,10 @@ export const getModuleSectionController = async (req: any, res: any) => {
 export const getAuditLogsController = async (req: any, res: any) => {
   const data = await getAuditLogs(req);
   res.json(data);
+};
+
+export const revokeAllOtherSessionsController = async (req: any, res: any) => {
+  res.json(await revokeAllOtherSessions(req));
 };
 
 export const getSystemAlertsController = async (req: any, res: any) => {
@@ -329,6 +335,10 @@ export const listPendingInvitationsController = async (req: any, res: any) => {
 export const resendInvitationController = async (req: any, res: any) => {
   const invitation = await resendInvitation(req);
   res.json(invitation);
+};
+
+export const revokeInvitationController = async (req: any, res: any) => {
+  res.json(await revokeInvitation(req));
 };
 
 export const listUserGroupsController = async (req: any, res: any) => {

@@ -6,6 +6,8 @@ export type AuthUser = {
   email: string;
   roleId: string;
   isPlatformAdmin: boolean;
+  moduleAccess?: string[] | null;
+  sessionId?: string;
   impersonation?: {
     sessionId: string;
     platformAdminUserId: string;

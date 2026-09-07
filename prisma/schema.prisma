@@ -498,6 +498,9 @@ model Branch {
   organizationId String
   name           String
   address        String       @db.Text
+  city           String?
+  state          String?
+  country        String?
   phone          String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
@@ -1810,6 +1813,7 @@ model User {
   passwordChangedAt                                                                   DateTime                       @default(now())
   passwordResetRequestedAt                                                            DateTime?
   isPlatformAdmin                                                                     Boolean                        @default(false)
+  moduleAccess                                                                        Json?
   agentinvitation                                                                     AgentInvitation[]
   announcementreadstatus                                                              AnnouncementReadStatus[]
   auditlog                                                                            AuditLog[]

@@ -6,7 +6,7 @@ import { evaluateEffectiveModuleAccess, isOrganizationModuleEnabled } from "../m
 export const requireEffectiveModuleAccess = (module: BillingModuleKey): RequestHandler => async (req, _res, next) => {
   if (!req.user || req.user.isPlatformAdmin) return next(forbidden("Direct tenant module access is required"));
   try {
-    const allowed = await evaluateEffectiveModuleAccess({ organizationId: req.user.organizationId, userIsActive: true, permissions: req.user.permissions, module });
+    const allowed = await evaluateEffectiveModuleAccess({ organizationId: req.user.organizationId, userIsActive: true, permissions: req.user.permissions, moduleAccess: req.user.moduleAccess, module });
     return allowed ? next() : next(forbidden(`${module.toUpperCase()} module access is disabled or not permitted`));
   } catch (error) { return next(error); }
 };

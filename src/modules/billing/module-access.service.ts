@@ -6,8 +6,9 @@ import { prisma } from "../../core/prisma";
 const objectValue = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const activeValue = (value: unknown) => typeof value === "string" ? value.toUpperCase() === "ACTIVE" : String(objectValue(value).status ?? "").toUpperCase() === "ACTIVE";
 
-export const evaluateEffectiveModuleAccess = async (input: { organizationId: string; userIsActive: boolean; permissions: readonly PermissionKey[]; module: BillingModuleKey }) => {
+export const evaluateEffectiveModuleAccess = async (input: { organizationId: string; userIsActive: boolean; permissions: readonly PermissionKey[]; moduleAccess?: readonly string[] | null; module: BillingModuleKey }) => {
   if (!input.userIsActive || !input.permissions.some((key) => key.startsWith(`${input.module}:`))) return false;
+  if (input.moduleAccess && !input.moduleAccess.some((module) => module.toLowerCase() === input.module)) return false;
   const [organization, configs] = await Promise.all([
     prisma.organization.findFirst({ where: { id: input.organizationId, status: "ACTIVE", deletionRequests: { none: { status: "PENDING_PLATFORM_APPROVAL" } } }, select: { id: true } }),
     prisma.systemConfig.findMany({ where: { organizationId: input.organizationId, key: { in: ["billing.subscription", `module.${input.module}.status`] } }, select: { key: true, value: true } })

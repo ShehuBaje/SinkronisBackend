@@ -254,6 +254,9 @@ const options: swaggerJSDoc.Options = {
           properties: {
             name: { type: "string", minLength: 2 },
             address: { type: "string", minLength: 3 },
+            city: { type: "string" },
+            state: { type: "string" },
+            country: { type: "string" },
             phone: {
               type: "string",
               pattern: "^\\+[1-9]\\d{7,14}$",
@@ -264,6 +267,7 @@ const options: swaggerJSDoc.Options = {
         },
         WorkScheduleBody: {
           type: "object",
+          description: "Tenant attendance baseline. At least one work day is required; end time must be after start time and the break must be shorter than the shift.",
           required: [
             "monday",
             "tuesday",
@@ -549,10 +553,11 @@ const options: swaggerJSDoc.Options = {
         },
         UserAccessUpdateBody: {
           type: "object",
-          description: "Update a managed user role and/or active state",
+          description: "Update a managed user's role, active state, and/or explicit module access. Modules must be allowed by both the role and tenant subscription.",
           properties: {
             roleId: { type: "string" },
-            isActive: { type: "boolean" }
+            isActive: { type: "boolean" },
+            moduleAccess: { type: "array", minItems: 1, items: { type: "string", enum: ["HRIS", "ACCOUNTING", "PAYROLL"] } }
           }
         },
         InviteUserBody: {
@@ -684,8 +689,8 @@ const options: swaggerJSDoc.Options = {
           type: "object",
           required: ["value"],
           properties: {
-            value: { type: "string", example: "197.210.1.0/24" },
-            label: { type: "string", example: "Lagos HQ" }
+            value: { type: "string", example: "192.0.2.0/24", description: "IPv4/IPv6 address or CIDR range" },
+            label: { type: "string", example: "Primary office" }
           }
         },
         SecurityPolicyResponse: {
@@ -703,7 +708,8 @@ const options: swaggerJSDoc.Options = {
             allowAuthenticatorApp: { type: "boolean" },
             allowSmsOtp: { type: "boolean" },
             allowEmailOtp: { type: "boolean" },
-            ipAllowlistEnabled: { type: "boolean" }
+            ipAllowlistEnabled: { type: "boolean" },
+            methodAvailability: { type: "object", properties: { authenticatorApp: { type: "boolean" }, smsOtp: { type: "boolean" }, emailOtp: { type: "boolean" } } }
           }
         },
         AuthenticatedLoginUser: { type: "object", required: ["id", "organizationId", "isPlatformAdmin", "accountType", "email", "firstName", "lastName", "role"], properties: { id: { type: "string" }, organizationId: { type: "string", description: "Tenant context identifier; do not use this value to infer account type." }, isPlatformAdmin: { type: "boolean", description: "Authoritative platform-administrator discriminator." }, accountType: { type: "string", enum: ["PLATFORM_ADMIN", "TENANT_USER"], description: "Stable frontend routing discriminator. PLATFORM_ADMIN routes to the Platform Admin application; TENANT_USER routes according to tenant RBAC/portal permissions." }, email: { type: "string", format: "email" }, firstName: { type: "string" }, lastName: { type: "string" }, role: { type: "string", description: "Organization-scoped RBAC role name. It is not an account-type discriminator and may be Owner for both platform and tenant users." }, lastLoginAt: { type: "string", format: "date-time", nullable: true } } },
@@ -2892,6 +2898,20 @@ const options: swaggerJSDoc.Options = {
           }
         }
       },
+      [`${adminBase}/security/sessions/revoke-all-others`]: {
+        post: {
+          tags: ["Admin"],
+          summary: "Revoke every other active session for the authenticated administrator",
+          description: "Preserves the session represented by the current session-bound access token.",
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": { description: "Other sessions revoked" },
+            "400": { description: "Current token predates session binding; sign in again" },
+            "401": { description: "Unauthorized" },
+            "403": { description: "Forbidden" }
+          }
+        }
+      },
       [`${adminBase}/audit-log`]: {
         get: {
           tags: ["Admin"],
@@ -3491,6 +3511,21 @@ const options: swaggerJSDoc.Options = {
               }
             },
             "404": { description: "Invitation not found" }
+          }
+        }
+      },
+      [`${adminBase}/users/invitations/{id}`]: {
+        delete: {
+          tags: ["Admin"],
+          summary: "Revoke a pending or expired workspace invitation",
+          security: [{ bearerAuth: [] }],
+          parameters: [{ in: "path", name: "id", required: true, schema: { type: "string" } }],
+          responses: {
+            "200": { description: "Invitation revoked" },
+            "401": { description: "Unauthorized" },
+            "403": { description: "Forbidden" },
+            "404": { description: "Tenant-scoped invitation not found" },
+            "409": { description: "Accepted invitation cannot be revoked" }
           }
         }
       },

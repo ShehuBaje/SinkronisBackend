@@ -8,6 +8,8 @@ import {
   myPlanPaymentMethodSchema,
   organizationDeletionRequestSchema
 } from "./admin.validation";
+import { ipAllowlistEntryCreateSchema, securityTwoFactorSchema } from "./admin.validation";
+import { userManagementUpdateUserSchema, workScheduleUpsertSchema } from "../common.schemas";
 
 test("plan DTO rejects obsolete plans and defaults confirmation safely", () => {
   assert.equal(myPlanChangeSchema.safeParse({ planKey: "starter" }).success, false);
@@ -34,4 +36,29 @@ test("branding requires a valid update and sanitizes link text", () => {
 test("organization deletion requires the exact phrase, password, and bounded reason", () => {
   assert.equal(organizationDeletionRequestSchema.safeParse({ confirmationPhrase: "DELETE", password: "password123" }).success, false);
   assert.equal(organizationDeletionRequestSchema.safeParse({ confirmationPhrase: "DELETE ORGANIZATION", password: "password123", reason: "Workspace closure" }).success, true);
+});
+
+const schedule = { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: false, sunday: false, workStartTime: "09:00", workEndTime: "17:00", breakDurationMinutes: 60 };
+test("work schedule enforces a usable attendance baseline", () => {
+  assert.equal(workScheduleUpsertSchema.safeParse(schedule).success, true);
+  assert.equal(workScheduleUpsertSchema.safeParse({ ...schedule, monday: false, tuesday: false, wednesday: false, thursday: false, friday: false }).success, false);
+  assert.equal(workScheduleUpsertSchema.safeParse({ ...schedule, workEndTime: "08:59" }).success, false);
+  assert.equal(workScheduleUpsertSchema.safeParse({ ...schedule, breakDurationMinutes: 480 }).success, false);
+});
+
+test("IP allowlist accepts real IP/CIDR values and rejects malformed entries", () => {
+  for (const value of ["192.0.2.10", "192.0.2.0/24", "2001:db8::1", "2001:db8::/32"]) assert.equal(ipAllowlistEntryCreateSchema.safeParse({ value }).success, true);
+  for (const value of ["999.1.1.1", "192.0.2.0/33", "2001:db8::/129", "not-an-ip"]) assert.equal(ipAllowlistEntryCreateSchema.safeParse({ value }).success, false);
+});
+
+test("managed user access accepts explicit bounded module assignments", () => {
+  assert.equal(userManagementUpdateUserSchema.safeParse({ moduleAccess: ["HRIS", "PAYROLL"] }).success, true);
+  assert.equal(userManagementUpdateUserSchema.safeParse({ moduleAccess: ["UNKNOWN"] }).success, false);
+});
+
+test("two-factor policy cannot advertise unusable or contradictory enforcement", () => {
+  const base = { twoFactorEnabled: true, enforceTwoFactorForAllUsers: true, allowAuthenticatorApp: true, allowSmsOtp: false, allowEmailOtp: false };
+  assert.equal(securityTwoFactorSchema.safeParse(base).success, true);
+  assert.equal(securityTwoFactorSchema.safeParse({ ...base, twoFactorEnabled: false }).success, false);
+  assert.equal(securityTwoFactorSchema.safeParse({ ...base, allowAuthenticatorApp: false }).success, false);
 });

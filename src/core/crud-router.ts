@@ -24,6 +24,9 @@ type CrudOptions = {
   createSchema: z.ZodTypeAny;
   updateSchema: z.ZodTypeAny;
   permission: PermissionKey;
+  createPermission?: PermissionKey;
+  updatePermission?: PermissionKey;
+  deletePermission?: PermissionKey;
   searchableFields?: string[];
   include?: Record<string, unknown>;
   orderBy?: Record<string, "asc" | "desc">;
@@ -102,7 +105,7 @@ export const createCrudRouter = (options: CrudOptions) => {
 
   router.post(
     "/",
-    authorize(options.permission),
+    authorize(options.createPermission ?? options.permission),
     validate({ body: options.createSchema }),
     asyncHandler(async (req, res) => {
       const data = (await options.beforeCreate?.(req.body, req)) ?? req.body;
@@ -120,7 +123,7 @@ export const createCrudRouter = (options: CrudOptions) => {
 
   router.patch(
     "/:id",
-    authorize(options.permission),
+    authorize(options.updatePermission ?? options.permission),
     validate({ params: idParams, body: options.updateSchema }),
     asyncHandler(async (req, res) => {
       const existing = await delegate.findFirst({ where: tenantWhere(req, { id: req.params.id }) });
@@ -139,7 +142,7 @@ export const createCrudRouter = (options: CrudOptions) => {
 
   router.delete(
     "/:id",
-    authorize(options.permission),
+    authorize(options.deletePermission ?? options.permission),
     validate({ params: idParams }),
     asyncHandler(async (req, res) => {
       const existing = await delegate.findFirst({ where: tenantWhere(req, { id: req.params.id }) });

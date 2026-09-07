@@ -37,6 +37,9 @@ export const departmentUpdateSchema = departmentCreateSchema.partial();
 export const branchCreateSchema = z.object({
   name: z.string().min(2),
   address: z.string().min(3),
+  city: optionalText,
+  state: optionalText,
+  country: optionalText,
   phone: optionalE164Phone
 });
 export const branchUpdateSchema = branchCreateSchema.partial();
@@ -52,6 +55,15 @@ export const workScheduleUpsertSchema = z.object({
   workStartTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Work start time must be HH:mm"),
   workEndTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Work end time must be HH:mm"),
   breakDurationMinutes: z.coerce.number().int().min(0).max(600)
+}).superRefine((value, context) => {
+  if (![value.monday, value.tuesday, value.wednesday, value.thursday, value.friday, value.saturday, value.sunday].some(Boolean)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["monday"], message: "At least one working day is required" });
+  }
+  const [startHour, startMinute] = value.workStartTime.split(":").map(Number);
+  const [endHour, endMinute] = value.workEndTime.split(":").map(Number);
+  const shiftMinutes = endHour * 60 + endMinute - (startHour * 60 + startMinute);
+  if (shiftMinutes <= 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ["workEndTime"], message: "Work end time must be later than work start time" });
+  if (shiftMinutes > 0 && value.breakDurationMinutes >= shiftMinutes) context.addIssue({ code: z.ZodIssueCode.custom, path: ["breakDurationMinutes"], message: "Break duration must be shorter than the work period" });
 });
 
 export const teamCreateSchema = z.object({
@@ -213,9 +225,10 @@ export const userManagementUsersQuerySchema = z.object({
 export const userManagementUpdateUserSchema = z
   .object({
     roleId: stringId.optional(),
-    isActive: z.boolean().optional()
+    isActive: z.boolean().optional(),
+    moduleAccess: z.array(moduleAccessItemSchema).min(1).optional()
   })
-  .refine((payload) => payload.roleId !== undefined || payload.isActive !== undefined, {
+  .refine((payload) => payload.roleId !== undefined || payload.isActive !== undefined || payload.moduleAccess !== undefined, {
     message: "At least one field is required"
   });
 

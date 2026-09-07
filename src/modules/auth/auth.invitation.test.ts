@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loginAccountType } from "./auth.service";
+import jwt from "jsonwebtoken";
+import { isIpAllowed, loginAccountType, signTokens } from "./auth.service";
 import { acceptTenantInvitationSchema, refreshTokenSchema } from "./auth.schemas";
 
 test("tenant invitation password setup is a dedicated strict flow", () => {
@@ -19,4 +20,17 @@ test("refresh token exchange accepts only the issued refresh token field", () =>
   assert.equal(refreshTokenSchema.safeParse({ refreshToken: "signed-refresh-token" }).success, true);
   assert.equal(refreshTokenSchema.safeParse({ accessToken: "signed-access-token" }).success, false);
   assert.equal(refreshTokenSchema.safeParse({ refreshToken: "signed-refresh-token", userId: "other-user" }).success, false);
+});
+
+test("IP restriction matches IPv4 and IPv6 CIDR ranges", () => {
+  assert.equal(isIpAllowed("192.0.2.42", ["192.0.2.0/24"]), true);
+  assert.equal(isIpAllowed("192.0.3.42", ["192.0.2.0/24"]), false);
+  assert.equal(isIpAllowed("2001:db8::42", ["2001:db8::/32"]), true);
+  assert.equal(isIpAllowed("2001:db9::42", ["2001:db8::/32"]), false);
+});
+
+test("new access and refresh tokens are bound to their revocable server session", () => {
+  const tokens = signTokens({ id: "user-1", organizationId: "tenant-1" }, "session-1");
+  assert.equal((jwt.decode(tokens.accessToken) as jwt.JwtPayload).sessionId, "session-1");
+  assert.equal((jwt.decode(tokens.refreshToken) as jwt.JwtPayload).sessionId, "session-1");
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isIP } from "node:net";
 import { permissions } from "../auth/permissions";
 import { platformAnnouncementTypes, supportedCurrencies, supportedDateFormats, supportedLanguages, tenantNotificationChannelKeys, tenantNotificationModuleKeys } from "./admin.interface";
 import { passesLuhn } from "../billing/billing.rules";
@@ -153,6 +154,9 @@ export const securityTwoFactorSchema = z.object({
   allowAuthenticatorApp: z.boolean(),
   allowSmsOtp: z.boolean(),
   allowEmailOtp: z.boolean()
+}).superRefine((value, context) => {
+  if (value.enforceTwoFactorForAllUsers && !value.twoFactorEnabled) context.addIssue({ code: z.ZodIssueCode.custom, path: ["enforceTwoFactorForAllUsers"], message: "Global two-factor authentication must be enabled before enforcing it" });
+  if (value.twoFactorEnabled && !value.allowAuthenticatorApp && !value.allowSmsOtp && !value.allowEmailOtp) context.addIssue({ code: z.ZodIssueCode.custom, path: ["twoFactorEnabled"], message: "At least one two-factor method must be enabled" });
 });
 
 export const securitySessionsQuerySchema = z.object({
@@ -176,7 +180,14 @@ export const ipAllowlistToggleSchema = z.object({
 });
 
 export const ipAllowlistEntryCreateSchema = z.object({
-  value: z.string().min(3).max(120),
+  value: z.string().trim().min(3).max(120).refine((value) => {
+    const [address, prefix, ...extra] = value.split("/");
+    if (extra.length || !address || !isIP(address)) return false;
+    if (prefix === undefined) return true;
+    if (!/^\d+$/.test(prefix)) return false;
+    const bits = Number(prefix);
+    return bits >= 0 && bits <= (isIP(address) === 4 ? 32 : 128);
+  }, "Value must be a valid IPv4/IPv6 address or CIDR range"),
   label: z.string().min(1).max(80).optional()
 });
 

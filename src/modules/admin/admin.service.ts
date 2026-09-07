@@ -2,6 +2,7 @@ import type { Request } from "express";
 import type { Prisma } from "@prisma/client";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import { env } from "../../config/env";
 import { badRequest, conflict, notFound } from "../../core/http-error";
 import { deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { getPagination } from "../../core/pagination";
@@ -9,11 +10,13 @@ import { prisma } from "../../core/prisma";
 import { permissions } from "../auth/permissions";
 import type { PermissionKey } from "../auth/permissions";
 import { createAuditLog, extractEntityId } from "./admin.audit";
-import { deriveActiveModules, syncSystemAlerts } from "./admin.dashboard";
+import { syncSystemAlerts } from "./admin.dashboard";
 import { billingPlans as sharedBillingPlans, calculateBillingAmount, type BillingCycle, type BillingPlanDefinition, type BillingPlanKey } from "../billing/billing.catalog";
 import { getEffectivePlanCatalogue, resolveRecurringPrices } from "../billing/pricing.service";
 import { sendSubscriptionRenewalEmail, sendWorkspaceInvitationEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
+import { isIpAllowed } from "../auth/auth.service";
 import { deriveSubscriptionStatus, isRenewalReminderDue } from "../billing/billing.rules";
+import { isOrganizationModuleEnabled } from "../billing/module-access.service";
 import { supportedCurrencies, supportedDateFormats, supportedLanguages, type AdminAuditLogInput, type AuditLogRow, type BrandingSettingsResponse, type LocaleSettingsResponse, type NotificationChannelPreferences, type PlatformAnnouncementResponse, type QuickAction, type SystemAlertRow, type TenantNotificationChannelKey } from "./admin.interface";
 import {
   branchCreateSchema,
@@ -198,25 +201,29 @@ const quickActions: QuickAction[] = [
     key: "invite-user",
     title: "Invite user",
     description: "Invite teammates into your tenant.",
-    permission: "accounting:agents:view"
+    permission: "admin:staff:create",
+    href: "/admin/users"
   },
   {
     key: "manage-modules",
     title: "Manage modules",
     description: "Enable or disable tenant modules.",
-    permission: "admin:system-config:view"
+    permission: "admin:organization:view",
+    href: "/admin/modules"
   },
   {
     key: "view-audit-log",
     title: "View audit log",
     description: "Inspect security and change history.",
-    permission: "admin:organization:view"
+    permission: "admin:organization:view",
+    href: "/admin/audit-log"
   },
   {
     key: "security-settings",
     title: "Security settings",
     description: "Review auth and permission posture.",
-    permission: "admin:roles:view"
+    permission: "admin:security:view",
+    href: "/admin/security"
   }
 ];
 
@@ -1253,7 +1260,7 @@ const getRoleUsageStats = async (organizationId: string, roleId: string) => {
   return { assignedUsers, pendingInvitations };
 };
 
-const deriveInvitationStatus = (status: string, expiresAt: Date): "PENDING" | "EXPIRED" => {
+export const deriveInvitationStatus = (status: string, expiresAt: Date): "PENDING" | "EXPIRED" => {
   if (status === "PENDING" && expiresAt < new Date()) {
     return "EXPIRED";
   }
@@ -1282,26 +1289,6 @@ const parseManagedModuleStatus = (
 
 const getManagedModuleStatusConfigKeys = () =>
   managedModules.flatMap((module) => [`module.${module.key}.status`, `module.${module.key}.enabled`]);
-
-const countActiveUsersByModule = async (organizationId: string, moduleKey: ManagedModuleKey): Promise<number> => {
-  return prisma.user.count({
-    where: {
-      organizationId,
-      isActive: true,
-      role: {
-        permissions: {
-          some: {
-            permission: {
-              key: {
-                startsWith: `${moduleKey}:`
-              }
-            }
-          }
-        }
-      }
-    }
-  });
-};
 
 const buildModuleAction = (status: ManagedModuleStatus) => {
   if (status === "COMING_SOON") {
@@ -1608,6 +1595,47 @@ const resolveActiveBillingModules = async (organizationId: string, plan: Billing
   return modules.filter((module) => module.status === "ACTIVE");
 };
 
+const assertOrganizationStructureIds = async (organizationId: string, data: { departmentId?: unknown; teamId?: unknown }) => {
+  const departmentId = typeof data.departmentId === "string" ? data.departmentId : undefined;
+  const teamId = typeof data.teamId === "string" ? data.teamId : undefined;
+  const [department, team] = await Promise.all([
+    departmentId ? prisma.department.findFirst({ where: { id: departmentId, organizationId }, select: { id: true } }) : null,
+    teamId ? prisma.team.findFirst({ where: { id: teamId, organizationId }, select: { id: true, departmentId: true } }) : null
+  ]);
+  if (departmentId && !department) throw badRequest("Selected department does not belong to this organization");
+  if (teamId && !team) throw badRequest("Selected function group does not belong to this organization");
+  if (departmentId && team?.departmentId && team.departmentId !== departmentId) throw badRequest("Selected function group does not belong to the selected department");
+};
+
+const getActiveUserModuleCounts = async (organizationId: string) => {
+  const users = await prisma.user.findMany({
+    where: { organizationId, isActive: true },
+    select: { moduleAccess: true, role: { select: { permissions: { select: { permission: { select: { key: true } } } } } } }
+  });
+  return new Map(managedModules.map((module) => [module.key, users.filter((user) => {
+    const effective = deriveEffectiveUserModules(user.role.permissions.map((row) => row.permission.key), user.moduleAccess);
+    return effective.some((value) => value.toLowerCase() === module.key);
+  }).length]));
+};
+
+export const deriveEffectiveUserModules = (permissionKeys: string[], moduleAccess: unknown): AppModule[] => {
+  const roleModules = deriveModulesFromPermissions(permissionKeys);
+  if (!Array.isArray(moduleAccess)) return roleModules;
+  const explicit = moduleAccess.filter((value): value is AppModule => typeof value === "string" && ["HRIS", "ACCOUNTING", "PAYROLL"].includes(value));
+  return roleModules.filter((module) => explicit.includes(module));
+};
+
+const assertEnabledModules = async (organizationId: string, modules: AppModule[]) => {
+  const results = await Promise.all(
+    modules.map(async (module) => ({
+      module,
+      enabled: await isOrganizationModuleEnabled(organizationId, module.toLowerCase() as ManagedModuleKey)
+    }))
+  );
+  const unavailableModules = results.filter((entry) => !entry.enabled).map((entry) => entry.module);
+  if (unavailableModules.length) throw badRequest("Selected modules are not enabled for this organization", { unavailableModules });
+};
+
 const buildCostBreakdown = (
   plan: BillingPlanDefinition,
   billingCycle: BillingCycle,
@@ -1660,20 +1688,16 @@ export const getDashboardData = async (req: Request) => {
 
   if (!currentUser || !organization) throw notFound();
 
-  const [totalUsers, activeUsers, pendingInvitations, moduleConfigs] = await prisma.$transaction([
-    prisma.user.count({ where: { organizationId: req.organizationId } }),
-    prisma.user.count({ where: { organizationId: req.organizationId, isActive: true } }),
-    prisma.agentInvitation.count({ where: { organizationId: req.organizationId, status: "PENDING" } }),
-    prisma.systemConfig.findMany({
-      where: {
-        organizationId: req.organizationId,
-        key: { in: ["module.admin.enabled", "module.hris.enabled", "module.accounting.enabled", "module.payroll.enabled"] }
-      },
-      select: { key: true, value: true }
-    })
+  const pendingRows = await prisma.agentInvitation.findMany({ where: { organizationId: req.organizationId, status: "PENDING", expiresAt: { gt: new Date() } }, select: { email: true } });
+  const pendingEmails = [...new Set(pendingRows.map((row) => row.email.toLowerCase()))];
+  const acceptedUserFilter = pendingEmails.length ? { email: { notIn: pendingEmails } } : {};
+  const [totalUsers, activeUsers, moduleSection] = await Promise.all([
+    prisma.user.count({ where: { organizationId: req.organizationId, ...acceptedUserFilter } }),
+    prisma.user.count({ where: { organizationId: req.organizationId, isActive: true, ...acceptedUserFilter } }),
+    getModuleSectionData(req)
   ]);
-
-  const modules = deriveActiveModules(req.user?.permissions ?? [], moduleConfigs);
+  const pendingInvitations = pendingRows.length;
+  const modules = moduleSection.modules.map((module) => ({ ...module, enabled: module.status === "ACTIVE" }));
   const systemAlerts = await syncSystemAlerts({
     organizationId: req.organizationId!,
     actorUserId: req.user?.id,
@@ -1695,24 +1719,28 @@ export const getDashboardData = async (req: Request) => {
   });
 
   return {
+    currentDate: new Date(),
+    systemStatus: { operational: true },
     search: {
       placeholder: "Search users, modules, alerts and activities"
     },
     welcome: {
       tenantAdminName: `${currentUser.firstName} ${currentUser.lastName}`.trim(),
+      organizationName: organization.name,
       profileImageUrl: currentUser.profileImageUrl ?? organization.profileImageUrl,
       lastLoginAt: currentUser.lastLoginAt
     },
     analytics: {
       totalUsers,
       activeUsers,
-      activeModules: modules.filter((module) => module.enabled).length,
+      activeModules: moduleSection.analytics.activeModules,
       pendingInvitations
     },
     quickActions: quickActions.map((action) => ({
       key: action.key,
       title: action.title,
       description: action.description,
+      href: action.href,
       allowed: (req.user?.permissions ?? []).includes(action.permission)
     })),
     activeModules: modules,
@@ -1738,7 +1766,7 @@ export const getDashboardData = async (req: Request) => {
 };
 
 export const getModuleSectionData = async (req: Request) => {
-  const configRows = await prisma.systemConfig.findMany({
+  const [configRows, entitlementRows] = await Promise.all([prisma.systemConfig.findMany({
     where: {
       organizationId: req.organizationId,
       key: {
@@ -1746,24 +1774,22 @@ export const getModuleSectionData = async (req: Request) => {
       }
     },
     select: { key: true, value: true }
-  });
+  }), Promise.all(managedModules.map(async (module) => ({
+    key: module.key,
+    enabled: await isOrganizationModuleEnabled(req.organizationId!, module.key)
+  })))]);
 
   const configMap = new Map(configRows.map((row) => [row.key, row.value]));
 
-  const activeUsersByModule = await Promise.all(
-    managedModules.map(async (module) => ({
-      key: module.key,
-      count: await countActiveUsersByModule(req.organizationId!, module.key)
-    }))
-  );
-
-  const activeUsersMap = new Map(activeUsersByModule.map((row) => [row.key, row.count]));
+  const activeUsersMap = await getActiveUserModuleCounts(req.organizationId!);
+  const entitlementMap = new Map(entitlementRows.map((row) => [row.key, row.enabled]));
 
   const modules = managedModules.map((module) => {
     const rawStatus = configMap.get(`module.${module.key}.status`);
     const rawEnabled = configMap.get(`module.${module.key}.enabled`);
     const enabled = typeof rawEnabled === "boolean" ? rawEnabled : undefined;
-    const status = parseManagedModuleStatus(rawStatus, enabled, module.defaultStatus);
+    const configuredStatus = parseManagedModuleStatus(rawStatus, enabled, module.defaultStatus);
+    const status: ManagedModuleStatus = configuredStatus === "COMING_SOON" ? "COMING_SOON" : entitlementMap.get(module.key) ? "ACTIVE" : "INACTIVE";
     const action = buildModuleAction(status);
 
     return {
@@ -1801,6 +1827,15 @@ export const updateModuleStatus = async (req: Request) => {
   }
 
   const statusValue = payload.status.toUpperCase() as ManagedModuleStatus;
+  if (statusValue === "COMING_SOON") throw badRequest("Coming-soon availability is managed by the platform");
+  if (statusValue === "ACTIVE") {
+    const organization = await prisma.organization.findUnique({ where: { id: req.organizationId! }, select: { currency: true } });
+    const subscription = await getSubscriptionState(req.organizationId!, organization?.currency ?? "NGN");
+    const plan = billingPlans.find((entry) => entry.key === subscription.planKey);
+    if (subscription.status !== "ACTIVE" || !plan?.includedModules.includes(moduleKey)) {
+      throw conflict("This module is not included in the active subscription plan");
+    }
+  }
   const enabledValue = statusValue === "ACTIVE";
 
   await prisma.$transaction([
@@ -2895,14 +2930,19 @@ export const getUserManagementAnalytics = async (req: Request) => {
       }
     : {};
 
+  const pendingRows = await prisma.agentInvitation.findMany({ where: { organizationId: req.organizationId, status: "PENDING", expiresAt: { gt: new Date() } }, select: { email: true } });
+  const pendingEmails = [...new Set(pendingRows.map((row) => row.email.toLowerCase()))];
+  const acceptedUserFilter = pendingEmails.length ? { email: { notIn: pendingEmails } } : {};
+  const moduleUsers = moduleFilter ? await prisma.user.findMany({ where: { organizationId: req.organizationId, ...userFilter, ...acceptedUserFilter }, select: { isActive: true, moduleAccess: true, role: { select: { permissions: { select: { permission: { select: { key: true } } } } } } } }) : null;
+  const filteredModuleUsers = moduleUsers?.filter((user) => deriveEffectiveUserModules(user.role.permissions.map((row) => row.permission.key), user.moduleAccess).includes(moduleFilter!));
   const [totalUsers, activeUsers, pendingInvitations] = await Promise.all([
-    prisma.user.count({ where: { organizationId: req.organizationId, ...userFilter } }),
-    prisma.user.count({ where: { organizationId: req.organizationId, isActive: true, ...userFilter } }),
+    filteredModuleUsers ? Promise.resolve(filteredModuleUsers.length) : prisma.user.count({ where: { organizationId: req.organizationId, ...acceptedUserFilter } }),
+    filteredModuleUsers ? Promise.resolve(filteredModuleUsers.filter((user) => user.isActive).length) : prisma.user.count({ where: { organizationId: req.organizationId, isActive: true, ...acceptedUserFilter } }),
     invitationDelegate.count({
       where: {
         organizationId: req.organizationId,
         status: "PENDING",
-        expiresAt: { gte: new Date() },
+        expiresAt: { gt: new Date() },
         ...(moduleFilter
           ? {
               moduleAccess: {
@@ -2930,9 +2970,12 @@ export const listUsersTable = async (req: Request) => {
   const page = Number(req.query.page ?? 1);
   const limit = Number(req.query.limit ?? 25);
 
+  const pendingRows = await prisma.agentInvitation.findMany({ where: { organizationId: req.organizationId, status: "PENDING", expiresAt: { gt: new Date() } }, select: { email: true } });
+  const pendingEmails = [...new Set(pendingRows.map((row) => row.email.toLowerCase()))];
   const users = await prisma.user.findMany({
     where: {
       organizationId: req.organizationId,
+      ...(pendingEmails.length ? { email: { notIn: pendingEmails } } : {}),
       ...(search
         ? {
             OR: [
@@ -2974,7 +3017,7 @@ export const listUsersTable = async (req: Request) => {
   const tableRows = users
     .map((user) => {
       const permissionKeys = user.role.permissions.map((row) => row.permission.key);
-      const modules = deriveModulesFromPermissions(permissionKeys);
+      const modules = deriveEffectiveUserModules(permissionKeys, user.moduleAccess);
 
       return {
         id: user.id,
@@ -3016,8 +3059,11 @@ export const updateUserAccess = async (req: Request) => {
   });
 
   if (!existing) throw notFound("User not found");
+  if (existing.role.isSystem && existing.role.name === "Owner" && (payload.roleId || payload.isActive === false)) {
+    throw badRequest("The tenant Owner's role and active status are protected");
+  }
 
-  const data: { roleId?: string; isActive?: boolean } = {};
+  const data: { roleId?: string; isActive?: boolean; moduleAccess?: AppModule[] } = {};
 
   if (payload.roleId) {
     const role = await prisma.role.findFirst({
@@ -3035,6 +3081,21 @@ export const updateUserAccess = async (req: Request) => {
   if (typeof payload.isActive === "boolean") {
     data.isActive = payload.isActive;
   }
+  const effectiveRoleId = payload.roleId ?? existing.roleId;
+  if (payload.moduleAccess) {
+    const effectiveRole = await prisma.role.findFirst({ where: { id: effectiveRoleId, organizationId: req.organizationId }, include: { permissions: { include: { permission: true } } } });
+    if (!effectiveRole) throw badRequest("Selected role does not belong to this organization");
+    const roleModules = deriveModulesFromPermissions(effectiveRole.permissions.map((row) => row.permission.key));
+    const invalidModules = payload.moduleAccess.filter((module) => !roleModules.includes(module));
+    if (invalidModules.length) throw badRequest("Selected module access is not allowed by the selected role", { invalidModules, roleModules });
+    await assertEnabledModules(req.organizationId!, payload.moduleAccess);
+    data.moduleAccess = payload.moduleAccess;
+  } else if (payload.roleId) {
+    const role = await prisma.role.findFirst({ where: { id: payload.roleId, organizationId: req.organizationId }, include: { permissions: { include: { permission: true } } } });
+    const roleModules = role ? deriveModulesFromPermissions(role.permissions.map((row) => row.permission.key)) : [];
+    const previousModules = Array.isArray(existing.moduleAccess) ? existing.moduleAccess.filter((value): value is AppModule => typeof value === "string" && ["HRIS", "ACCOUNTING", "PAYROLL"].includes(value)) : roleModules;
+    data.moduleAccess = previousModules.filter((module) => roleModules.includes(module));
+  }
 
   const updated = await prisma.user.update({
     where: { id },
@@ -3043,6 +3104,10 @@ export const updateUserAccess = async (req: Request) => {
       role: true
     }
   });
+
+  if (payload.isActive === false) {
+    await prisma.userSession.updateMany({ where: { organizationId: req.organizationId!, userId: updated.id, revokedAt: null }, data: { revokedAt: new Date(), revokeReason: "User access deactivated", isCurrent: false } });
+  }
 
   await logAdminActivity({
     organizationId: req.organizationId,
@@ -3054,7 +3119,15 @@ export const updateUserAccess = async (req: Request) => {
     metadata: payload
   });
 
-  return updated;
+  return {
+    id: updated.id,
+    user: { fullName: `${updated.firstName} ${updated.lastName}`.trim(), email: updated.email },
+    role: { id: updated.role.id, name: updated.role.name },
+    moduleAccess: Array.isArray(updated.moduleAccess) ? updated.moduleAccess : [],
+    status: updated.isActive ? "ACTIVE" as const : "INACTIVE" as const,
+    lastActive: updated.lastLoginAt,
+    updatedAt: updated.updatedAt
+  };
 };
 
 export const removeUser = async (req: Request) => {
@@ -3067,12 +3140,13 @@ export const removeUser = async (req: Request) => {
 
   if (!existing) throw notFound("User not found");
   if (existing.id === req.user?.id) throw badRequest("You cannot remove your own account");
-  if (existing.role.isSystem) throw badRequest("System roles cannot be removed");
+  if (existing.role.isSystem && existing.role.name === "Owner") throw badRequest("The tenant Owner account cannot be removed");
 
-  await prisma.user.update({
-    where: { id: existing.id },
-    data: { isActive: false }
-  });
+  const removedAt = new Date();
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: existing.id }, data: { isActive: false } }),
+    prisma.userSession.updateMany({ where: { organizationId: req.organizationId!, userId: existing.id, revokedAt: null }, data: { revokedAt: removedAt, revokeReason: "Tenant access removed", isCurrent: false } })
+  ]);
 
   await logAdminActivity({
     organizationId: req.organizationId,
@@ -3111,12 +3185,13 @@ export const inviteUser = async (req: Request) => {
       organizationId: req.organizationId,
       email: payload.email.toLowerCase()
     },
-    select: { id: true }
+    select: { id: true, isActive: true }
   });
 
-  if (existingUser) {
+  if (existingUser?.isActive) {
     throw conflict("A user with this email already exists in this organization");
   }
+  await assertEnabledModules(req.organizationId!, payload.moduleAccess);
 
   const pendingInvitation = await prisma.agentInvitation.findFirst({ where: { organizationId: req.organizationId, email: payload.email.toLowerCase(), status: "PENDING", expiresAt: { gt: new Date() } }, select: { id: true, deliveryStatus: true } });
   if (pendingInvitation) throw conflict("An active invitation already exists for this email; use resend", { invitationId: pendingInvitation.id, deliveryStatus: pendingInvitation.deliveryStatus });
@@ -3132,7 +3207,10 @@ export const inviteUser = async (req: Request) => {
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + invitationTtlDays * 24 * 60 * 60 * 1000);
   const created = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({ data: { organizationId: req.organizationId!, roleId: payload.roleId, employeeId: employee?.id, email, firstName: employee?.firstName ?? localPart[0] ?? "Invited", lastName: employee?.lastName ?? (localPart.slice(1).join(" ") || "User"), passwordHash: temporaryPasswordHash, isActive: true } });
+    const userData = { roleId: payload.roleId, employeeId: employee?.id, firstName: employee?.firstName ?? localPart[0] ?? "Invited", lastName: employee?.lastName ?? (localPart.slice(1).join(" ") || "User"), passwordHash: temporaryPasswordHash, isActive: false, moduleAccess: payload.moduleAccess };
+    const user = existingUser
+      ? await tx.user.update({ where: { id: existingUser.id }, data: userData })
+      : await tx.user.create({ data: { organizationId: req.organizationId!, email, ...userData } });
     const invitation = await tx.agentInvitation.create({ data: { organizationId: req.organizationId!, roleId: payload.roleId, invitedByUserId: req.user?.id, email, token, moduleAccess: payload.moduleAccess, status: "PENDING", expiresAt }, include: { role: { select: { id: true, name: true } } } });
     return { user, invitation };
   });
@@ -3304,6 +3382,20 @@ export const resendInvitation = async (req: Request) => {
   };
 };
 
+export const revokeInvitation = async (req: Request) => {
+  const id = String(req.params.id);
+  const invitation = await prisma.agentInvitation.findFirst({ where: { id, organizationId: req.organizationId }, select: { id: true, email: true, status: true } });
+  if (!invitation) throw notFound("Invitation not found");
+  if (invitation.status === "ACCEPTED") throw conflict("Accepted invitations cannot be revoked");
+  const revokedAt = new Date();
+  await prisma.$transaction([
+    prisma.agentInvitation.update({ where: { id: invitation.id }, data: { status: "REVOKED", expiresAt: revokedAt } }),
+    prisma.user.updateMany({ where: { organizationId: req.organizationId!, email: invitation.email, isActive: false }, data: { isActive: false } })
+  ]);
+  await logAdminActivity({ organizationId: req.organizationId, actorUserId: req.user?.id, action: "INVITATION_REVOKED", resource: "INVITATION", resourceId: invitation.id, summary: `Revoked invitation for ${invitation.email}` });
+  return { id: invitation.id, status: "REVOKED" as const, revokedAt };
+};
+
 export const listUserGroups = async (req: Request) => {
   const search = (req.query.search as string | undefined)?.trim();
   const typeFilter = (req.query.type as "DEPARTMENT" | "FUNCTION" | undefined) ?? undefined;
@@ -3325,6 +3417,7 @@ export const listUserGroups = async (req: Request) => {
       select: {
         id: true,
         name: true,
+        employees: { take: 5, orderBy: { createdAt: "asc" }, select: { id: true, firstName: true, lastName: true } },
         _count: {
           select: {
             employees: true
@@ -3347,6 +3440,7 @@ export const listUserGroups = async (req: Request) => {
       select: {
         id: true,
         name: true,
+        employees: { take: 5, orderBy: { createdAt: "asc" }, select: { id: true, firstName: true, lastName: true } },
         _count: {
           select: {
             employees: true
@@ -3363,6 +3457,7 @@ export const listUserGroups = async (req: Request) => {
       name: department.name,
       type: "DEPARTMENT" as const,
       members: department._count.employees,
+      memberPreviews: department.employees.map((employee) => ({ id: employee.id, fullName: `${employee.firstName} ${employee.lastName}`.trim() })),
       createdAt: department.createdAt
     })),
     ...functions.map((team) => ({
@@ -3370,6 +3465,7 @@ export const listUserGroups = async (req: Request) => {
       name: team.name,
       type: "FUNCTION" as const,
       members: team._count.employees,
+      memberPreviews: team.employees.map((employee) => ({ id: employee.id, fullName: `${employee.firstName} ${employee.lastName}`.trim() })),
       createdAt: team.createdAt
     }))
   ]
@@ -3541,6 +3637,8 @@ export const deleteUserGroup = async (req: Request) => {
   });
 
   if (department) {
+    const employeeCount = await prisma.employee.count({ where: { organizationId: req.organizationId!, departmentId: department.id } });
+    if (employeeCount > 0) throw conflict("Department group cannot be deleted while employees are assigned", { employeeCount });
     await prisma.department.delete({ where: { id: department.id } });
 
     await logAdminActivity({
@@ -3562,6 +3660,9 @@ export const deleteUserGroup = async (req: Request) => {
   });
 
   if (!team) throw notFound("Group not found");
+
+  const employeeCount = await prisma.employee.count({ where: { organizationId: req.organizationId!, teamId: team.id } });
+  if (employeeCount > 0) throw conflict("Function group cannot be deleted while employees are assigned", { employeeCount });
 
   await prisma.team.delete({ where: { id: team.id } });
 
@@ -3696,6 +3797,9 @@ export const listBranchesTable = async (req: Request) => {
       id: String((branch as { id?: unknown }).id ?? ""),
       branchName: String((branch as { name?: unknown }).name ?? ""),
       address: String((branch as { address?: unknown }).address ?? ""),
+      city: ((branch as { city?: unknown }).city as string | null | undefined) ?? null,
+      state: ((branch as { state?: unknown }).state as string | null | undefined) ?? null,
+      country: ((branch as { country?: unknown }).country as string | null | undefined) ?? null,
       phone: ((branch as { phone?: unknown }).phone as string | null | undefined) ?? null,
       dateCreated: (branch as { createdAt?: unknown }).createdAt ?? null
     })),
@@ -3947,6 +4051,9 @@ export const departmentsCrudOptions = {
   createSchema: departmentCreateSchema,
   updateSchema: departmentUpdateSchema,
   permission: "admin:departments:view" as const,
+  createPermission: "admin:departments:create" as const,
+  updatePermission: "admin:departments:update" as const,
+  deletePermission: "admin:departments:delete" as const,
   searchableFields: ["name"],
   include: {
     headEmployee: {
@@ -3970,6 +4077,12 @@ export const departmentsCrudOptions = {
   beforeUpdate: async (data: Record<string, unknown>, req: Request) => {
     await assertHeadEmployeeInOrganization(req.organizationId!, data.headEmployeeId as string | undefined);
     return data;
+  },
+  beforeDelete: async ({ req, existing }: { req: Request; existing: unknown }) => {
+    const id = extractEntityId(existing);
+    if (!id) throw notFound("Department not found");
+    const employees = await prisma.employee.count({ where: { organizationId: req.organizationId!, departmentId: id } });
+    if (employees > 0) throw conflict("Department cannot be deleted while employees are assigned", { employeeCount: employees });
   },
   afterCreate: async ({ req, created }: { req: Request; created: unknown }) => {
     await logAdminActivity({
@@ -4180,11 +4293,12 @@ export const getSecurityPolicy = async (organizationId: string) => {
     where: { organizationId }
   });
 
-  if (!policy) return defaultSecurityPolicy;
+  const methodAvailability = { authenticatorApp: true, smsOtp: Boolean(env.SMS_WEBHOOK_URL), emailOtp: Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS) };
+  if (!policy) return { ...defaultSecurityPolicy, methodAvailability };
 
   const { id: _id, organizationId: _orgId, updatedByUserId: _updatedBy, createdAt: _createdAt, updatedAt: _updatedAt, ...rest } =
     policy;
-  return rest;
+  return { ...rest, methodAvailability };
 };
 
 export const updateSecurityPasswordPolicy = async (req: Request) => {
@@ -4219,6 +4333,15 @@ export const updateSecurityPasswordPolicy = async (req: Request) => {
 
 export const updateSecurityTwoFactorPolicy = async (req: Request) => {
   const payload = securityTwoFactorSchema.parse(req.body);
+  if (payload.twoFactorEnabled && !payload.allowAuthenticatorApp && !payload.allowSmsOtp && !payload.allowEmailOtp) {
+    throw badRequest("At least one two-factor method must be enabled");
+  }
+  if (payload.allowSmsOtp && !env.SMS_WEBHOOK_URL) {
+    throw badRequest("SMS two-factor authentication is unavailable because no SMS provider is configured");
+  }
+  if (payload.allowEmailOtp && !(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS)) {
+    throw badRequest("Email two-factor authentication is unavailable because no email provider is configured");
+  }
 
   const policy = await prismaAny.securityPolicy.upsert({
     where: { organizationId: req.organizationId! },
@@ -4255,7 +4378,7 @@ export const listActiveSessions = async (req: Request) => {
     organizationId: req.organizationId!,
     ...(query.userId ? { userId: query.userId } : {}),
     ...(query.status === "ACTIVE"
-      ? { revokedAt: null }
+      ? { revokedAt: null, expiresAt: { gt: new Date() } }
       : query.status === "REVOKED"
         ? { revokedAt: { not: null } }
         : {})
@@ -4290,7 +4413,7 @@ export const listActiveSessions = async (req: Request) => {
       userId: row.userId,
       userName: `${row.user.firstName} ${row.user.lastName}`.trim(),
       email: row.user.email,
-      status: row.revokedAt ? "REVOKED" : row.isCurrent ? "CURRENT" : "ACTIVE",
+      status: row.revokedAt ? "REVOKED" : row.id === req.user?.sessionId ? "CURRENT" : "ACTIVE",
       device: row.deviceName ?? resolveDeviceName(row.userAgent),
       ipAddress: row.ipAddress,
       location: {
@@ -4309,6 +4432,7 @@ export const listActiveSessions = async (req: Request) => {
 export const revokeSession = async (req: Request) => {
   const payload = securityRevokeSessionSchema.parse(req.body ?? {});
   const sessionId = String(req.params.id);
+  if (sessionId === req.user?.sessionId) throw conflict("Use logout to end the current session");
 
   const existing = await prismaAny.userSession.findFirst({
     where: {
@@ -4398,6 +4522,17 @@ export const revokeSessionsBulk = async (req: Request) => {
   };
 };
 
+export const revokeAllOtherSessions = async (req: Request) => {
+  if (!req.user?.sessionId) throw badRequest("Current session cannot be identified; sign in again before revoking other sessions");
+  const now = new Date();
+  const result = await prisma.userSession.updateMany({
+    where: { organizationId: req.organizationId!, userId: req.user.id, id: { not: req.user.sessionId }, revokedAt: null, expiresAt: { gt: now } },
+    data: { revokedAt: now, revokeReason: "Revoked all other sessions", isCurrent: false }
+  });
+  await logAdminActivity({ organizationId: req.organizationId, actorUserId: req.user.id, action: "SECURITY_OTHER_SESSIONS_REVOKED", resource: "USER_SESSION", summary: `Revoked ${result.count} other session(s)`, metadata: { count: result.count } });
+  return { revokedCount: result.count, currentSessionId: req.user.sessionId, message: "All other sessions revoked" };
+};
+
 export const getIpAllowlist = async (organizationId: string) => {
   const [policy, entries] = await prismaAny.$transaction([
     prismaAny.securityPolicy.findUnique({
@@ -4418,6 +4553,14 @@ export const getIpAllowlist = async (organizationId: string) => {
 
 export const toggleIpAllowlist = async (req: Request) => {
   const payload = ipAllowlistToggleSchema.parse(req.body);
+  if (payload.enabled) {
+    const entries = await prisma.ipAllowlistEntry.findMany({ where: { organizationId: req.organizationId! }, select: { value: true } });
+    if (!entries.length) throw conflict("Add at least one IP address before enabling the allowlist");
+    const currentIp = req.ip?.replace(/^::ffff:/, "");
+    if (currentIp && !isIpAllowed(currentIp, entries.map((entry) => entry.value))) {
+      throw conflict("The current IP address must be allowed before enabling the allowlist");
+    }
+  }
 
   const policy = await prismaAny.securityPolicy.upsert({
     where: { organizationId: req.organizationId! },
@@ -4575,8 +4718,13 @@ export const teamsCrudOptions = {
   createSchema: teamCreateSchema,
   updateSchema: teamUpdateSchema,
   permission: "admin:teams:view" as const,
+  createPermission: "admin:teams:create" as const,
+  updatePermission: "admin:teams:update" as const,
+  deletePermission: "admin:teams:delete" as const,
   searchableFields: ["name"],
   include: { department: true },
+  beforeCreate: async (data: Record<string, unknown>, req: Request) => { await assertOrganizationStructureIds(req.organizationId!, data); return data; },
+  beforeUpdate: async (data: Record<string, unknown>, req: Request) => { await assertOrganizationStructureIds(req.organizationId!, data); return data; },
   afterCreate: async ({ req, created }: { req: Request; created: unknown }) => {
     await logAdminActivity({
       organizationId: req.organizationId,
@@ -4614,8 +4762,13 @@ export const staffCrudOptions = {
   createSchema: employeeCreateSchema,
   updateSchema: employeeUpdateSchema,
   permission: "admin:staff:view" as const,
+  createPermission: "admin:staff:create" as const,
+  updatePermission: "admin:staff:update" as const,
+  deletePermission: "admin:staff:delete" as const,
   searchableFields: ["firstName", "lastName", "email", "employeeNo"],
   include: { department: true, team: true },
+  beforeCreate: async (data: Record<string, unknown>, req: Request) => { await assertOrganizationStructureIds(req.organizationId!, data); return data; },
+  beforeUpdate: async (data: Record<string, unknown>, req: Request) => { await assertOrganizationStructureIds(req.organizationId!, data); return data; },
   afterCreate: async ({ req, created }: { req: Request; created: unknown }) => {
     await logAdminActivity({
       organizationId: req.organizationId,
@@ -4653,6 +4806,9 @@ export const systemConfigCrudOptions = {
   createSchema: systemConfigCreateSchema,
   updateSchema: systemConfigUpdateSchema,
   permission: "admin:system-config:view" as const,
+  createPermission: "admin:system-config:create" as const,
+  updatePermission: "admin:system-config:update" as const,
+  deletePermission: "admin:system-config:delete" as const,
   searchableFields: ["key"],
   afterCreate: async ({ req, created }: { req: Request; created: unknown }) => {
     await logAdminActivity({

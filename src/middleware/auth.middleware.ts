@@ -12,6 +12,7 @@ type JwtPayload = {
   purpose?: string;
   impersonationSessionId?: string;
   platformAdminUserId?: string;
+  sessionId?: string;
 };
 
 export const canAccessOrganization = (user: { isPlatformAdmin: boolean; organization: { status: string } }) =>
@@ -49,6 +50,10 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
     if (!canAccessOrganization(user)) {
       return next(unauthorized("Organization access is suspended"));
     }
+    if (payload.sessionId) {
+      const session = await prisma.userSession.findFirst({ where: { id: payload.sessionId, userId: user.id, organizationId: user.organizationId, revokedAt: null, expiresAt: { gt: new Date() } }, select: { id: true } });
+      if (!session) return next(unauthorized("Session is no longer active"));
+    }
     if (payload.purpose === "platform-impersonation") {
       if (!payload.impersonationSessionId || !payload.platformAdminUserId) return next(unauthorized("Invalid impersonation token"));
       const session = await prisma.platformImpersonationSession.findFirst({
@@ -81,6 +86,8 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
       email: user.email,
       roleId: user.roleId,
       isPlatformAdmin: user.isPlatformAdmin,
+      moduleAccess: Array.isArray(user.moduleAccess) ? user.moduleAccess.filter((value): value is string => typeof value === "string") : null,
+      sessionId: payload.sessionId,
       ...(payload.purpose === "platform-impersonation" && payload.impersonationSessionId && payload.platformAdminUserId
         ? { impersonation: { sessionId: payload.impersonationSessionId, platformAdminUserId: payload.platformAdminUserId } }
         : {}),

@@ -6,6 +6,7 @@ export type QuickAction = {
   title: string;
   description: string;
   permission: PermissionKey;
+  href: string;
 };
 
 export type AdminAuditLogInput = {
