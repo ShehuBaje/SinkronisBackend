@@ -8,7 +8,7 @@ import { badRequest, conflict, forbidden, notFound, serviceUnavailable } from ".
 import { prisma } from "../../core/prisma";
 import { createAuditLog } from "../admin/admin.audit";
 import { forgotPassword } from "../auth/auth.service";
-import { sendTenantAdminInvitationEmail, sendTenantCheckInEmail } from "../auth/auth.mailer";
+import { sendTenantAdminInvitationEmail, sendTenantCheckInEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
 import { snapshotTenantModuleUsage } from "../telemetry/telemetry.service";
 import { sendPlatformInvoiceReminderEmail } from "./platform-billing.mailer";
 import {
@@ -777,8 +777,7 @@ export const createPlatformTenant = async (body: unknown, platformAdmin: AuthUse
     return { organization, admin, invitation };
   });
   await createAuditLog({ organizationId: created.organization.id, actorUserId: platformAdmin.id, action: "PLATFORM_TENANT_CREATED", resource: "ORGANIZATION", resourceId: created.organization.id, summary: `Created tenant ${created.organization.name}`, metadata: { planKey: plan.key, adminEmail: created.admin.email, country: payload.country } });
-  const frontendOrigin = env.CORS_ORIGIN.split(",").map((origin) => origin.trim()).find((origin) => origin && origin !== "*") ?? "http://localhost:3000";
-  const setupUrl = `${frontendOrigin.replace(/\/$/, "")}/setup-password?token=${encodeURIComponent(created.invitation.token)}`;
+  const setupUrl = workspaceInvitationSetupUrl(created.invitation.token);
   await sendTenantAdminInvitationEmail({ to: created.admin.email, organizationName: created.organization.name, setupUrl, expiresAt: created.invitation.expiresAt });
   return {
     organizationId: created.organization.id, companyName: created.organization.name, slug: created.organization.slug,
