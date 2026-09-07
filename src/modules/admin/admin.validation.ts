@@ -208,7 +208,12 @@ export const auditLogQuerySchema = z.object({
   action: z.string().min(1).max(120).optional(),
   module: z.string().min(1).max(80).optional(),
   dateFilter: z.enum(["day", "month", "year"]).optional(),
-  date: z.string().min(4).max(10).optional()
+  date: z.string().min(4).max(10).optional(),
+  from: z.string().date().optional(),
+  to: z.string().date().optional()
+}).superRefine((value, context) => {
+  if ((value.dateFilter || value.date) && (value.from || value.to)) context.addIssue({ code: z.ZodIssueCode.custom, message: "Use either dateFilter/date or from/to", path: ["from"] });
+  if (value.from && value.to && value.from > value.to) context.addIssue({ code: z.ZodIssueCode.custom, message: "from must be on or before to", path: ["from"] });
 });
 const permissionKeySchema = z.enum(permissions);
 

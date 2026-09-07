@@ -33,6 +33,10 @@ export const initializeQueues = () => {
     "subscription-lifecycle-hourly", { pattern: "0 * * * *", tz: "UTC" },
     { name: "subscription-lifecycle", data: {} }
   ).catch((error) => console.error("[queue:notifications] Could not schedule subscription lifecycle", error));
+  void notificationQueue.upsertJobScheduler(
+    "organization-privacy-hourly", { pattern: "15 * * * *", tz: "UTC" },
+    { name: "organization-privacy", data: {} }
+  ).catch((error) => console.error("[queue:notifications] Could not schedule organization privacy jobs", error));
 
   queues = [notificationQueue];
   queueMap = {

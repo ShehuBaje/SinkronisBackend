@@ -5,6 +5,7 @@ import { asyncHandler } from "../../core/async-handler";
 import { unauthorized } from "../../core/http-error";
 import { processMyPlanLifecycle, processMyPlanRenewalNotifications } from "../admin/admin.service";
 import { snapshotTenantModuleUsage } from "../telemetry/telemetry.service";
+import { expireOrganizationExports, processPendingOrganizationExports } from "../admin/organization-privacy.service";
 
 export const internalRouter = Router();
 
@@ -25,10 +26,12 @@ internalRouter.get(
     const lifecycle = await processMyPlanLifecycle();
     const notifications = await processMyPlanRenewalNotifications(new Date(), ["EMAIL", "IN_APP"]);
     const moduleUsageSnapshot = await snapshotTenantModuleUsage();
+    const organizationExports = await processPendingOrganizationExports();
+    const expiredOrganizationExports = await expireOrganizationExports();
     res.json({
       success: true,
       message: "Subscription lifecycle and renewal notifications processed",
-      data: { lifecycle, notifications, moduleUsageSnapshot, processedAt: new Date().toISOString() }
+      data: { lifecycle, notifications, moduleUsageSnapshot, organizationExports, expiredOrganizationExports, processedAt: new Date().toISOString() }
     });
   })
 );

@@ -1917,7 +1917,14 @@ export const getMyPlanOverview = async (req: Request) => {
   const costBreakdown = buildCostBreakdown(plan, subscription.billingCycle, billingModules);
   const paymentMethod = await getPaymentMethodState(req.organizationId!, organization.email);
   const reminderDate = addDays(subscription.renewalDate, -15);
-  const numberOfEmployees = await prisma.employee.count({ where: { organizationId: req.organizationId! } });
+  const [numberOfEmployees, subscriptionRecord] = await Promise.all([
+    prisma.employee.count({ where: { organizationId: req.organizationId! } }),
+    prisma.systemConfig.findUnique({ where: { organizationId_key: { organizationId: req.organizationId!, key: billingConfigKeys.subscription } }, select: { createdAt: true, value: true } })
+  ]);
+  const subscriptionValue = subscriptionRecord?.value && typeof subscriptionRecord.value === "object" && !Array.isArray(subscriptionRecord.value) ? subscriptionRecord.value as Record<string, unknown> : {};
+  const configuredStart = typeof subscriptionValue.activatedAt === "string" ? new Date(subscriptionValue.activatedAt) : subscriptionRecord?.createdAt ?? null;
+  const subscriptionStart = configuredStart && !Number.isNaN(configuredStart.getTime()) ? configuredStart : null;
+  const currentPeriodStart = addMonths(subscription.renewalDate, subscription.billingCycle === "YEARLY" ? -12 : -1);
   const daysUntilRenewal = Math.max(0, Math.ceil((subscription.renewalDate.getTime() - Date.now()) / 86400000));
   const planIndex = billingPlans.findIndex((item) => item.key === plan.key);
   const hasLowerPlan = planIndex > 0;
@@ -1951,6 +1958,8 @@ export const getMyPlanOverview = async (req: Request) => {
       status: subscription.status,
       monthlyCost: plan.monthlyCost,
       renewalDate: subscription.renewalDate,
+      subscriptionStart,
+      currentBillingPeriod: { start: currentPeriodStart, end: subscription.renewalDate },
       employeeCount: numberOfEmployees,
       activeModuleCount: activeModules.length,
       includedModules: plan.includedModules,
@@ -2703,10 +2712,48 @@ const extractAuditIpAddress = (metadata: unknown) => {
   return typeof value === "string" ? value : null;
 };
 
+const auditDateRangeFromQuery = (query: { dateFilter?: "day" | "month" | "year"; date?: string; from?: string; to?: string }) => {
+  const existing = getAuditDateRange(query.dateFilter, query.date);
+  if (existing) return existing;
+  if (!query.from && !query.to) return null;
+  return {
+    ...(query.from ? { gte: new Date(`${query.from}T00:00:00.000Z`) } : {}),
+    ...(query.to ? { lt: addDays(new Date(`${query.to}T00:00:00.000Z`), 1) } : {})
+  };
+};
+
+export const exportMyPlanBillingHistory = async (req: Request) => {
+  const query = myPlanBillingHistoryQuerySchema.parse(req.query);
+  const selectedYear = query.year ?? new Date().getFullYear();
+  const range = getYearRange(selectedYear);
+  const rows = await prisma.billingHistory.findMany({ where: { organizationId: req.organizationId!, billedAt: { gte: range.start, lt: range.end }, ...(query.status ? { status: query.status } : {}) }, orderBy: { billedAt: "desc" } });
+  const csv = csvDocument(["Date", "Description", "Amount", "Currency", "Status", "Invoice"], rows.map((row) => [row.billedAt, row.description, row.amount.toString(), row.currency, normalizeBillingStatus(row.status), row.providerRef ?? `INV-${row.id.toUpperCase()}`]));
+  await createAuditLog({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "BILLING_HISTORY_EXPORTED", resource: "BILLING_HISTORY", summary: `Exported ${selectedYear} billing history` });
+  return { csv, year: selectedYear };
+};
+
+const csvCell = (value: unknown) => {
+  const raw = value == null ? "" : value instanceof Date ? value.toISOString() : String(value);
+  const safe = /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
+  return `"${safe.replaceAll('"', '""')}"`;
+};
+const csvDocument = (headers: string[], rows: unknown[][]) => `\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
+
+const auditWhereClause = (organizationId: string, query: ReturnType<typeof auditLogQuerySchema.parse>) => {
+  const dateRange = auditDateRangeFromQuery(query);
+  const whereClause: any = { organizationId };
+  if (query.userId && query.userId !== "ALL") whereClause.actorUserId = query.userId;
+  if (query.action && query.action !== "ALL") whereClause.action = query.action;
+  if (query.module && query.module !== "ALL") whereClause.resource = query.module;
+  if (dateRange) whereClause.createdAt = dateRange;
+  if (query.search) whereClause.OR = [{ summary: { contains: query.search } }, { actorUser: { firstName: { contains: query.search } } }, { actorUser: { lastName: { contains: query.search } } }, { actorUser: { email: { contains: query.search } } }];
+  return whereClause;
+};
+
 export const getAuditLogs = async (req: Request) => {
   const query = auditLogQuerySchema.parse(req.query);
   const { skip, take } = getPagination(query);
-  const dateRange = getAuditDateRange(query.dateFilter, query.date);
+  const dateRange = auditDateRangeFromQuery(query);
   const whereClause: any = { organizationId: req.organizationId };
 
   if (query.userId && query.userId !== "ALL") whereClause.actorUserId = query.userId;
@@ -2788,6 +2835,8 @@ export const getAuditLogs = async (req: Request) => {
       selectedModule: query.module ?? "ALL",
       dateFilter: query.dateFilter ?? null,
       date: query.date ?? null,
+      from: query.from ?? null,
+      to: query.to ?? null,
       users: [
         { value: "ALL", label: "All Users" },
         ...users.map((user) => ({
@@ -2813,7 +2862,7 @@ export const getAuditLogs = async (req: Request) => {
     resetAction: {
       method: "GET",
       href: "/admin/audit-log",
-      clears: ["search", "userId", "action", "module", "dateFilter", "date"]
+      clears: ["search", "userId", "action", "module", "dateFilter", "date", "from", "to"]
     },
     pagination: {
       currentPage: query.page,
@@ -2829,6 +2878,14 @@ export const getAuditLogs = async (req: Request) => {
     },
     readOnly: true
   };
+};
+
+export const exportAuditLogs = async (req: Request) => {
+  const query = auditLogQuerySchema.parse(req.query);
+  const logs = await prisma.auditLog.findMany({ where: auditWhereClause(req.organizationId!, query), orderBy: { createdAt: "desc" }, include: { actorUser: { select: { firstName: true, lastName: true, email: true } } } });
+  const csv = csvDocument(["Timestamp", "User", "Action", "Module", "Details", "IP Address"], logs.map((log) => [log.createdAt, log.actorUser ? `${log.actorUser.firstName} ${log.actorUser.lastName}`.trim() || log.actorUser.email : "System", log.action, log.resource, log.summary, extractAuditIpAddress(log.metadata)]));
+  await createAuditLog({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "AUDIT_LOG_EXPORTED", resource: "AUDIT_LOG", summary: "Exported filtered tenant audit log" });
+  return csv;
 };
 
 export const getSystemAlerts = async (organizationId: string) => {
@@ -4868,13 +4925,20 @@ export const getTenantNotificationPreferences = async (organizationId: string, c
   const enabledByCategory = new Map(preferences.map((preference) => [preference.categoryId, preference.enabled]));
   const grouped = new Map<string, typeof categories>();
   for (const category of categories) grouped.set(category.moduleKey, [...(grouped.get(category.moduleKey) ?? []), category]);
+  const entitlementEntries = await Promise.all([...grouped.keys()].map(async (moduleKey) => [moduleKey, await isOrganizationModuleEnabled(organizationId, moduleKey as "hris" | "payroll" | "accounting")] as const));
+  const entitlements = new Map(entitlementEntries);
   return {
     channel: { id: channel.id, key: channel.key, name: channel.name, description: channel.description },
     modules: [...grouped.entries()].map(([moduleKey, moduleCategories]) => {
-      const notifications = moduleCategories.map((category) => ({ notificationId: category.id, categoryKey: category.key, categoryName: category.name, description: category.description, enabled: enabledByCategory.get(category.id) ?? defaultNotificationPreferenceEnabled }));
-      return { moduleKey, moduleName: moduleCategories[0].moduleName, ...deriveNotificationModuleToggleState(notifications.map((notification) => notification.enabled)), notifications };
+      const entitled = entitlements.get(moduleKey) ?? false;
+      const notifications = moduleCategories.map((category) => { const configuredEnabled = enabledByCategory.get(category.id) ?? defaultNotificationPreferenceEnabled; return { notificationId: category.id, categoryKey: category.key, categoryName: category.name, description: category.description, configuredEnabled, enabled: entitled && configuredEnabled }; });
+      return { moduleKey, moduleName: moduleCategories[0].moduleName, entitled, controlsEnabled: entitled, ...deriveNotificationModuleToggleState(notifications.map((notification) => notification.enabled)), notifications };
     })
   };
+};
+
+const assertNotificationModuleEntitled = async (organizationId: string, moduleKey: string) => {
+  if (!await isOrganizationModuleEnabled(organizationId, moduleKey as "hris" | "payroll" | "accounting")) throw conflict("Notification preferences cannot be changed for an unavailable module", { moduleKey });
 };
 
 export const getNotificationsAlertsOverview = async (req: Request) => {
@@ -4889,6 +4953,7 @@ export const getNotificationsAlertsOverview = async (req: Request) => {
 export const toggleTenantNotificationCategory = async (req: Request) => {
   const payload = notificationToggleSchema.parse(req.body);
   const channel = await getNotificationChannel(String(req.params.channelKey));
+  await assertNotificationModuleEntitled(req.organizationId!, String(req.params.moduleKey));
   const category = await prisma.notificationCategory.findFirst({ where: { id: String(req.params.categoryId), moduleKey: String(req.params.moduleKey), isActive: true } });
   if (!category) throw notFound("Notification category not found in the selected module");
   const current = await prisma.tenantNotificationPreference.findUnique({ where: { organizationId_channelId_categoryId: { organizationId: req.organizationId!, channelId: channel.id, categoryId: category.id } } });
@@ -4901,6 +4966,7 @@ export const toggleTenantNotificationCategory = async (req: Request) => {
 export const toggleTenantNotificationModule = async (req: Request) => {
   const payload = notificationToggleSchema.parse(req.body);
   const channel = await getNotificationChannel(String(req.params.channelKey));
+  await assertNotificationModuleEntitled(req.organizationId!, String(req.params.moduleKey));
   const categories = await getNotificationModuleCategories(String(req.params.moduleKey));
   const existing = await prisma.tenantNotificationPreference.findMany({ where: { organizationId: req.organizationId!, channelId: channel.id, categoryId: { in: categories.map((category) => category.id) } } });
   const byCategory = new Map(existing.map((preference) => [preference.categoryId, preference.enabled]));
@@ -5046,7 +5112,7 @@ export const uploadBrandingLogo = async (req: Request) => {
 export const requestOrganizationDataExport = async (req: Request) => {
   const requester = await prisma.user.findFirst({ where: { id: req.user!.id, organizationId: req.organizationId!, isActive: true }, select: { id: true, email: true } });
   if (!requester) throw notFound("Tenant Admin account not found");
-  const duplicate = await prisma.organizationDataExport.findFirst({ where: { organizationId: req.organizationId!, requestedByUserId: requester.id, status: "PENDING_PLATFORM_FULFILLMENT" } });
+  const duplicate = await prisma.organizationDataExport.findFirst({ where: { organizationId: req.organizationId!, requestedByUserId: requester.id, status: { in: ["PENDING_PLATFORM_FULFILLMENT", "PROCESSING"] } } });
   if (duplicate) throw badRequest("A data export request is already awaiting platform fulfilment", { errorCode: "DUPLICATE_EXPORT_REQUEST", exportId: duplicate.id, deliveryDueAt: duplicate.deliveryDueAt });
   const requestedAt = new Date(); const deliveryDueAt = new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000);
   const exportRecord = await prisma.organizationDataExport.create({ data: { organizationId: req.organizationId!, requestedByUserId: requester.id, status: "PENDING_PLATFORM_FULFILLMENT", deliveryEmail: requester.email, deliveryDueAt, requestedAt } });
@@ -5054,8 +5120,14 @@ export const requestOrganizationDataExport = async (req: Request) => {
   return { exportId: exportRecord.id, exportDate: exportRecord.requestedAt, requestedBy: requester.id, exportStatus: exportRecord.status, deliveryEmail: exportRecord.deliveryEmail, deliveryDueAt: exportRecord.deliveryDueAt, deliveryMethod: "OFFICIAL_TENANT_ADMIN_EMAIL", fileSize: null, downloadUrl: null, fileReference: null, message: "The platform administrator will deliver the organization export to the official Tenant Admin email within 24 hours." };
 };
 
+export const getOrganizationDataExportStatus = async (req: Request) => {
+  const record = await prisma.organizationDataExport.findFirst({ where: { id: String(req.params.exportId), organizationId: req.organizationId! }, select: { id: true, status: true, requestedAt: true, processingStartedAt: true, completedAt: true, failedAt: true, deliveredAt: true, deliveryDueAt: true, expiresAt: true, fileName: true, fileSize: true, errorMessage: true } });
+  if (!record) throw notFound("Organization data export not found");
+  return { ...record, downloadAvailable: record.status === "COMPLETED" && Boolean(record.expiresAt && record.expiresAt > new Date()), downloadPath: record.status === "COMPLETED" && record.expiresAt && record.expiresAt > new Date() ? `/admin/general-settings/data-privacy/exports/${record.id}/download` : null };
+};
+
 export const getOrganizationDataExportDownload = async (req: Request) => {
-  const record = await prisma.organizationDataExport.findFirst({ where: { id: String(req.params.exportId), organizationId: req.organizationId!, status: "COMPLETED" } });
+  const record = await prisma.organizationDataExport.findFirst({ where: { id: String(req.params.exportId), organizationId: req.organizationId!, status: "COMPLETED", expiresAt: { gt: new Date() } } });
   if (!record?.fileReference || !record.fileName) throw notFound("Organization data export not found");
   if (!record.fileReference.startsWith("https://") && !record.fileReference.startsWith(`general-settings/exports/${req.organizationId!}/`)) {
     throw badRequest("Invalid export file reference", { errorCode: "INVALID_FILE_REFERENCE" });

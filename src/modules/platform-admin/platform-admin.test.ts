@@ -12,7 +12,7 @@ import {
   suspendPlatformTenantSchema,
   updatePlatformPriceSchema
 } from "./platform-admin.validation";
-import { billingDateFilterSchema, createPlatformInvoiceSchema, invoiceExportQuerySchema, invoiceListQuerySchema, impersonatePlatformUserSchema, platformUsersQuerySchema, platformModuleBulkUpdateSchema, platformModulesQuerySchema, platformAnalyticsQuerySchema, createSupportTicketSchema, supportTicketListQuerySchema, updateResolutionNotesSchema, updateSupportTicketStatusSchema } from "./platform-admin.validation";
+import { billingDateFilterSchema, createPlatformInvoiceSchema, invoiceExportQuerySchema, invoiceListQuerySchema, impersonatePlatformUserSchema, platformUsersQuerySchema, platformModuleBulkUpdateSchema, platformModulesQuerySchema, platformAnalyticsQuerySchema, createSupportTicketSchema, supportTicketListQuerySchema, updateResolutionNotesSchema, updateSupportTicketStatusSchema, organizationDeletionDecisionSchema } from "./platform-admin.validation";
 import { restrictImpersonatedSensitiveActions } from "../../middleware/impersonation.middleware";
 import { annualRecurringRevenue, churnRatePercentage, createPlatformInvoiceNumber, invoiceReminderEligible, sanitizeCsvCell, effectivePlatformUserModules, platformUserRowStatus, moduleUsageTotal, activityScore, calculateDaysInactive, monthKeys, monthlyRecurringEquivalent, isSupportStatusTransitionAllowed } from "./platform-admin.service";
 import { requireEffectiveModuleAccess } from "../../middleware/module-access.middleware";
@@ -74,6 +74,7 @@ test("only the consolidated dashboard plus Platform Tenant management routes are
     "/settings/feature-flags", "/settings/feature-flags/:key",
     "/settings/email-templates", "/settings/email-templates/:key", "/settings/email-templates/:key",
     "/settings/maintenance", "/settings/maintenance",
+    "/privacy/deletion-requests", "/privacy/deletion-requests/:requestId", "/privacy/deletion-requests/:requestId/decision", "/privacy/deletion-requests/:requestId/complete",
     "/tenants", "/tenants", "/tenants/:tenantId",
     "/tenants/:tenantId/overview", "/tenants/:tenantId/users",
     "/tenants/:tenantId/users/:userId/deactivate", "/tenants/:tenantId/users/:userId/reset-password",
@@ -89,6 +90,12 @@ test("only the consolidated dashboard plus Platform Tenant management routes are
   for (const removed of ["/dashboard/analytics", "/dashboard/revenue-trend", "/dashboard/module-adoption", "/dashboard/recent-activity", "/dashboard/tenant-health"]) {
     assert.equal(paths.includes(removed), false);
   }
+});
+
+test("organization deletion review accepts explicit decisions and rejects ambiguous scheduling", () => {
+  assert.equal(organizationDeletionDecisionSchema.safeParse({ decision: "APPROVE", notes: "Verified request", scheduledFor: "2026-09-08T00:00:00.000Z" }).success, true);
+  assert.equal(organizationDeletionDecisionSchema.safeParse({ decision: "REJECT", notes: "Identity mismatch", scheduledFor: "2026-09-08T00:00:00.000Z" }).success, false);
+  assert.equal(organizationDeletionDecisionSchema.safeParse({ decision: "DELETE", notes: "Unsafe" }).success, false);
 });
 
 test("support ticket queries and creation enforce bounded platform enums and input", () => {

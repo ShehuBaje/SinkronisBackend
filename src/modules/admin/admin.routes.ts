@@ -24,9 +24,11 @@ import {
   deleteRoleController,
   getBranchController,
   getAuditLogsController,
+  exportAuditLogsController,
   getDashboardController,
   getModuleSectionController,
   getMyPlanBillingHistoryController,
+  exportMyPlanBillingHistoryController,
   getMyPlanBillingAnalyticsController,
   getMyPlanActiveModulesController,
   getMyPlanOverviewController,
@@ -93,6 +95,7 @@ import {
   updateBrandingSettingsController,
   uploadBrandingLogoController,
   requestOrganizationDataExportController,
+  getOrganizationDataExportStatusController,
   downloadOrganizationDataExportController,
   requestOrganizationDeletionController
 } from "./admin.controller";
@@ -188,6 +191,7 @@ adminRouter.get("/general-settings/branding", authorize("admin:settings:view"), 
 adminRouter.patch("/general-settings/branding", authorize("admin:settings:update"), validate({ body: brandingSettingsSchema }), asyncHandler(updateBrandingSettingsController));
 adminRouter.post("/general-settings/branding/logo", authorize("admin:settings:update"), handleBrandingLogoUpload, asyncHandler(uploadBrandingLogoController));
 adminRouter.post("/general-settings/data-privacy/exports", authorize("admin:settings:export"), asyncHandler(requestOrganizationDataExportController));
+adminRouter.get("/general-settings/data-privacy/exports/:exportId", authorize("admin:settings:export"), validate({ params: generalSettingsExportParamsSchema }), asyncHandler(getOrganizationDataExportStatusController));
 adminRouter.get("/general-settings/data-privacy/exports/:exportId/download", authorize("admin:settings:export"), validate({ params: generalSettingsExportParamsSchema }), asyncHandler(downloadOrganizationDataExportController));
 adminRouter.post("/general-settings/data-privacy/deletion-request", authorize("admin:settings:delete-request"), validate({ body: organizationDeletionRequestSchema }), asyncHandler(requestOrganizationDeletionController));
 
@@ -380,6 +384,13 @@ adminRouter.get(
 );
 
 adminRouter.get(
+  "/my-plan/billing-history/export",
+  authorize("admin:organization:view"),
+  validate({ query: myPlanBillingHistoryQuerySchema }),
+  asyncHandler(exportMyPlanBillingHistoryController)
+);
+
+adminRouter.get(
   "/my-plan/billing-analytics",
   authorize("admin:organization:view"),
   validate({ query: myPlanBillingAnalyticsQuerySchema }),
@@ -458,6 +469,13 @@ adminRouter.get(
   authorize("admin:organization:view"),
   validate({ query: auditLogQuerySchema }),
   asyncHandler(getAuditLogsController)
+);
+
+adminRouter.get(
+  "/audit-log/export",
+  authorize("admin:organization:view"),
+  validate({ query: auditLogQuerySchema }),
+  asyncHandler(exportAuditLogsController)
 );
 
 adminRouter.get("/system-alerts", authorize("admin:organization:view"), asyncHandler(getSystemAlertsController));

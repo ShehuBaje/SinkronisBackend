@@ -29,6 +29,12 @@ const options: swaggerJSDoc.Options = {
       { name: "My Plan" },
       { name: "Notifications & Alerts" },
       { name: "General Settings" },
+      { name: "Tenant Admin - My Plan" },
+      { name: "Tenant Admin - Billing" },
+      { name: "Tenant Admin - Audit Log" },
+      { name: "Tenant Admin - Notifications" },
+      { name: "Tenant Admin - General Settings" },
+      { name: "Platform Admin - Privacy" },
       { name: "Platform Dashboard" },
       { name: "Platform Tenants" },
       { name: "Platform Pricing & Plans" },
@@ -728,11 +734,11 @@ const options: swaggerJSDoc.Options = {
         },
         NotificationCategoryPreference: {
           type: "object", required: ["notificationId", "categoryKey", "categoryName", "description", "enabled"],
-          properties: { notificationId: { type: "string", example: "hris-reminders" }, categoryKey: { type: "string", example: "reminders" }, categoryName: { type: "string", example: "Reminders" }, description: { type: "string" }, enabled: { type: "boolean", example: true } }
+          properties: { notificationId: { type: "string", example: "hris-reminders" }, categoryKey: { type: "string", example: "reminders" }, categoryName: { type: "string", example: "Reminders" }, description: { type: "string" }, enabled: { type: "boolean", description: "Effective state after tenant entitlement is applied." }, configuredEnabled: { type: "boolean", description: "Persisted preference retained while a module is unavailable." } }
         },
         NotificationModulePreference: {
-          type: "object", required: ["moduleKey", "moduleName", "moduleStatus", "toggleAll", "notifications"],
-          properties: { moduleKey: { type: "string", enum: ["hris", "payroll", "accounting"] }, moduleName: { type: "string", example: "HRIS" }, moduleStatus: { type: "string", enum: ["ENABLED", "PARTIAL", "DISABLED"] }, toggleAll: { type: "boolean" }, notifications: { type: "array", items: { $ref: "#/components/schemas/NotificationCategoryPreference" } } }
+          type: "object", required: ["moduleKey", "moduleName", "moduleStatus", "toggleAll", "entitled", "controlsEnabled", "notifications"],
+          properties: { moduleKey: { type: "string", enum: ["hris", "payroll", "accounting"] }, moduleName: { type: "string", example: "HRIS" }, moduleStatus: { type: "string", enum: ["ENABLED", "PARTIAL", "DISABLED"] }, toggleAll: { type: "boolean" }, entitled: { type: "boolean" }, controlsEnabled: { type: "boolean" }, notifications: { type: "array", items: { $ref: "#/components/schemas/NotificationCategoryPreference" } } }
         },
         NotificationPreferenceData: {
           type: "object", required: ["channel", "modules"], properties: { channel: { type: "object", required: ["id", "key", "name"], properties: { id: { type: "string" }, key: { type: "string", enum: ["IN_APP", "EMAIL"] }, name: { type: "string" }, description: { type: "string", nullable: true } } }, modules: { type: "array", items: { $ref: "#/components/schemas/NotificationModulePreference" } } }
@@ -2316,18 +2322,23 @@ const options: swaggerJSDoc.Options = {
         post: { tags: ["General Settings"], summary: "Upload or replace organization logo", description: "Accepts a genuine PNG or safe SVG up to 2 MB. A 200 x 200 pixel minimum is recommended and reported in the response.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "multipart/form-data": { schema: { type: "object", required: ["logo"], properties: { logo: { type: "string", format: "binary", description: "PNG or SVG; maximum 2 MB." } } } } } }, responses: { "200": { description: "Logo stored and previous managed logo removed" }, "400": { description: "Missing, oversized, unsupported, malformed, or unsafe image" }, "403": { description: "Forbidden" } } }
       },
       [`${adminBase}/general-settings/data-privacy/exports`]: {
-        post: { tags: ["General Settings"], summary: "Request organization data export", description: "Creates a tenant-isolated platform fulfilment request for CSV and JSON exports of employees, invoices, expenses/payment requests, attendance, and organization settings. The platform administrator must deliver the archive to the requesting official Tenant Admin email within 24 hours. Duplicate pending requests are rejected. Requires admin:settings:export.", security: [{ bearerAuth: [] }], responses: { "201": { description: "Export request accepted with its delivery deadline", content: { "application/json": { schema: { $ref: "#/components/schemas/OrganizationExportResponse" } } } }, "400": { description: "A request is already pending" }, "403": { description: "Forbidden" } } }
+        post: { tags: ["Tenant Admin - General Settings"], summary: "Request organization data export", description: "Creates a tenant-isolated asynchronous ZIP export job. The worker exports organization settings, users, employees, attendance, invoices, expenses/payment requests, payroll runs, and audit records; stores the archive; notifies the official requester by alert and email; and expires the file after seven days. Requires admin:settings:export.", security: [{ bearerAuth: [] }], responses: { "201": { description: "Export request accepted with its delivery deadline", content: { "application/json": { schema: { $ref: "#/components/schemas/OrganizationExportResponse" } } } }, "400": { description: "A request is already pending" }, "403": { description: "Forbidden" } } }
       },
       [`${adminBase}/general-settings/data-privacy/exports/{exportId}/download`]: {
-        get: { tags: ["General Settings"], summary: "Download a fulfilled owned organization export", description: "Available only after the future platform-admin fulfilment process has prepared the tenant-owned archive; primary delivery is to the official Tenant Admin email.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "exportId", required: true, schema: { type: "string" } }], responses: { "200": { description: "ZIP archive", content: { "application/zip": { schema: { type: "string", format: "binary" } } } }, "403": { description: "Forbidden" }, "404": { description: "Export is pending, does not belong to tenant, or file is unavailable" } } }
+        get: { tags: ["Tenant Admin - General Settings"], summary: "Download a completed unexpired organization export", description: "Returns the authenticated tenant's ZIP only while status is COMPLETED and expiresAt is in the future.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "exportId", required: true, schema: { type: "string" } }], responses: { "200": { description: "ZIP archive", content: { "application/zip": { schema: { type: "string", format: "binary" } } } }, "403": { description: "Forbidden" }, "404": { description: "Export is pending, expired, belongs to another tenant, or file is unavailable" } } }
       },
+      [`${adminBase}/general-settings/data-privacy/exports/{exportId}`]: { get: { tags: ["Tenant Admin - General Settings"], summary: "Get organization export job status", description: "Returns only an export owned by the authenticated tenant, including processing/completion/failure/expiry timestamps and an authenticated download path when available.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "exportId", required: true, schema: { type: "string" } }], responses: { "200": { description: "Export job status" }, "404": { description: "Tenant-owned export not found" } } } },
       [`${adminBase}/general-settings/data-privacy/deletion-request`]: {
         post: { tags: ["General Settings"], summary: "Request permanent organization deletion", description: "Re-authenticates the Tenant Admin and submits a single pending request for future platform-admin approval. This endpoint does not immediately delete tenant data. Requires admin:settings:delete-request.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/OrganizationDeletionRequestBody" }, example: { confirmationPhrase: "DELETE ORGANIZATION", password: "current-password", reason: "Closing this workspace" } } } }, responses: { "201": { description: "Request submitted with PENDING_PLATFORM_APPROVAL status" }, "400": { description: "Invalid phrase, password, or duplicate pending request", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanErrorResponse" } } } }, "403": { description: "Forbidden" } } }
       },
+      [`${platformAdminBase}/privacy/deletion-requests`]: { get: { tags: ["Platform Admin - Privacy"], summary: "List organization deletion requests", security: [{ bearerAuth: [] }], parameters: [{ in: "query", name: "status", schema: { type: "string", enum: ["PENDING_PLATFORM_APPROVAL", "APPROVED", "PROCESSING", "REJECTED", "CANCELLED", "COMPLETED"] } }, { in: "query", name: "page", schema: { type: "integer", minimum: 1 } }, { in: "query", name: "limit", schema: { type: "integer", minimum: 1, maximum: 100 } }], responses: { "200": { description: "Paginated requests" }, "403": { description: "platform:tenants:view required" } } } },
+      [`${platformAdminBase}/privacy/deletion-requests/{requestId}`]: { get: { tags: ["Platform Admin - Privacy"], summary: "Get an organization deletion request", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "requestId", required: true, schema: { type: "string" } }], responses: { "200": { description: "Request details" }, "404": { description: "Not found" } } } },
+      [`${platformAdminBase}/privacy/deletion-requests/{requestId}/decision`]: { post: { tags: ["Platform Admin - Privacy"], summary: "Approve or reject a deletion request", description: "Explicit one-time review command. Approval can schedule processing; it does not immediately delete data.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["decision", "notes"], properties: { decision: { type: "string", enum: ["APPROVE", "REJECT"] }, notes: { type: "string" }, scheduledFor: { type: "string", format: "date-time" } } } } } }, responses: { "200": { description: "Reviewed request" }, "409": { description: "Already reviewed or concurrently changed" } } } },
+      [`${platformAdminBase}/privacy/deletion-requests/{requestId}/complete`]: { post: { tags: ["Platform Admin - Privacy"], summary: "Complete an approved deletion workflow", description: "Archives the workspace, revokes every session, disables users, preserves audit/history for controlled retention and purge, and notifies the tenant.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["notes"], properties: { notes: { type: "string" } } } } } }, responses: { "200": { description: "Completed request" }, "409": { description: "Invalid lifecycle state or scheduled date not reached" } } } },
       [`${adminBase}/notifications-alerts/overview`]: {
         get: {
           tags: ["Notifications & Alerts"], summary: "Get Tenant Admin notifications and alerts overview",
-          description: "Returns independently configured In-App and Email preferences plus the five newest platform announcements.", security: [{ bearerAuth: [] }],
+          description: "Returns independently configured In-App and Email preferences plus the five newest platform announcements. Each module includes entitled and controlsEnabled; unavailable modules return effective enabled=false.", security: [{ bearerAuth: [] }],
           responses: { "200": { description: "Overview retrieved" }, "401": { description: "Authentication required" }, "403": { description: "Tenant Admin permissions required" } }
         }
       },
@@ -2341,10 +2352,10 @@ const options: swaggerJSDoc.Options = {
       [`${adminBase}/notifications-alerts/preferences/{channelKey}/modules/{moduleKey}`]: {
         patch: {
           tags: ["Notifications & Alerts"], summary: "Enable or disable every category in a module atomically",
-          description: "Only the selected channel is changed; preferences in other channels are unaffected.", security: [{ bearerAuth: [] }],
+          description: "Only the selected channel is changed; preferences in other channels are unaffected. Unsubscribed modules cannot be changed.", security: [{ bearerAuth: [] }],
           parameters: [{ in: "path", name: "channelKey", required: true, schema: { type: "string", enum: ["IN_APP", "EMAIL"] } }, { in: "path", name: "moduleKey", required: true, schema: { type: "string", enum: ["hris", "payroll", "accounting"] } }],
           requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationToggleBody" }, example: { enabled: false } } } },
-          responses: { "200": { description: "Module preferences updated", content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationPreferenceResponse" } } } }, "400": { description: "Validation or duplicate operation", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanErrorResponse" } } } }, "403": { description: "Forbidden" }, "404": { description: "Module or channel not found" } }
+          responses: { "200": { description: "Module preferences updated", content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationPreferenceResponse" } } } }, "400": { description: "Validation or duplicate operation", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanErrorResponse" } } } }, "403": { description: "Forbidden" }, "404": { description: "Module or channel not found" }, "409": { description: "Tenant is not entitled to the selected module" } }
         }
       },
       [`${adminBase}/notifications-alerts/preferences/{channelKey}/modules/{moduleKey}/categories/{categoryId}`]: {
@@ -2352,7 +2363,7 @@ const options: swaggerJSDoc.Options = {
           tags: ["Notifications & Alerts"], summary: "Enable or disable one notification category", security: [{ bearerAuth: [] }],
           parameters: [{ in: "path", name: "channelKey", required: true, schema: { type: "string", enum: ["IN_APP", "EMAIL"] } }, { in: "path", name: "moduleKey", required: true, schema: { type: "string", enum: ["hris", "payroll", "accounting"] } }, { in: "path", name: "categoryId", required: true, schema: { type: "string" }, example: "hris-reminders" }],
           requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationToggleBody" } } } },
-          responses: { "200": { description: "Category preference updated", content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationPreferenceResponse" } } } }, "400": { description: "Validation or duplicate operation" }, "403": { description: "Forbidden" }, "404": { description: "Category not found in module" } }
+          responses: { "200": { description: "Category preference updated", content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationPreferenceResponse" } } } }, "400": { description: "Validation or duplicate operation" }, "403": { description: "Forbidden" }, "404": { description: "Category not found in module" }, "409": { description: "Tenant is not entitled to the selected module" } }
         }
       },
       [`${adminBase}/notifications-alerts/announcements`]: {
@@ -2609,6 +2620,15 @@ const options: swaggerJSDoc.Options = {
             "401": { description: "Unauthorized" },
             "403": { description: "Forbidden" }
           }
+        }
+      },
+      [`${adminBase}/my-plan/billing-history/export`]: {
+        get: {
+          tags: ["Tenant Admin - Billing"], summary: "Export filtered tenant billing history as CSV",
+          description: "Uses the same year and status filters as billing history, neutralizes spreadsheet formulas, and records an audit event. Payroll pricing is sourced from the authoritative NGN 10,000/month catalogue value.",
+          security: [{ bearerAuth: [] }],
+          parameters: [{ in: "query", name: "year", schema: { type: "integer", minimum: 2000, maximum: 2100 } }, { in: "query", name: "status", schema: { type: "string", enum: ["paid", "pending", "failed", "cancelled"] } }],
+          responses: { "200": { description: "UTF-8 CSV", content: { "text/csv": { schema: { type: "string", format: "binary" } } } }, "400": { description: "Invalid filter" }, "401": { description: "Authentication required" }, "403": { description: "admin:organization:view required" } }
         }
       },
       [`${adminBase}/my-plan/billing-analytics`]: {
@@ -2932,7 +2952,9 @@ const options: swaggerJSDoc.Options = {
               name: "date",
               description: "Use YYYY-MM-DD for day, YYYY-MM for month, and YYYY for year.",
               schema: { type: "string", example: "2026-07" }
-            }
+            },
+            { in: "query", name: "from", description: "Inclusive UTC calendar date. Cannot be combined with dateFilter/date.", schema: { type: "string", format: "date" } },
+            { in: "query", name: "to", description: "Inclusive UTC calendar date. Cannot be combined with dateFilter/date.", schema: { type: "string", format: "date" } }
           ],
           responses: {
             "200": {
@@ -2943,6 +2965,18 @@ const options: swaggerJSDoc.Options = {
             "401": { description: "Unauthorized" },
             "403": { description: "Forbidden" }
           }
+        }
+      },
+      [`${adminBase}/audit-log/export`]: {
+        get: {
+          tags: ["Tenant Admin - Audit Log"], summary: "Export filtered tenant audit records as CSV",
+          description: "Applies search, user, action, module, and date filters; returns newest first; omits internal hash-chain and metadata fields; neutralizes spreadsheet formulas; and audits the export.",
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { in: "query", name: "search", schema: { type: "string" } }, { in: "query", name: "userId", schema: { type: "string" } }, { in: "query", name: "action", schema: { type: "string" } }, { in: "query", name: "module", schema: { type: "string" } },
+            { in: "query", name: "from", schema: { type: "string", format: "date" } }, { in: "query", name: "to", schema: { type: "string", format: "date" } }
+          ],
+          responses: { "200": { description: "UTF-8 CSV", content: { "text/csv": { schema: { type: "string", format: "binary" } } } }, "400": { description: "Invalid or reversed date range" }, "401": { description: "Authentication required" }, "403": { description: "admin:organization:view required" } }
         }
       },
       [`${adminBase}/organization/work-schedule`]: {

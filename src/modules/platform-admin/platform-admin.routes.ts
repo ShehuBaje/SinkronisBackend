@@ -32,6 +32,7 @@ import {
   ,getPlatformAnalyticsController, sendAtRiskTenantCheckInController
   ,listPlatformSupportTicketsController, getPlatformSupportTicketController, createPlatformSupportTicketController, assignPlatformSupportTicketController, updatePlatformSupportResolutionNotesController, updatePlatformSupportTicketStatusController, resolvePlatformSupportTicketController
   ,getPlatformSettingsController, getPlatformConfigurationController, updatePlatformConfigurationController, getPlatformPasswordPolicyController, updatePlatformPasswordPolicyController, getPlatformFeatureFlagsController, updatePlatformFeatureFlagController, getPlatformEmailTemplatesController, getPlatformEmailTemplateController, updatePlatformEmailTemplateController, getPlatformMaintenanceModeController, updatePlatformMaintenanceModeController
+  ,listOrganizationDeletionRequestsController, getOrganizationDeletionRequestController, decideOrganizationDeletionRequestController, completeOrganizationDeletionRequestController
 } from "./platform-admin.controller";
 import {
   createPlatformTenantSchema,
@@ -56,7 +57,8 @@ import {
   impersonatePlatformUserSchema, platformUserParamsSchema, platformUsersQuerySchema,
   platformModuleActionParamsSchema, platformModuleBulkUpdateSchema, platformModuleReasonSchema, platformModulesQuerySchema, platformModuleTenantParamsSchema,
   analyticsTenantParamsSchema, platformAnalyticsQuerySchema,
-  assignSupportTicketSchema, createSupportTicketSchema, supportTicketListQuerySchema, supportTicketParamsSchema, updateResolutionNotesSchema, updateSupportTicketStatusSchema
+  assignSupportTicketSchema, createSupportTicketSchema, supportTicketListQuerySchema, supportTicketParamsSchema, updateResolutionNotesSchema, updateSupportTicketStatusSchema,
+  organizationDeletionListSchema, organizationDeletionParamsSchema, organizationDeletionDecisionSchema, organizationDeletionCompletionSchema
 } from "./platform-admin.validation";
 
 export const platformAdminRouter = Router();
@@ -120,6 +122,10 @@ platformAdminRouter.get("/settings/email-templates/:key", authorize("platform:se
 platformAdminRouter.patch("/settings/email-templates/:key", authorize("platform:settings:manage"), validate({ params: platformEmailTemplateParamsSchema, body: updatePlatformEmailTemplateSchema }), asyncHandler(updatePlatformEmailTemplateController));
 platformAdminRouter.get("/settings/maintenance", authorize("platform:settings:read"), asyncHandler(getPlatformMaintenanceModeController));
 platformAdminRouter.patch("/settings/maintenance", authorize("platform:settings:manage"), validate({ body: updateMaintenanceModeSchema }), asyncHandler(updatePlatformMaintenanceModeController));
+platformAdminRouter.get("/privacy/deletion-requests", authorize("platform:tenants:view"), validate({ query: organizationDeletionListSchema }), asyncHandler(listOrganizationDeletionRequestsController));
+platformAdminRouter.get("/privacy/deletion-requests/:requestId", authorize("platform:tenants:view"), validate({ params: organizationDeletionParamsSchema }), asyncHandler(getOrganizationDeletionRequestController));
+platformAdminRouter.post("/privacy/deletion-requests/:requestId/decision", authorize("platform:tenants:suspend"), validate({ params: organizationDeletionParamsSchema, body: organizationDeletionDecisionSchema }), asyncHandler(decideOrganizationDeletionRequestController));
+platformAdminRouter.post("/privacy/deletion-requests/:requestId/complete", authorize("platform:tenants:suspend"), validate({ params: organizationDeletionParamsSchema, body: organizationDeletionCompletionSchema }), asyncHandler(completeOrganizationDeletionRequestController));
 platformAdminRouter.post("/tenants", authorize("platform:tenants:create"), validate({ body: createPlatformTenantSchema }), asyncHandler(createPlatformTenantController));
 platformAdminRouter.get("/tenants", authorize("platform:tenants:view"), validate({ query: platformTenantListQuerySchema }), asyncHandler(getPlatformTenantsController));
 platformAdminRouter.get("/tenants/:tenantId", authorize("platform:tenants:view"), validate({ params: platformTenantParamsSchema }), asyncHandler(getPlatformTenantDetailsController));

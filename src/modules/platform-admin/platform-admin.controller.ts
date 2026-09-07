@@ -42,6 +42,12 @@ import {
   updatePlatformEmailTemplate, updatePlatformFeatureFlag, updatePlatformMaintenanceMode, updatePlatformPasswordPolicy
 } from "./platform-admin.service";
 import type { PlatformEmailTemplateKey, PlatformFeatureFlagKey } from "./platform-admin.interface";
+import { completeOrganizationDeletionRequest, decideOrganizationDeletionRequest, getOrganizationDeletionRequest, listOrganizationDeletionRequests } from "./organization-deletion.service";
+
+export const listOrganizationDeletionRequestsController = async (req: Request, res: Response) => { const result = await listOrganizationDeletionRequests(req.query as never); return sendSuccess(res, "Organization deletion requests retrieved", result.data, { pagination: result.pagination }); };
+export const getOrganizationDeletionRequestController = async (req: Request, res: Response) => sendSuccess(res, "Organization deletion request retrieved", await getOrganizationDeletionRequest(String(req.params.requestId)));
+export const decideOrganizationDeletionRequestController = async (req: Request, res: Response) => sendSuccess(res, "Organization deletion request reviewed", await decideOrganizationDeletionRequest(String(req.params.requestId), req.body, req.user!));
+export const completeOrganizationDeletionRequestController = async (req: Request, res: Response) => sendSuccess(res, "Organization deletion request completed", await completeOrganizationDeletionRequest(String(req.params.requestId), req.body, req.user!));
 
 export const getPlatformSettingsController = async (req: Request, res: Response) => sendSuccess(res, "Platform settings retrieved", await getPlatformSettings(req.user!));
 export const getPlatformConfigurationController = async (req: Request, res: Response) => sendSuccess(res, "Platform configuration retrieved", await getPlatformConfiguration(req.user!));

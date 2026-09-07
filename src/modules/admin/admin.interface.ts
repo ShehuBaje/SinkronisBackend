@@ -60,6 +60,7 @@ export interface NotificationCategoryPreference {
   categoryName: string;
   description: string;
   enabled: boolean;
+  configuredEnabled?: boolean;
 }
 
 export interface NotificationModulePreference {
@@ -67,6 +68,8 @@ export interface NotificationModulePreference {
   moduleName: string;
   moduleStatus: NotificationModuleStatus;
   toggleAll: boolean;
+  entitled: boolean;
+  controlsEnabled: boolean;
   notifications: NotificationCategoryPreference[];
 }
 

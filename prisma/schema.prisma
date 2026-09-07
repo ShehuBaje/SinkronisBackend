@@ -1188,46 +1188,54 @@ model PlatformInvoiceReminder {
 }
 
 model OrganizationDataExport {
-  id                String       @id @default(cuid())
-  organizationId    String
-  requestedByUserId String
-  status            String       @default("PENDING_PLATFORM_FULFILLMENT")
-  fileName          String?
-  fileReference     String?
-  fileSize          Int?
-  requestedAt       DateTime     @default(now())
-  completedAt       DateTime?
-  failedAt          DateTime?
-  errorMessage      String?      @db.Text
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-  deliveryEmail     String
-  deliveryDueAt     DateTime
-  deliveredAt       DateTime?
-  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "OrgDataExport_org_fkey")
+  id                  String       @id @default(cuid())
+  organizationId      String
+  requestedByUserId   String
+  status              String       @default("PENDING_PLATFORM_FULFILLMENT")
+  fileName            String?
+  fileReference       String?
+  fileSize            Int?
+  requestedAt         DateTime     @default(now())
+  completedAt         DateTime?
+  failedAt            DateTime?
+  errorMessage        String?      @db.Text
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  deliveryEmail       String
+  deliveryDueAt       DateTime
+  deliveredAt         DateTime?
+  processingStartedAt DateTime?
+  expiresAt           DateTime?
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "OrgDataExport_org_fkey")
 
   @@index([status, deliveryDueAt], map: "OrgDataExport_delivery_due_idx")
+  @@index([status, expiresAt], map: "OrgDataExport_expiry_idx")
   @@index([organizationId, requestedAt], map: "OrgDataExport_org_requested_idx")
   @@index([status, requestedAt], map: "OrgDataExport_status_requested_idx")
   @@map("OrganizationDataExport")
 }
 
 model OrganizationDeletionRequest {
-  id                String       @id @default(cuid())
-  organizationId    String
-  requestedByUserId String
-  status            String       @default("PENDING_PLATFORM_APPROVAL")
-  reason            String?      @db.Text
-  requestedAt       DateTime     @default(now())
-  reviewedAt        DateTime?
-  reviewedByUserId  String?
-  completedAt       DateTime?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "OrgDeletionRequest_org_fkey")
+  id                  String       @id @default(cuid())
+  organizationId      String
+  requestedByUserId   String
+  status              String       @default("PENDING_PLATFORM_APPROVAL")
+  reason              String?      @db.Text
+  requestedAt         DateTime     @default(now())
+  reviewedAt          DateTime?
+  reviewedByUserId    String?
+  reviewNotes         String?      @db.Text
+  scheduledFor        DateTime?
+  processingStartedAt DateTime?
+  failureReason       String?      @db.Text
+  completedAt         DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "OrgDeletionRequest_org_fkey")
 
   @@index([organizationId, status], map: "OrgDeletionRequest_org_status_idx")
   @@index([status, requestedAt], map: "OrgDeletionRequest_status_requested_idx")
+  @@index([status, scheduledFor], map: "OrgDeletionRequest_schedule_idx")
   @@map("OrganizationDeletionRequest")
 }
 

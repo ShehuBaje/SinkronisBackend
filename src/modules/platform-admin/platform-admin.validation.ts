@@ -375,6 +375,11 @@ export const platformModuleBulkUpdateSchema = PlatformModulesValidation2.platfor
 export const platformAnalyticsQuerySchema = PlatformAnalyticsValidation2.platformAnalyticsQuerySchema;
 export const analyticsTenantParamsSchema = PlatformAnalyticsValidation2.analyticsTenantParamsSchema;
 export const pageViewSchema = PlatformAnalyticsValidation2.pageViewSchema;
+export const organizationDeletionStatuses = ["PENDING_PLATFORM_APPROVAL", "APPROVED", "PROCESSING", "REJECTED", "CANCELLED", "COMPLETED"] as const;
+export const organizationDeletionListSchema = z.object({ status: z.enum(organizationDeletionStatuses).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(25) }).strict();
+export const organizationDeletionParamsSchema = z.object({ requestId: z.string().trim().min(1).max(191) }).strict();
+export const organizationDeletionDecisionSchema = z.object({ decision: z.enum(["APPROVE", "REJECT"]), notes: z.string().trim().min(3).max(2000), scheduledFor: z.coerce.date().optional() }).strict().superRefine((value, context) => { if (value.decision === "REJECT" && value.scheduledFor) context.addIssue({ code: z.ZodIssueCode.custom, path: ["scheduledFor"], message: "scheduledFor is only valid when approving" }); });
+export const organizationDeletionCompletionSchema = z.object({ notes: z.string().trim().min(3).max(2000) }).strict();
 export const supportTicketPriorities = PlatformSupportValidation.supportTicketPriorities;
 export const supportTicketStatuses = PlatformSupportValidation.supportTicketStatuses;
 export const supportTicketListQuerySchema = PlatformSupportValidation.supportTicketListQuerySchema;

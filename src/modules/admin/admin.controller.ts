@@ -12,11 +12,13 @@ import {
   deleteUserGroup,
   getBranch,
   getAuditLogs,
+  exportAuditLogs,
   getDashboardData,
   getOrganization,
   getRoleById,
   getModuleSectionData,
   getMyPlanBillingHistory,
+  exportMyPlanBillingHistory,
   getMyPlanBillingAnalytics,
   getMyPlanActiveModules,
   getMyPlanOverview,
@@ -85,6 +87,7 @@ import {
   updateBrandingSettings,
   uploadBrandingLogo,
   requestOrganizationDataExport,
+  getOrganizationDataExportStatus,
   getOrganizationDataExportDownload,
   requestOrganizationDeletion
 } from "./admin.service";
@@ -270,6 +273,11 @@ export const getMyPlanBillingHistoryController = async (req: any, res: any) => {
   sendSuccess(res, "Billing history retrieved.", data.data, { metadata: { section: data.section, year: data.year }, pagination: { page: data.page, limit: data.limit, total: data.total, totalPages: Math.ceil(data.total / data.limit) } });
 };
 
+export const exportMyPlanBillingHistoryController = async (req: any, res: any) => {
+  const result = await exportMyPlanBillingHistory(req);
+  res.status(200).type("text/csv; charset=utf-8").attachment(`billing-history-${result.year}.csv`).send(result.csv);
+};
+
 export const getMyPlanBillingAnalyticsController = async (req: any, res: any) => {
   const data = await getMyPlanBillingAnalytics(req);
   sendSuccess(res, "Billing analytics retrieved.", data);
@@ -301,6 +309,8 @@ export const getPlatformAnnouncementController = async (req: any, res: any) => s
 export const getPlatformAnnouncementLearnMoreController = async (req: any, res: any) => sendSuccess(res, "Announcement content retrieved.", await getPlatformAnnouncementLearnMore(req));
 export const markPlatformAnnouncementReadController = async (req: any, res: any) => sendSuccess(res, "Announcement marked as read.", await markPlatformAnnouncementRead(req));
 export const markAllPlatformAnnouncementsReadController = async (req: any, res: any) => sendSuccess(res, "Announcements marked as read.", await markAllPlatformAnnouncementsRead(req));
+
+export const exportAuditLogsController = async (req: any, res: any) => res.status(200).type("text/csv; charset=utf-8").attachment("audit-log.csv").send(await exportAuditLogs(req));
 
 export const getUserManagementAnalyticsController = async (req: any, res: any) => {
   const analytics = await getUserManagementAnalytics(req);
@@ -469,6 +479,7 @@ export const uploadBrandingLogoController = async (req: any, res: any) =>
 
 export const requestOrganizationDataExportController = async (req: any, res: any) =>
   sendSuccess(res, "Organization data export requested for delivery within 24 hours", await requestOrganizationDataExport(req), { status: 201 });
+export const getOrganizationDataExportStatusController = async (req: any, res: any) => sendSuccess(res, "Organization data export status retrieved", await getOrganizationDataExportStatus(req));
 
 export const downloadOrganizationDataExportController = async (req: any, res: any) => {
   const file = await getOrganizationDataExportDownload(req);

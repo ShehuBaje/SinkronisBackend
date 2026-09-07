@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   brandingSettingsSchema,
+  auditLogQuerySchema,
   localeSettingsSchema,
   myPlanAddCardSchema,
   myPlanChangeSchema,
@@ -36,6 +37,13 @@ test("branding requires a valid update and sanitizes link text", () => {
 test("organization deletion requires the exact phrase, password, and bounded reason", () => {
   assert.equal(organizationDeletionRequestSchema.safeParse({ confirmationPhrase: "DELETE", password: "password123" }).success, false);
   assert.equal(organizationDeletionRequestSchema.safeParse({ confirmationPhrase: "DELETE ORGANIZATION", password: "password123", reason: "Workspace closure" }).success, true);
+});
+
+test("audit log accepts inclusive UI date ranges and rejects conflicting or reversed filters", () => {
+  assert.equal(auditLogQuerySchema.safeParse({ from: "2026-01-01", to: "2026-01-31" }).success, true);
+  assert.equal(auditLogQuerySchema.safeParse({ from: "2026-02-01", to: "2026-01-31" }).success, false);
+  assert.equal(auditLogQuerySchema.safeParse({ from: "2026-01-01", dateFilter: "month", date: "2026-01" }).success, false);
+  assert.equal(auditLogQuerySchema.safeParse({ from: "not-a-date" }).success, false);
 });
 
 const schedule = { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: false, sunday: false, workStartTime: "09:00", workEndTime: "17:00", breakDurationMinutes: 60 };
