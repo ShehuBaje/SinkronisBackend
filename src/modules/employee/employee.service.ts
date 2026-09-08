@@ -304,7 +304,26 @@ export const getEmployeePayslip = async (organizationId: string, user: AuthUser,
 };
 
 const pdfText = (value: unknown) => String(value ?? "").replace(/[^\x20-\x7E]/g, " ").replace(/[\\()]/g, "\\$&");
-export const createPayslipPdf = (lines: string[]) => { const stream = `BT /F1 11 Tf 45 790 Td ${lines.map((line, index) => `${index ? "0 -24 Td " : ""}(${pdfText(line)}) Tj`).join(" ")} ET`; const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>", `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]; let pdf = "%PDF-1.4\n", offset = Buffer.byteLength(pdf); const offsets = [0]; objects.forEach((object, index) => { offsets.push(offset); const part = `${index + 1} 0 obj\n${object}\nendobj\n`; pdf += part; offset += Buffer.byteLength(part); }); const xref = offset; pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((value) => `${String(value).padStart(10, "0")} 00000 n `).join("\n")}\ntrailer << /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`; return Buffer.from(pdf); };
+export const createPayslipPdf = (lines: string[]) => {
+  const pages = Array.from({ length: Math.max(1, Math.ceil(lines.length / 28)) }, (_, index) => lines.slice(index * 28, (index + 1) * 28));
+  const fontId = 3 + pages.length * 2;
+  const pageIds = pages.map((_, index) => 3 + index * 2);
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Pages /Kids [${pageIds.map(id => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`,
+    ...pages.flatMap((page, index) => {
+      const contentId = pageIds[index] + 1;
+      const stream = `BT /F1 10 Tf 40 800 Td ${page.map((line, lineIndex) => `${lineIndex ? "0 -25 Td " : ""}(${pdfText(line)}) Tj`).join(" ")} ET`;
+      return [`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`, `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`];
+    }),
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let pdf = "%PDF-1.4\n", offset = Buffer.byteLength(pdf); const offsets = [0];
+  objects.forEach((object, index) => { offsets.push(offset); const part = `${index + 1} 0 obj\n${object}\nendobj\n`; pdf += part; offset += Buffer.byteLength(part); });
+  const xref = offset; const size = objects.length + 1;
+  pdf += `xref\n0 ${size}\n0000000000 65535 f \n${offsets.slice(1).map(value => `${String(value).padStart(10, "0")} 00000 n `).join("\n")}\ntrailer << /Size ${size} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(pdf);
+};
 
 export const downloadEmployeePayslip = async (organizationId: string, user: AuthUser, payslipId: string) => {
   const context = await employeePayslipContext(organizationId, user); const payslip = await ownedFinalizedPayslip(organizationId, context.employee.id, payslipId); const period = payslipPeriod(payslip.payrollrun.periodStart, context.timeZone); let buffer: Buffer;

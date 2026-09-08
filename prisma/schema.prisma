@@ -27,6 +27,9 @@ model AgentInvitation {
   roleId               String?
   invitedByUserId      String?
   moduleAccess         Json?
+  purpose              String                     @default("WORKSPACE") @db.VarChar(40)
+  fullName             String?
+  phone                String?
   user                 User?                      @relation(fields: [invitedByUserId], references: [id], map: "AgentInvitation_invitedByUserId_fkey")
   organization         Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AgentInvitation_organizationId_fkey")
   role                 Role?                      @relation(fields: [roleId], references: [id], map: "AgentInvitation_roleId_fkey")
@@ -35,6 +38,7 @@ model AgentInvitation {
   @@index([organizationId, roleId], map: "AgentInvitation_organizationId_roleId_idx")
   @@index([organizationId, status], map: "AgentInvitation_organizationId_status_idx")
   @@index([organizationId, deliveryStatus, createdAt], map: "AgentInvitation_org_delivery_idx")
+  @@index([organizationId, purpose, status, expiresAt], map: "AgentInvitation_org_purpose_status_expires_idx")
   @@index([roleId], map: "AgentInvitation_roleId_fkey")
   @@map("AgentInvitation")
 }
@@ -512,20 +516,78 @@ model Branch {
 }
 
 model Client {
-  id             String       @id @default(cuid())
-  organizationId String
-  name           String
-  email          String?
-  phone          String?
-  address        String?      @db.Text
-  taxId          String?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Client_organizationId_fkey")
-  invoice        Invoice[]
+  id              String              @id @default(cuid())
+  organizationId  String
+  name            String
+  email           String?
+  phone           String?
+  address         String?             @db.Text
+  taxId           String?
+  reference       String
+  contactPerson   String?
+  status          String              @default("ACTIVE")
+  archivedAt      DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Client_organizationId_fkey")
+  invoice         Invoice[]
+  projects        AccountingProject[]
+  paymentRequests PaymentRequest[]
 
+  @@unique([organizationId, reference], map: "Client_org_reference_key")
   @@index([organizationId], map: "Client_organizationId_idx")
+  @@index([organizationId, status, createdAt], map: "Client_org_status_created_idx")
   @@map("Client")
+}
+
+model AccountingCatalogueItem {
+  id             String        @id @default(cuid())
+  organizationId String
+  reference      String
+  name           String
+  type           String
+  unitPrice      Decimal       @db.Decimal(14, 2)
+  unit           String
+  description    String?       @db.Text
+  vatApplicable  Boolean       @default(false)
+  status         String        @default("ACTIVE")
+  archivedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingItem_org_fkey")
+  invoiceItems   InvoiceItem[]
+
+  @@unique([organizationId, reference], map: "AccountingItem_org_reference_key")
+  @@index([organizationId, status, createdAt], map: "AccountingItem_org_status_created_idx")
+  @@index([organizationId, name], map: "AccountingItem_org_name_idx")
+  @@map("AccountingCatalogueItem")
+}
+
+model AccountingProject {
+  id              String           @id @default(cuid())
+  organizationId  String
+  reference       String
+  name            String
+  clientId        String
+  assignedAgentId String?
+  value           Decimal          @default(0.00) @db.Decimal(14, 2)
+  startDate       DateTime
+  endDate         DateTime?
+  status          String           @default("ACTIVE")
+  archivedAt      DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingProject_org_fkey")
+  client          Client           @relation(fields: [clientId], references: [id], map: "AccountingProject_client_fkey")
+  assignedAgent   User?            @relation("AccountingProjectAssignedAgent", fields: [assignedAgentId], references: [id], map: "AccountingProject_agent_fkey")
+  invoices        Invoice[]
+  paymentRequests PaymentRequest[]
+
+  @@unique([organizationId, reference], map: "AccountingProject_org_reference_key")
+  @@index([organizationId, status, createdAt], map: "AccountingProject_org_status_created_idx")
+  @@index([organizationId, clientId], map: "AccountingProject_org_client_idx")
+  @@index([assignedAgentId], map: "AccountingProject_agent_idx")
+  @@map("AccountingProject")
 }
 
 model ConductLog {
@@ -726,40 +788,223 @@ model EmployeeStatusHistory {
 }
 
 model Invoice {
-  id             String         @id @default(cuid())
-  organizationId String
-  clientId       String
-  invoiceNo      String
-  issueDate      DateTime
-  dueDate        DateTime?
-  status         invoice_status @default(DRAFT)
-  subtotal       Decimal        @db.Decimal(14, 2)
-  taxAmount      Decimal        @default(0.00) @db.Decimal(14, 2)
-  total          Decimal        @db.Decimal(14, 2)
-  notes          String?        @db.Text
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  client         Client         @relation(fields: [clientId], references: [id], map: "Invoice_clientId_fkey")
-  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Invoice_organizationId_fkey")
-  items          InvoiceItem[]
+  id               String                           @id @default(cuid())
+  organizationId   String
+  clientId         String
+  invoiceNo        String
+  issueDate        DateTime
+  dueDate          DateTime?
+  status           invoice_status                   @default(DRAFT)
+  subtotal         Decimal                          @db.Decimal(14, 2)
+  taxAmount        Decimal                          @default(0.00) @db.Decimal(14, 2)
+  total            Decimal                          @db.Decimal(14, 2)
+  notes            String?                          @db.Text
+  templateSnapshot Json?
+  projectId        String?
+  assignedAgentId  String?
+  sentAt           DateTime?
+  paidAt           DateTime?
+  voidedAt         DateTime?
+  paymentReference String?
+  createdAt        DateTime                         @default(now())
+  updatedAt        DateTime                         @updatedAt
+  client           Client                           @relation(fields: [clientId], references: [id], map: "Invoice_clientId_fkey")
+  organization     Organization                     @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Invoice_organizationId_fkey")
+  items            InvoiceItem[]
+  project          AccountingProject?               @relation(fields: [projectId], references: [id], map: "Invoice_project_fkey")
+  assignedAgent    User?                            @relation("InvoiceAssignedAgent", fields: [assignedAgentId], references: [id], map: "Invoice_agent_fkey")
+  paymentRequests  PaymentRequest[]
+  statusHistory    AccountingInvoiceStatusHistory[]
+  payments         AccountingInvoicePayment[]
 
   @@unique([organizationId, invoiceNo], map: "Invoice_organizationId_invoiceNo_key")
+  @@unique([organizationId, paymentReference], map: "Invoice_org_payment_reference_key")
   @@index([clientId], map: "Invoice_clientId_fkey")
   @@index([organizationId, status], map: "Invoice_organizationId_status_idx")
+  @@index([organizationId, projectId], map: "Invoice_org_project_idx")
+  @@index([assignedAgentId], map: "Invoice_agent_idx")
   @@map("Invoice")
 }
 
 model InvoiceItem {
-  id          String  @id @default(cuid())
-  invoiceId   String
-  description String
-  quantity    Decimal @db.Decimal(12, 2)
-  unitPrice   Decimal @db.Decimal(14, 2)
-  total       Decimal @db.Decimal(14, 2)
-  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade, map: "InvoiceItem_invoiceId_fkey")
+  id              String                   @id @default(cuid())
+  invoiceId       String
+  description     String
+  quantity        Decimal                  @db.Decimal(12, 2)
+  unitPrice       Decimal                  @db.Decimal(14, 2)
+  total           Decimal                  @db.Decimal(14, 2)
+  catalogueItemId String?
+  lineSubtotal    Decimal                  @default(0.00) @db.Decimal(14, 2)
+  vatApplicable   Boolean                  @default(false)
+  vatRate         Decimal                  @default(0.00) @db.Decimal(7, 4)
+  vatAmount       Decimal                  @default(0.00) @db.Decimal(14, 2)
+  invoice         Invoice                  @relation(fields: [invoiceId], references: [id], onDelete: Cascade, map: "InvoiceItem_invoiceId_fkey")
+  catalogueItem   AccountingCatalogueItem? @relation(fields: [catalogueItemId], references: [id], map: "InvoiceItem_catalogue_fkey")
 
   @@index([invoiceId], map: "InvoiceItem_invoiceId_fkey")
+  @@index([catalogueItemId], map: "InvoiceItem_catalogue_idx")
   @@map("InvoiceItem")
+}
+
+model AccountingInvoiceStatusHistory {
+  id             String         @id @default(cuid())
+  organizationId String
+  invoiceId      String
+  status         invoice_status
+  description    String?
+  actorUserId    String?
+  createdAt      DateTime       @default(now())
+  invoice        Invoice        @relation(fields: [invoiceId], references: [id], onDelete: Cascade, map: "AccountingInvoiceHistory_invoice_fkey")
+  actor          User?          @relation("AccountingInvoiceHistoryActor", fields: [actorUserId], references: [id], onDelete: SetNull, map: "AccountingInvoiceHistory_actor_fkey")
+
+  @@index([organizationId, invoiceId, createdAt], map: "AccountingInvoiceHistory_org_invoice_created_idx")
+  @@map("AccountingInvoiceStatusHistory")
+}
+
+model AccountingInvoicePayment {
+  id             String       @id @default(cuid())
+  organizationId String
+  invoiceId      String
+  reference      String
+  amount         Decimal      @db.Decimal(14, 2)
+  paidAt         DateTime
+  recordedById   String?
+  notes          String?      @db.Text
+  createdAt      DateTime     @default(now())
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Restrict, map: "AccountingInvoicePayment_invoice_fkey")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingInvoicePayment_org_fkey")
+  recordedBy     User?        @relation(fields: [recordedById], references: [id], onDelete: SetNull, map: "AccountingInvoicePayment_user_fkey")
+
+  @@unique([organizationId, reference], map: "AccountingInvoicePayment_org_reference_key")
+  @@index([organizationId, invoiceId, paidAt], map: "AccountingInvoicePayment_org_invoice_paid_idx")
+  @@map("AccountingInvoicePayment")
+}
+
+model AccountingReminderConfiguration {
+  id                         String       @id @default(cuid())
+  organizationId             String       @unique(map: "AccountingReminderConfiguration_org_key")
+  upcomingDays               Json
+  overdueIntervals           Json
+  inAppEnabled               Boolean      @default(true)
+  emailEnabled               Boolean      @default(true)
+  automaticRemindersEnabled  Boolean      @default(true)
+  firstReminderDaysBeforeDue Int          @default(7)
+  overdueReminderFrequency   String       @default("EVERY_7_DAYS")
+  updatedByUserId            String?
+  createdAt                  DateTime     @default(now())
+  updatedAt                  DateTime     @updatedAt
+  organization               Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingReminderConfiguration_org_fkey")
+  updatedBy                  User?        @relation(fields: [updatedByUserId], references: [id], onDelete: SetNull, map: "AccountingReminderConfiguration_user_fkey")
+
+  @@map("AccountingReminderConfiguration")
+}
+
+model AccountingExportJob {
+  id                String       @id @default(cuid())
+  organizationId    String
+  requestedByUserId String
+  type              String
+  filters           Json
+  status            String       @default("PENDING")
+  fileName          String?
+  fileReference     String?
+  fileSize          Int?
+  requestedAt       DateTime     @default(now())
+  processingAt      DateTime?
+  completedAt       DateTime?
+  failedAt          DateTime?
+  expiresAt         DateTime?
+  errorMessage      String?      @db.Text
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingExportJob_org_fkey")
+  requestedBy       User         @relation(fields: [requestedByUserId], references: [id], map: "AccountingExportJob_user_fkey")
+
+  @@index([status, requestedAt], map: "AccountingExportJob_status_requested_idx")
+  @@index([status, expiresAt], map: "AccountingExportJob_status_expires_idx")
+  @@index([organizationId, requestedAt], map: "AccountingExportJob_org_requested_idx")
+  @@map("AccountingExportJob")
+}
+
+model AccountingAgentProfile {
+  id             String       @id @default(cuid())
+  organizationId String
+  userId         String       @unique(map: "AccountingAgentProfile_user_key")
+  reference      String
+  phone          String?
+  status         String       @default("ACTIVE")
+  invitedAt      DateTime?
+  deactivatedAt  DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingAgentProfile_org_fkey")
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade, map: "AccountingAgentProfile_user_fkey")
+
+  @@unique([organizationId, userId], map: "AccountingAgentProfile_org_user_key")
+  @@unique([organizationId, reference], map: "AccountingAgentProfile_org_reference_key")
+  @@index([organizationId, status, createdAt], map: "AccountingAgentProfile_org_status_created_idx")
+  @@map("AccountingAgentProfile")
+}
+
+model AccountingExpense {
+  id               String                     @id @default(cuid())
+  organizationId   String
+  reference        String
+  expenseDate      DateTime
+  category         String
+  categoryId       String?
+  description      String                     @db.Text
+  amount           Decimal                    @db.Decimal(14, 2)
+  receiptReference String?
+  status           String                     @default("ACTIVE")
+  loggedByUserId   String
+  voidedAt         DateTime?
+  voidedByUserId   String?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  organization     Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingExpense_org_fkey")
+  loggedBy         User                       @relation("AccountingExpenseLogger", fields: [loggedByUserId], references: [id], map: "AccountingExpense_logger_fkey")
+  voidedBy         User?                      @relation("AccountingExpenseVoider", fields: [voidedByUserId], references: [id], onDelete: SetNull, map: "AccountingExpense_voider_fkey")
+  expenseCategory  AccountingExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: Restrict, map: "AccountingExpense_category_fkey")
+
+  @@unique([organizationId, reference], map: "AccountingExpense_org_reference_key")
+  @@index([organizationId, status, expenseDate], map: "AccountingExpense_org_status_date_idx")
+  @@index([organizationId, category, expenseDate], map: "AccountingExpense_org_category_date_idx")
+  @@index([categoryId], map: "AccountingExpense_category_idx")
+  @@map("AccountingExpense")
+}
+
+model AccountingInvoiceTemplate {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  normalizedName String
+  paymentTerms   String?
+  headerNote     String?      @db.Text
+  footerNote     String?      @db.Text
+  isDefault      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingInvoiceTemplate_org_fkey")
+
+  @@unique([organizationId, normalizedName], map: "AccountingInvoiceTemplate_org_name_key")
+  @@index([organizationId, isDefault], map: "AccountingInvoiceTemplate_org_default_idx")
+  @@map("AccountingInvoiceTemplate")
+}
+
+model AccountingExpenseCategory {
+  id             String              @id @default(cuid())
+  organizationId String
+  reference      String
+  name           String
+  normalizedName String
+  description    String?             @db.Text
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingExpenseCategory_org_fkey")
+  expenses       AccountingExpense[]
+
+  @@unique([organizationId, reference], map: "AccountingExpenseCategory_org_reference_key")
+  @@unique([organizationId, normalizedName], map: "AccountingExpenseCategory_org_name_key")
+  @@map("AccountingExpenseCategory")
 }
 
 model IpAllowlistEntry {
@@ -1020,27 +1265,27 @@ model UserNotification {
 }
 
 model Organization {
-  id                           String                         @id @default(cuid())
+  id                           String                           @id @default(cuid())
   name                         String
-  slug                         String                         @unique(map: "Organization_slug_key")
+  slug                         String                           @unique(map: "Organization_slug_key")
   email                        String?
   phone                        String?
-  address                      String?                        @db.Text
+  address                      String?                          @db.Text
   country                      String?
-  currency                     String                         @default("NGN")
+  currency                     String                           @default("NGN")
   taxId                        String?
-  status                       organization_status            @default(ACTIVE)
-  createdAt                    DateTime                       @default(now())
-  updatedAt                    DateTime                       @updatedAt
+  status                       organization_status              @default(ACTIVE)
+  createdAt                    DateTime                         @default(now())
+  updatedAt                    DateTime                         @updatedAt
   profileImageUrl              String?
   industry                     String?
   cacNumber                    String?
-  registrationAddress          String?                        @db.Text
+  registrationAddress          String?                          @db.Text
   website                      String?
   fiscalYearStart              String?
   companySize                  String?
   suspendedAt                  DateTime?
-  suspensionReason             String?                        @db.Text
+  suspensionReason             String?                          @db.Text
   suspendedByUserId            String?
   agentinvitation              AgentInvitation[]
   announcementReadStatuses     AnnouncementReadStatus[]
@@ -1052,6 +1297,15 @@ model Organization {
   bankDetailsUpdateRequests    BankDetailsUpdateRequest[]
   billingnotification          BillingNotification[]
   branches                     Branch[]
+  accountingCatalogueItems     AccountingCatalogueItem[]
+  accountingProjects           AccountingProject[]
+  accountingAgentProfiles      AccountingAgentProfile[]
+  accountingExpenses           AccountingExpense[]
+  accountingInvoicePayments    AccountingInvoicePayment[]
+  accountingReminderConfig     AccountingReminderConfiguration?
+  accountingExportJobs         AccountingExportJob[]
+  accountingInvoiceTemplates   AccountingInvoiceTemplate[]
+  accountingExpenseCategories  AccountingExpenseCategory[]
   client                       Client[]
   departments                  Department[]
   employees                    Employee[]
@@ -1301,21 +1555,43 @@ model PaymentCard {
 }
 
 model PaymentRequest {
-  id             String                @id @default(cuid())
-  organizationId String
-  title          String
-  vendorName     String?
-  amount         Decimal               @db.Decimal(14, 2)
-  currency       String                @default("NGN")
-  status         paymentrequest_status @default(PENDING)
-  requestedBy    String?
-  approvedBy     String?
-  approvedAt     DateTime?
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
-  organization   Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PaymentRequest_organizationId_fkey")
+  id                    String                @id @default(cuid())
+  organizationId        String
+  title                 String
+  vendorName            String?
+  amount                Decimal               @db.Decimal(14, 2)
+  currency              String                @default("NGN")
+  status                paymentrequest_status @default(PENDING)
+  requestedBy           String?
+  approvedBy            String?
+  approvedAt            DateTime?
+  invoiceId             String?
+  projectId             String?
+  clientId              String?
+  requesterUserId       String?
+  description           String?               @db.Text
+  bankName              String?
+  accountNumber         String?
+  accountName           String?
+  decisionReason        String?               @db.Text
+  declinedBy            String?
+  declinedAt            DateTime?
+  disbursementReference String?
+  disbursedAt           DateTime?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  organization          Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PaymentRequest_organizationId_fkey")
+  invoice               Invoice?              @relation(fields: [invoiceId], references: [id], map: "PaymentRequest_invoice_fkey")
+  project               AccountingProject?    @relation(fields: [projectId], references: [id], map: "PaymentRequest_project_fkey")
+  client                Client?               @relation(fields: [clientId], references: [id], map: "PaymentRequest_client_fkey")
+  requester             User?                 @relation("AccountingPaymentRequester", fields: [requesterUserId], references: [id], onDelete: SetNull, map: "PaymentRequest_requester_fkey")
 
+  @@unique([organizationId, disbursementReference], map: "PaymentRequest_org_disbursement_ref_key")
   @@index([organizationId, status], map: "PaymentRequest_organizationId_status_idx")
+  @@index([organizationId, invoiceId], map: "PaymentRequest_org_invoice_idx")
+  @@index([organizationId, projectId], map: "PaymentRequest_org_project_idx")
+  @@index([organizationId, clientId], map: "PaymentRequest_org_client_idx")
+  @@index([requesterUserId], map: "PaymentRequest_requester_idx")
   @@map("PaymentRequest")
 }
 
@@ -1803,24 +2079,24 @@ model TenantNotificationPreference {
 }
 
 model User {
-  id                                                                                  String                         @id @default(cuid())
+  id                                                                                  String                            @id @default(cuid())
   organizationId                                                                      String
   roleId                                                                              String
-  employeeId                                                                          String?                        @unique(map: "User_employeeId_key")
+  employeeId                                                                          String?                           @unique(map: "User_employeeId_key")
   email                                                                               String
   passwordHash                                                                        String
   firstName                                                                           String
   lastName                                                                            String
-  isActive                                                                            Boolean                        @default(true)
+  isActive                                                                            Boolean                           @default(true)
   lastLoginAt                                                                         DateTime?
-  createdAt                                                                           DateTime                       @default(now())
-  updatedAt                                                                           DateTime                       @updatedAt
+  createdAt                                                                           DateTime                          @default(now())
+  updatedAt                                                                           DateTime                          @updatedAt
   profileImageUrl                                                                     String?
-  failedLoginAttempts                                                                 Int                            @default(0)
+  failedLoginAttempts                                                                 Int                               @default(0)
   lockedUntil                                                                         DateTime?
-  passwordChangedAt                                                                   DateTime                       @default(now())
+  passwordChangedAt                                                                   DateTime                          @default(now())
   passwordResetRequestedAt                                                            DateTime?
-  isPlatformAdmin                                                                     Boolean                        @default(false)
+  isPlatformAdmin                                                                     Boolean                           @default(false)
   moduleAccess                                                                        Json?
   agentinvitation                                                                     AgentInvitation[]
   announcementreadstatus                                                              AnnouncementReadStatus[]
@@ -1829,21 +2105,31 @@ model User {
   authevent                                                                           AuthEvent[]
   ipallowlistentry                                                                    IpAllowlistEntry[]
   passwordresetotp                                                                    PasswordResetOtp[]
-  platformimpersonationsession_platformimpersonationsession_platformAdminUserIdTouser PlatformImpersonationSession[] @relation("platformimpersonationsession_platformAdminUserIdTouser")
-  platformimpersonationsession_platformimpersonationsession_tenantAdminUserIdTouser   PlatformImpersonationSession[] @relation("platformimpersonationsession_tenantAdminUserIdTouser")
+  platformimpersonationsession_platformimpersonationsession_platformAdminUserIdTouser PlatformImpersonationSession[]    @relation("platformimpersonationsession_platformAdminUserIdTouser")
+  platformimpersonationsession_platformimpersonationsession_tenantAdminUserIdTouser   PlatformImpersonationSession[]    @relation("platformimpersonationsession_tenantAdminUserIdTouser")
   securitypolicy                                                                      SecurityPolicy[]
-  assignedSupportTickets                                                              SupportTicket[]                @relation("SupportTicketAssignedTo")
-  resolvedSupportTickets                                                              SupportTicket[]                @relation("SupportTicketResolvedBy")
-  createdSupportTickets                                                               SupportTicket[]                @relation("SupportTicketCreatedBy")
+  assignedSupportTickets                                                              SupportTicket[]                   @relation("SupportTicketAssignedTo")
+  resolvedSupportTickets                                                              SupportTicket[]                   @relation("SupportTicketResolvedBy")
+  createdSupportTickets                                                               SupportTicket[]                   @relation("SupportTicketCreatedBy")
   platformSettings                                                                    PlatformSetting[]
   systemalert                                                                         SystemAlert[]
-  employee                                                                            Employee?                      @relation(fields: [employeeId], references: [id], map: "User_employeeId_fkey")
-  organization                                                                        Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "User_organizationId_fkey")
-  role                                                                                Role                           @relation(fields: [roleId], references: [id], map: "User_roleId_fkey")
+  employee                                                                            Employee?                         @relation(fields: [employeeId], references: [id], map: "User_employeeId_fkey")
+  organization                                                                        Organization                      @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "User_organizationId_fkey")
+  role                                                                                Role                              @relation(fields: [roleId], references: [id], map: "User_roleId_fkey")
   usersession                                                                         UserSession[]
   twoFactor                                                                           UserTwoFactor?
   notifications                                                                       UserNotification[]
   appraisalSignOffs                                                                   AppraisalSignOff[]
+  assignedAccountingProjects                                                          AccountingProject[]               @relation("AccountingProjectAssignedAgent")
+  assignedAccountingInvoices                                                          Invoice[]                         @relation("InvoiceAssignedAgent")
+  accountingAgentProfile                                                              AccountingAgentProfile?
+  accountingInvoiceHistory                                                            AccountingInvoiceStatusHistory[]  @relation("AccountingInvoiceHistoryActor")
+  accountingPaymentRequests                                                           PaymentRequest[]                  @relation("AccountingPaymentRequester")
+  loggedAccountingExpenses                                                            AccountingExpense[]               @relation("AccountingExpenseLogger")
+  voidedAccountingExpenses                                                            AccountingExpense[]               @relation("AccountingExpenseVoider")
+  accountingInvoicePayments                                                           AccountingInvoicePayment[]
+  accountingReminderConfigurations                                                    AccountingReminderConfiguration[]
+  accountingExportJobs                                                                AccountingExportJob[]
 
   @@unique([organizationId, email], map: "User_organizationId_email_key")
   @@index([isPlatformAdmin, isActive], map: "User_isPlatformAdmin_isActive_idx")
@@ -2158,6 +2444,7 @@ enum walletdisbursement_status {
 enum invoice_status {
   DRAFT
   SENT
+  PARTIALLY_PAID
   PAID
   VOID
   OVERDUE

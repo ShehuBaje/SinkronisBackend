@@ -1065,6 +1065,7 @@ export const acceptTenantAdminInvitation = async (input: z.infer<typeof acceptTe
     const consumed = await tx.agentInvitation.updateMany({ where: { id: invitation.id, status: "PENDING", expiresAt: { gt: acceptedAt } }, data: { status: "ACCEPTED", acceptedAt } });
     if (consumed.count !== 1) throw badRequest("Invitation is invalid or expired");
     await tx.user.update({ where: { id: user.id }, data: { passwordHash, passwordChangedAt: acceptedAt, isActive: true } });
+    await tx.accountingAgentProfile.updateMany({ where: { organizationId: invitation.organizationId, userId: user.id }, data: { status: "ACTIVE", deactivatedAt: null } });
     await tx.userSession.updateMany({ where: { organizationId: invitation.organizationId, userId: user.id, revokedAt: null }, data: { revokedAt: acceptedAt, revokeReason: "Tenant invitation password established" } });
   });
   await createAuditLog({ organizationId: invitation.organizationId, actorUserId: user.id, action: "TENANT_ADMIN_INVITATION_ACCEPTED", resource: "INVITATION", resourceId: invitation.id, summary: "Tenant Admin accepted workspace invitation", metadata: { userId: user.id } });

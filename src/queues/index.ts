@@ -37,6 +37,10 @@ export const initializeQueues = () => {
     "organization-privacy-hourly", { pattern: "15 * * * *", tz: "UTC" },
     { name: "organization-privacy", data: {} }
   ).catch((error) => console.error("[queue:notifications] Could not schedule organization privacy jobs", error));
+  void notificationQueue.upsertJobScheduler(
+    "accounting-exports-five-minutes", { pattern: "*/5 * * * *", tz: "UTC" },
+    { name: "accounting-exports", data: {} }
+  ).catch((error) => console.error("[queue:notifications] Could not schedule Accounting exports", error));
 
   queues = [notificationQueue];
   queueMap = {

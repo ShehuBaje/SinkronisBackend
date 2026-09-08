@@ -58,18 +58,31 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
     || operation.includes(" /api/v1/payroll/tax")
     || operation.includes(" /api/v1/payroll/pension")
     || operation.includes(" /api/v1/payroll/reports");
+  const implementedAccounting = (operation: string) => operation === "GET /api/v1/accounting/dashboard"
+    || operation.includes(" /api/v1/accounting/customers")
+    || operation.includes(" /api/v1/accounting/items-services")
+    || operation.includes(" /api/v1/accounting/projects")
+    || operation.includes(" /api/v1/accounting/invoices")
+    || operation.includes(" /api/v1/accounting/agents")
+    || operation.includes(" /api/v1/accounting/payment-requests")
+    || operation.includes(" /api/v1/accounting/expenses")
+    || operation.includes(" /api/v1/accounting/reminders")
+    || operation.includes(" /api/v1/accounting/exports")
+    || operation.includes(" /api/v1/accounting/reports")
+    || operation.includes(" /api/v1/accounting/wallet/")
+    || operation.includes(" /api/v1/accounting/settings/");
   const ignored = (operation: string) =>
     operation === "GET /" ||
     /\/(docs|docs\.json)(\/|$)|favicon/.test(operation) ||
     operation.includes(" /api/v1/internal/") ||
-    operation.includes(" /api/v1/accounting/") ||
+    (operation.includes(" /api/v1/accounting/") && !implementedAccounting(operation)) ||
     (operation.includes(" /api/v1/payroll/") && !implementedPayroll(operation)) ||
     excludedLegacyCrud(operation);
 
   const undocumented = [...runtime].filter((operation) => !documented.has(operation) && !ignored(operation)).sort();
   const stale = [...documented].filter((operation) => !runtime.has(operation)).sort();
   const forbidden = [...documented].filter((operation) =>
-    operation.includes(" /api/v1/accounting/") || (operation.includes(" /api/v1/payroll/") && !implementedPayroll(operation))
+    (operation.includes(" /api/v1/accounting/") && !implementedAccounting(operation)) || (operation.includes(" /api/v1/payroll/") && !implementedPayroll(operation))
   ).sort();
 
   assert.deepEqual(undocumented, [], `Undocumented runtime operations:\n${undocumented.join("\n")}`);

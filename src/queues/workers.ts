@@ -3,6 +3,7 @@ import { redisConnectionOptions } from "../config/redis";
 import { processMyPlanLifecycle, processMyPlanRenewalNotifications } from "../modules/admin/admin.service";
 import { NOTIFICATION_QUEUE_NAME } from "./index";
 import { expireOrganizationExports, processPendingOrganizationExports } from "../modules/admin/organization-privacy.service";
+import { expireAccountingExports, processPendingAccountingExports } from "../modules/accounting/accounting.service";
 
 let workers: Worker[] = [];
 
@@ -17,6 +18,7 @@ export const initializeWorkers = () => {
       if (job.name === "subscription-renewal-reminders") return processMyPlanRenewalNotifications(new Date(), ["EMAIL", "IN_APP"]);
       if (job.name === "subscription-lifecycle") return processMyPlanLifecycle();
       if (job.name === "organization-privacy") return { fulfilled: await processPendingOrganizationExports(), expired: await expireOrganizationExports() };
+      if (job.name === "accounting-exports") return { fulfilled: await processPendingAccountingExports(), expired: await expireAccountingExports() };
       throw new Error(`Unsupported notification job: ${job.name}`);
     },
     { connection: redisConnectionOptions, concurrency: 1 }

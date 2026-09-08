@@ -12,6 +12,7 @@ export interface DeliverUserNotificationInput {
   title: string;
   message: string;
   metadata?: Prisma.InputJsonValue;
+  channelOverrides?: { inApp?: boolean; email?: boolean };
 }
 
 /**
@@ -45,8 +46,8 @@ export const deliverUserNotification = async (input: DeliverUserNotificationInpu
     const channel = channels.find((item) => item.key === key);
     return Boolean(channel) && (preferenceByChannel.get(channel!.id) ?? true);
   };
-  const inAppEnabled = enabled("IN_APP");
-  const emailEnabled = enabled("EMAIL");
+  const inAppEnabled = enabled("IN_APP") && input.channelOverrides?.inApp !== false;
+  const emailEnabled = enabled("EMAIL") && input.channelOverrides?.email !== false;
 
   let notification;
   try {
