@@ -17,6 +17,7 @@ DATABASE_URL=<TiDB connection URL with sslaccept=strict>
 JWT_ACCESS_SECRET=<random secret of at least 24 characters>
 JWT_REFRESH_SECRET=<different random secret of at least 24 characters>
 CORS_ORIGIN=https://<frontend-domain>
+PUBLIC_BASE_URL=https://<backend-domain>
 STORAGE_PROVIDER=vercel-blob
 BLOB_READ_WRITE_TOKEN=<Vercel Blob read/write token>
 RATE_LIMIT_STORE=redis

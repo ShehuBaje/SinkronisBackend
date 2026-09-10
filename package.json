@@ -8,7 +8,7 @@
     "dev:tsx": "tsx watch src/local-server.ts",
     "build": "prisma generate && tsc",
     "postinstall": "prisma generate",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "cross-env NODE_ENV=test tsx --test src/**/*.test.ts",
     "start": "node dist/src/local-server.js",
     "lint": "eslint \"src/**/*.ts\"",
     "prisma:generate": "prisma generate",
@@ -60,6 +60,7 @@
     "@types/swagger-jsdoc": "^6.0.4",
     "@typescript-eslint/eslint-plugin": "^8.15.0",
     "@typescript-eslint/parser": "^8.15.0",
+    "cross-env": "^10.1.0",
     "eslint": "^9.15.0",
     "nodemon": "^3.1.11",
     "prisma": "^5.22.0",
@@ -69,5 +70,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "overrides": {
+    "qs": "6.16.0"
   }
 }

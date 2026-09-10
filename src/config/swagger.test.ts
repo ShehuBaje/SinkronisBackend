@@ -96,3 +96,23 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
   assert.equal(documented.has("PATCH /api/v1/hris/leaves/{}/approve"), true);
   assert.equal(documented.has("PATCH /api/v1/hris/leaves/{}/reject"), true);
 });
+
+test("HRIS appraisal mutations publish their complete frontend contract", () => {
+  const paths = (openApiSpec as any).paths;
+  const bodyOperations = [
+    ["/api/v1/hris/appraisals/cycles", "post"],
+    ["/api/v1/hris/appraisals/{appraisalId}/goals", "post"],
+    ["/api/v1/hris/appraisals/{appraisalId}/goals/{goalId}", "patch"],
+    ["/api/v1/hris/appraisals/{appraisalId}/self-assessment", "post"],
+    ["/api/v1/hris/appraisals/{appraisalId}/manager-review", "post"],
+    ["/api/v1/hris/appraisals/{appraisalId}/hr-approval", "post"]
+  ];
+  for (const [path, method] of bodyOperations) {
+    assert.equal(paths[path][method].requestBody.required, true, `${method.toUpperCase()} ${path} must document its required JSON body`);
+    assert.ok(paths[path][method].requestBody.content["application/json"].schema);
+  }
+  for (const path of ["/api/v1/hris/appraisals/cycles/{cycleId}/launch", "/api/v1/hris/appraisals/cycles/{cycleId}/complete", "/api/v1/hris/appraisals/{appraisalId}/goals/complete"]) {
+    assert.equal(paths[path].post.requestBody, undefined, `POST ${path} is an action command and must remain bodyless`);
+    assert.ok(paths[path].post.parameters.some((parameter: any) => parameter.in === "path" && parameter.required));
+  }
+});

@@ -19,7 +19,10 @@ const allowedMimeTypes = new Set([
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: env.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024
+    fileSize: env.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024,
+    files: 1,
+    fields: 5,
+    parts: 6
   },
   fileFilter: (_req, file, callback) => {
     if (!allowedMimeTypes.has(file.mimetype)) {
@@ -53,6 +56,17 @@ mediaRouter.post("/upload", (req, res, next) => {
 
     if (!req.file) {
       next(badRequest("Image file is required"));
+      return;
+    }
+
+    const buffer = req.file.buffer;
+    const jpeg = buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    const png = buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const webp = buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP";
+    const gif = buffer.length >= 6 && ["GIF87a", "GIF89a"].includes(buffer.subarray(0, 6).toString("ascii"));
+    const contentMatches = req.file.mimetype === "image/jpeg" || req.file.mimetype === "image/jpg" ? jpeg : req.file.mimetype === "image/png" ? png : req.file.mimetype === "image/webp" ? webp : req.file.mimetype === "image/gif" ? gif : false;
+    if (!contentMatches) {
+      next(badRequest("Image content does not match its declared type"));
       return;
     }
 

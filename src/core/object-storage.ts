@@ -12,6 +12,9 @@ type UploadInput = {
   publicBaseUrl?: string;
 };
 
+const MAX_REMOTE_OBJECT_BYTES = 25 * 1024 * 1024;
+const isAllowedBlobHost = (hostname: string) => hostname === "blob.vercel-storage.com" || hostname.endsWith(".blob.vercel-storage.com");
+
 const normalizeKey = (key: string) => key.replace(/\\/g, "/").replace(/^\/+/, "");
 const localRoot = path.resolve(process.cwd(), env.UPLOAD_DIR);
 
@@ -28,7 +31,7 @@ export const createObjectKey = (prefix: string, originalName: string) => {
   return `${normalizeKey(prefix)}/${Date.now()}-${crypto.randomUUID()}${extension}`;
 };
 
-export const uploadObject = async ({ key, body, contentType, publicBaseUrl }: UploadInput) => {
+export const uploadObject = async ({ key, body, contentType, publicBaseUrl: _publicBaseUrl }: UploadInput) => {
   const normalizedKey = normalizeKey(key);
   if (env.STORAGE_PROVIDER === "vercel-blob") {
     const blob = await put(normalizedKey, body, {
@@ -44,9 +47,10 @@ export const uploadObject = async ({ key, body, contentType, publicBaseUrl }: Up
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, body);
   const publicPath = `${env.UPLOAD_PUBLIC_BASE_PATH}/${normalizedKey}`;
+  const canonicalBaseUrl = env.PUBLIC_BASE_URL?.replace(/\/$/, "");
   return {
     key: normalizedKey,
-    url: publicBaseUrl ? `${publicBaseUrl}${publicPath}` : publicPath,
+    url: canonicalBaseUrl ? `${canonicalBaseUrl}${publicPath}` : publicPath,
     size: body.length
   };
 };
@@ -64,9 +68,27 @@ export const deleteObject = async (reference: string | null | undefined) => {
 
 export const readObject = async (reference: string) => {
   if (reference.startsWith("https://") || reference.startsWith("http://")) {
-    const response = await fetch(reference);
+    const url = new URL(reference);
+    if (url.protocol !== "https:" || !isAllowedBlobHost(url.hostname)) throw notFound("Stored file is no longer available");
+    const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw notFound("Stored file is no longer available");
-    return Buffer.from(await response.arrayBuffer());
+    const declaredLength = Number(response.headers.get("content-length") ?? 0);
+    if (declaredLength > MAX_REMOTE_OBJECT_BYTES) throw notFound("Stored file exceeds the download limit");
+    if (!response.body) throw notFound("Stored file is no longer available");
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > MAX_REMOTE_OBJECT_BYTES) {
+        await reader.cancel();
+        throw notFound("Stored file exceeds the download limit");
+      }
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, received);
   }
   try {
     return await fs.readFile(resolveLocalPath(reference));

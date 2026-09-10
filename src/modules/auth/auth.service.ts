@@ -722,16 +722,10 @@ export const login = async (
 
   const passwordOk = await bcrypt.compare(input.password, user.passwordHash);
   if (!passwordOk) {
-    const nextAttempts = ((user as any).failedLoginAttempts ?? 0) + 1;
-    const shouldLock = nextAttempts >= securityPolicy.lockoutMaxAttempts;
-
-    await prismaAny.user.update({
-      where: { id: user.id },
-      data: {
-        failedLoginAttempts: shouldLock ? 0 : nextAttempts,
-        lockedUntil: shouldLock ? new Date(Date.now() + 15 * 60 * 1000) : null
-      } as any
-    });
+    await prismaAny.user.updateMany({ where: { id: user.id, OR: [{ lockedUntil: null }, { lockedUntil: { lte: new Date() } }] }, data: { failedLoginAttempts: { increment: 1 }, lockedUntil: null } });
+    const failedState = await prismaAny.user.findUnique({ where: { id: user.id }, select: { failedLoginAttempts: true } });
+    const shouldLock = (failedState?.failedLoginAttempts ?? 0) >= securityPolicy.lockoutMaxAttempts;
+    if (shouldLock) await prismaAny.user.updateMany({ where: { id: user.id, lockedUntil: null }, data: { failedLoginAttempts: 0, lockedUntil: new Date(Date.now() + 15 * 60 * 1000) } });
 
     await logAuthEvent({
       organizationId: user.organizationId,
@@ -904,8 +898,14 @@ export const login = async (
 export const forgotPassword = async (input: z.infer<typeof forgotPasswordSchema>) => {
   const user = await resolveUserByEmailAndOrganization(input.email, input.organizationSlug);
   if (!user || !user.isActive || user.organization.status !== "ACTIVE") {
-    throw badRequest("No active account found for the supplied email");
+    return { message: "If an active account matches those details, an OTP has been sent", expiresInSeconds: RESET_OTP_TTL_MINUTES * 60 };
   }
+
+  const recent = await prisma.passwordResetOtp.findFirst({
+    where: { userId: user.id, consumedAt: null, createdAt: { gt: new Date(Date.now() - 60_000) } },
+    select: { id: true }
+  });
+  if (recent) return { message: "If an active account matches those details, an OTP has been sent", expiresInSeconds: RESET_OTP_TTL_MINUTES * 60 };
 
   const otp = generateSixDigitOtp();
   const codeHash = await bcrypt.hash(otp, 10);
@@ -931,15 +931,15 @@ export const forgotPassword = async (input: z.infer<typeof forgotPasswordSchema>
     });
   });
 
-  await sendPasswordResetOtpEmail({
-    to: user.email,
-    otp,
-    expiresInMinutes: RESET_OTP_TTL_MINUTES,
-    organizationName: user.organization.name
-  });
+  try {
+    await sendPasswordResetOtpEmail({ to: user.email, otp, expiresInMinutes: RESET_OTP_TTL_MINUTES, organizationName: user.organization.name });
+  } catch (error) {
+    await prisma.passwordResetOtp.updateMany({ where: { userId: user.id, consumedAt: null }, data: { consumedAt: new Date() } });
+    throw error;
+  }
 
   return {
-    message: "OTP sent successfully",
+    message: "If an active account matches those details, an OTP has been sent",
     expiresInSeconds: RESET_OTP_TTL_MINUTES * 60
   };
 };
@@ -972,21 +972,22 @@ export const verifyResetOtp = async (input: z.infer<typeof verifyResetOtpSchema>
 
   const isMatch = await bcrypt.compare(input.otp, otpRecord.codeHash);
   if (!isMatch) {
-    await prisma.passwordResetOtp.update({
-      where: { id: otpRecord.id },
+    await prisma.passwordResetOtp.updateMany({
+      where: { id: otpRecord.id, consumedAt: null, attempts: { lt: RESET_OTP_MAX_ATTEMPTS } },
       data: { attempts: { increment: 1 } }
     });
     throw badRequest("OTP is invalid or has expired");
   }
 
-  const verifiedOtp = await prisma.passwordResetOtp.update({
-    where: { id: otpRecord.id },
+  const verified = await prisma.passwordResetOtp.updateMany({
+    where: { id: otpRecord.id, consumedAt: null, verifiedAt: null, attempts: { lt: RESET_OTP_MAX_ATTEMPTS }, expiresAt: { gt: new Date() } },
     data: { verifiedAt: new Date() }
   });
+  if (verified.count !== 1) throw badRequest("OTP is invalid or has expired");
 
   return {
     message: "OTP verified successfully",
-    resetToken: signPasswordResetToken({ userId: user.id, otpId: verifiedOtp.id })
+    resetToken: signPasswordResetToken({ userId: user.id, otpId: otpRecord.id })
   };
 };
 
@@ -1032,20 +1033,17 @@ export const resetPassword = async (input: z.infer<typeof resetPasswordSchema>) 
   const passwordHash = await bcrypt.hash(input.password, 12);
 
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const claimed = await tx.passwordResetOtp.updateMany({
+      where: { id: otpId, userId, consumedAt: null, verifiedAt: { not: null }, expiresAt: { gt: new Date() } },
+      data: { consumedAt: new Date() }
+    });
+    if (claimed.count !== 1) throw badRequest("Reset token is invalid or expired");
     await tx.user.update({
       where: { id: userId },
       data: { passwordHash, passwordChangedAt: new Date() }
     });
 
-    await tx.passwordResetOtp.updateMany({
-      where: {
-        userId,
-        consumedAt: null
-      },
-      data: {
-        consumedAt: new Date()
-      }
-    });
+    await tx.passwordResetOtp.updateMany({ where: { userId, consumedAt: null }, data: { consumedAt: new Date() } });
   });
 
   return {
@@ -1340,17 +1338,18 @@ export const verifyLoginTwoFactor = async (
   }
 
   if (!valid) {
-    await prismaAny.authChallenge.update({
-      where: { id: challenge.id },
+    await prismaAny.authChallenge.updateMany({
+      where: { id: challenge.id, consumedAt: null, attempts: { lt: challenge.maxAttempts } },
       data: { attempts: { increment: 1 } }
     });
     throw badRequest("Invalid verification code");
   }
 
-  await prismaAny.authChallenge.update({
-    where: { id: challenge.id },
+  const consumed = await prismaAny.authChallenge.updateMany({
+    where: { id: challenge.id, consumedAt: null, attempts: { lt: challenge.maxAttempts }, expiresAt: { gt: new Date() } },
     data: { consumedAt: new Date() }
   });
+  if (consumed.count !== 1) throw badRequest("2FA challenge has already been used or expired");
 
   const user = await prisma.user.findFirst({
     where: {

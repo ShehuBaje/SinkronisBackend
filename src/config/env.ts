@@ -38,6 +38,7 @@ const envSchema = z.object({
     .transform((value) => value === "true"),
   CORS_ORIGIN: z.string().default("*"),
   FRONTEND_URL: z.string().url().optional(),
+  PUBLIC_BASE_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   PAYSTACK_SECRET_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^sk_(test|live)_[A-Za-z0-9]+$/).optional()),
   PAYSTACK_PUBLIC_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^pk_(test|live)_[A-Za-z0-9]+$/).optional()),
   PAYSTACK_CALLBACK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
@@ -58,6 +59,9 @@ const envSchema = z.object({
   }
   if (!value.CRON_SECRET) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["CRON_SECRET"], message: "CRON_SECRET is required in production" });
+  }
+  if (!value.PUBLIC_BASE_URL) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["PUBLIC_BASE_URL"], message: "PUBLIC_BASE_URL is required in production" });
   }
   if (value.RATE_LIMIT_STORE !== "redis") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["RATE_LIMIT_STORE"], message: "Distributed Redis rate limiting is required in production" });

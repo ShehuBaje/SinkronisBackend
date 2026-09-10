@@ -1,4 +1,8 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
+import { RedisStore } from "rate-limit-redis";
+import { env } from "../../config/env";
+import { redis } from "../../config/redis";
 import { asyncHandler } from "../../core/async-handler";
 import { validate } from "../../core/validate";
 import { authenticate } from "../../middleware/auth.middleware";
@@ -36,6 +40,13 @@ import {
 
 export const authRouter = Router();
 
+const limiterStore = (prefix: string) => env.RATE_LIMIT_STORE === "redis" ? new RedisStore({
+  sendCommand: async (...args: string[]) => redis.call(args[0], ...args.slice(1)) as never,
+  prefix
+}) : undefined;
+const authenticationAttemptLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false, store: limiterStore("sinkronis:auth-attempt:") });
+const passwordRecoveryLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: true, legacyHeaders: false, store: limiterStore("sinkronis:password-recovery:") });
+
 authRouter.post(
   "/register",
   validate({ body: registerOrganizationSchema }),
@@ -48,6 +59,7 @@ authRouter.post("/tenant-invitations/accept", validate({ body: acceptTenantInvit
 
 authRouter.post(
   "/login",
+  authenticationAttemptLimit,
   validate({ body: loginSchema }),
   asyncHandler(loginController)
 );
@@ -60,6 +72,7 @@ authRouter.post(
 
 authRouter.post(
   "/login/2fa/verify",
+  authenticationAttemptLimit,
   validate({ body: verifyLoginTwoFactorSchema }),
   asyncHandler(verifyLoginTwoFactorController)
 );
@@ -96,24 +109,28 @@ authRouter.put(
 
 authRouter.post(
   "/forgot-password",
+  passwordRecoveryLimit,
   validate({ body: forgotPasswordSchema }),
   asyncHandler(forgotPasswordController)
 );
 
 authRouter.post(
   "/forgot-password/resend-otp",
+  passwordRecoveryLimit,
   validate({ body: forgotPasswordSchema }),
   asyncHandler(resendPasswordOtpController)
 );
 
 authRouter.post(
   "/forgot-password/verify-otp",
+  authenticationAttemptLimit,
   validate({ body: verifyResetOtpSchema }),
   asyncHandler(verifyResetOtpController)
 );
 
 authRouter.post(
   "/reset-password",
+  authenticationAttemptLimit,
   validate({ body: resetPasswordSchema }),
   asyncHandler(resetPasswordController)
 );

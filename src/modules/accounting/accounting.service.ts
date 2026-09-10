@@ -1333,37 +1333,28 @@ export const recordInvoicePayment = async (
   input: InvoicePaymentInput,
   user: AuthUser,
 ) => {
-  const current = await invoiceOwned(organizationId, id);
-  const existing = await prisma.accountingInvoicePayment.findFirst({
-    where: { organizationId, reference: input.reference },
-  });
-  if (existing) {
-    if (existing.invoiceId === id) return getInvoiceById(organizationId, id);
-    throw conflict("Payment reference has already been used");
-  }
-  if (
-    !["SENT", "PARTIALLY_PAID", "OVERDUE"].includes(
-      accountingInvoiceDisplayStatus(current.status, current.dueDate),
-    )
-  )
-    throw conflict(
-      "Only sent, partially paid, or overdue invoices can receive payment",
-    );
-  const alreadyPaid = current.payments.reduce(
-    (sum, payment) => sum.add(payment.amount),
-    zero(),
-  );
   const paymentAmount = new Prisma.Decimal(input.amount);
-  const balance = invoiceReceivable(current).sub(alreadyPaid);
-  if (paymentAmount.gt(balance))
-    throw conflict("Payment amount cannot exceed the invoice balance");
   const paidAt = input.paidAt ?? new Date();
-  const nextStatus = paymentAmount.equals(balance)
-    ? ("PAID" as const)
-    : ("PARTIALLY_PAID" as const);
+  let outcome: { invoiceNo: string; nextStatus: "PAID" | "PARTIALLY_PAID"; replay: boolean };
   try {
-    await prisma.$transaction([
-      prisma.accountingInvoicePayment.create({
+    outcome = await prisma.$transaction(async (tx) => {
+      const existing = await tx.accountingInvoicePayment.findFirst({ where: { organizationId, reference: input.reference } });
+      if (existing) {
+        if (existing.invoiceId !== id) throw conflict("Payment reference has already been used");
+        const replayInvoice = await tx.invoice.findFirst({ where: { id, organizationId }, select: { invoiceNo: true, status: true } });
+        if (!replayInvoice) throw notFound("Invoice not found");
+        return { invoiceNo: replayInvoice.invoiceNo, nextStatus: replayInvoice.status === "PAID" ? "PAID" as const : "PARTIALLY_PAID" as const, replay: true };
+      }
+      const current = await tx.invoice.findFirst({ where: { id, organizationId }, include: { payments: { select: { amount: true } } } });
+      if (!current) throw notFound("Invoice not found");
+      if (!["SENT", "PARTIALLY_PAID", "OVERDUE"].includes(accountingInvoiceDisplayStatus(current.status, current.dueDate))) {
+        throw conflict("Only sent, partially paid, or overdue invoices can receive payment");
+      }
+      const alreadyPaid = current.payments.reduce((sum, payment) => sum.add(payment.amount), zero());
+      const balance = invoiceReceivable(current).sub(alreadyPaid);
+      if (paymentAmount.gt(balance)) throw conflict("Payment amount cannot exceed the invoice balance");
+      const nextStatus = paymentAmount.equals(balance) ? "PAID" as const : "PARTIALLY_PAID" as const;
+      await tx.accountingInvoicePayment.create({
         data: {
           organizationId,
           invoiceId: id,
@@ -1373,16 +1364,16 @@ export const recordInvoicePayment = async (
           notes: input.notes,
           recordedById: user.id,
         },
-      }),
-      prisma.invoice.update({
+      });
+      await tx.invoice.update({
         where: { id },
         data: {
           status: nextStatus,
           paidAt: nextStatus === "PAID" ? paidAt : null,
           paymentReference: nextStatus === "PAID" ? input.reference : null,
         },
-      }),
-      prisma.accountingInvoiceStatusHistory.create({
+      });
+      await tx.accountingInvoiceStatusHistory.create({
         data: {
           organizationId,
           invoiceId: id,
@@ -1390,8 +1381,9 @@ export const recordInvoicePayment = async (
           actorUserId: user.id,
           description: `${nextStatus === "PAID" ? "Final" : "Partial"} payment ${input.reference} recorded`,
         },
-      }),
-    ]);
+      });
+      return { invoiceNo: current.invoiceNo, nextStatus, replay: false };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -1400,17 +1392,18 @@ export const recordInvoicePayment = async (
       throw conflict("Payment reference has already been used");
     throw error;
   }
+  if (outcome.replay) return getInvoiceById(organizationId, id);
   await audit(
     organizationId,
     user,
     "ACCOUNTING_INVOICE_PAYMENT_RECORDED",
     "INVOICE",
     id,
-    `Recorded ${nextStatus === "PAID" ? "final" : "partial"} payment for ${current.invoiceNo}`,
+    `Recorded ${outcome.nextStatus === "PAID" ? "final" : "partial"} payment for ${outcome.invoiceNo}`,
     {
       paymentReference: input.reference,
       amount: input.amount,
-      status: nextStatus,
+      status: outcome.nextStatus,
     },
   );
   return getInvoiceById(organizationId, id);
@@ -2048,10 +2041,12 @@ export const approvePaymentRequest = async (
   const row = await paymentRequestOwned(organizationId, id);
   if (row.status !== "PENDING")
     throw conflict("Only pending payment requests can be approved");
-  const updated = await prisma.paymentRequest.update({
-    where: { id },
+  const claimed = await prisma.paymentRequest.updateMany({
+    where: { id, organizationId, status: "PENDING" },
     data: { status: "APPROVED", approvedBy: user.id, approvedAt: new Date() },
   });
+  if (claimed.count !== 1) throw conflict("Payment request has already been decided");
+  const updated = await paymentRequestOwned(organizationId, id);
   await audit(
     organizationId,
     user,
@@ -2071,8 +2066,8 @@ export const declinePaymentRequest = async (
   const row = await paymentRequestOwned(organizationId, id);
   if (row.status !== "PENDING")
     throw conflict("Only pending payment requests can be declined");
-  const updated = await prisma.paymentRequest.update({
-    where: { id },
+  const claimed = await prisma.paymentRequest.updateMany({
+    where: { id, organizationId, status: "PENDING" },
     data: {
       status: "REJECTED",
       declinedBy: user.id,
@@ -2080,6 +2075,8 @@ export const declinePaymentRequest = async (
       decisionReason: input.reason,
     },
   });
+  if (claimed.count !== 1) throw conflict("Payment request has already been decided");
+  const updated = await paymentRequestOwned(organizationId, id);
   await audit(
     organizationId,
     user,

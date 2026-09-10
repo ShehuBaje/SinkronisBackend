@@ -17,7 +17,7 @@ export const errorMiddleware: ErrorRequestHandler = (error, _req, res, _next) =>
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === "P2002") {
-      return res.status(409).json({ success: false, message: "Unique constraint violation", data: null, errorCode: "CONFLICT", details: error.meta });
+      return res.status(409).json({ success: false, message: "A record with those values already exists", data: null, errorCode: "CONFLICT" });
     }
     if (error.code === "P2025") {
       return res.status(404).json({ success: false, message: "Resource not found", data: null, errorCode: "NOT_FOUND" });
