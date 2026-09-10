@@ -144,6 +144,25 @@ test("appraisal cycle examples follow the documented date and workflow rules", (
   assert.ok(new Date(request.periodFrom) < new Date(request.periodTo));
   assert.ok(new Date(request.periodTo) < new Date(request.submissionDeadline));
   const response = operation.responses["201"].content["application/json"].example;
-  assert.equal(response.status, "DRAFT");
-  assert.equal(response.cycleName, request.cycleName);
+  assert.equal(response.success, true);
+  assert.equal(response.data.status, "DRAFT");
+  assert.equal(response.data.cycleName, request.cycleName);
+});
+
+test("appraisal UI routes publish role, filter, detail, and employee action contracts", () => {
+  const paths = (openApiSpec as any).paths;
+  const list = paths["/api/v1/hris/appraisals"].get;
+  for (const parameter of ["page", "limit", "search", "cycleId", "departmentId", "quarter", "year", "status"]) assert.ok(list.parameters.some((item: any) => item.name === parameter), `missing appraisal filter ${parameter}`);
+  for (const path of ["/api/v1/hris/appraisals/{appraisalId}", "/api/v1/employee/appraisal/{appraisalId}", "/api/v1/employee/appraisal/history/{appraisalId}"]) {
+    const response = paths[path].get.responses["200"].content["application/json"];
+    assert.ok(response.schema, `${path} detail response schema missing`);
+    assert.equal(response.example.data.cycle.name, "Q4 2026 Performance Review");
+    assert.ok(response.example.data.ratingScale.length > 0);
+    assert.ok(response.example.data.workflowHistory.length > 0);
+  }
+  assert.ok(paths["/api/v1/employee/appraisal/{appraisalId}/goals"].post.requestBody.content["application/json"].example.title);
+  assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/goals/confirm"].post.requestBody, undefined);
+  assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/self-assessment/draft"].put.requestBody.content["application/json"].example.sections[0].objectives[0].keyResults[0].achieved, undefined);
+  assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/self-assessment/submit"].post.responses["200"].content["application/json"].example.data.status, "SUBMITTED");
+  assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/acknowledge"].post.responses["200"].content["application/json"].example.data.stage, "COMPLETED");
 });

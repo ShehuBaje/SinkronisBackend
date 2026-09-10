@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { attendanceMetric, calculateLeaveDays, calculateWeightedAssessmentScore, classifyAttendance, inspectEmployeeUpload, mapEmployeeInput, performanceRatingForScore, performanceRatingValueForScore, shiftDateKey, tenantDateKey, trendForDifference, validateAppraisalTemplateConfiguration, zonedDateTimeToUtc } from "./hris.service";
+import { assertCompleteAppraisalSubmission, attendanceMetric, calculateLeaveDays, calculateWeightedAssessmentScore, classifyAttendance, inspectEmployeeUpload, mapEmployeeInput, mergeAppraisalDraft, performanceRatingForScore, performanceRatingValueForScore, shiftDateKey, tenantDateKey, trendForDifference, validateAppraisalTemplateConfiguration, zonedDateTimeToUtc } from "./hris.service";
 import { hrisRouter } from "./hris.routes";
 import { appraisalTemplateBodySchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceLogsQuerySchema, attendanceOverrideSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, createAppraisalCycleSchema, createAttendanceDisputeSchema, createConductQuerySchema, createManagedEmployeeSchema, createSuspensionSchema, employeeDocumentParamsSchema, employeeListQuerySchema, hrApprovalSchema, leaveApproveSchema, leaveDecisionParamsSchema, leaveListQuerySchema, managerReviewSchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, submitSelfAssessmentSchema, updateConductStatusSchema, updateEmployeeStatusSchema } from "./hris.validation";
 
@@ -128,6 +128,23 @@ test("appraisal workflow payloads reject invalid scores, recommendations, and de
   assert.equal(managerReviewSchema.safeParse({ goalRatings: [{ goalId: "goal", rating: 6 }], responses: [], overallFeedback: "Good progress", recommendation: "ON_TRACK" }).success, false);
   assert.equal(hrApprovalSchema.safeParse({ decision: "APPROVED", hrNotes: "Approved" }).success, true);
   assert.equal(hrApprovalSchema.safeParse({ decision: "REJECTED" }).success, false);
+});
+
+test("self-assessment drafts preserve omitted answers and submission requires every configured input", () => {
+  const existing = [{ section: "KRA", totalWeight: 100, objectives: [{ title: "Goal", weight: 100, keyResults: [{ keyResult: "Result", kpiWeight: 100, target: 100, achieved: 80, comment: "Saved earlier" }] }] }];
+  const incoming = [{ section: "KRA", totalWeight: 100, objectives: [{ title: "Goal", weight: 100, keyResults: [{ keyResult: "Result", kpiWeight: 100, target: 100 }] }] }];
+  const merged = mergeAppraisalDraft(incoming, existing);
+  assert.equal(merged[0].objectives[0].keyResults[0].achieved, 80);
+  assert.equal(merged[0].objectives[0].keyResults[0].comment, "Saved earlier");
+  assert.doesNotThrow(() => assertCompleteAppraisalSubmission(merged, [{ questionId: "q1", response: "Delivered" }], [{ id: "q1" }]));
+  assert.throws(() => assertCompleteAppraisalSubmission(incoming, [], [{ id: "q1" }]));
+  assert.throws(() => assertCompleteAppraisalSubmission(merged, [], [{ id: "q1" }]));
+});
+
+test("manager review drafts may be incomplete but submitted reviews may not", () => {
+  assert.equal(managerReviewSchema.safeParse({ goalRatings: [], responses: [], submit: false }).success, true);
+  assert.equal(managerReviewSchema.safeParse({ goalRatings: [], responses: [], submit: true }).success, false);
+  assert.equal(managerReviewSchema.safeParse({ goalRatings: [], responses: [], overallFeedback: "Strong delivery", recommendation: "ON_TRACK", submit: true }).success, true);
 });
 
 test("appraisal templates enforce nested 100 percent weighting and the UI rating scale", () => {

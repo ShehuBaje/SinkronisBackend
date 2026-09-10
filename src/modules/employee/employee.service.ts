@@ -398,6 +398,8 @@ export const getEmployeeAppraisalOverview = async (organizationId: string, user:
   };
 };
 
+export const getEmployeeAppraisalDetail = async (organizationId: string, user: AuthUser, appraisalId: string) => { await employeeAppraisalOwner(organizationId, user.id, appraisalId); return getAppraisalDetail(organizationId, appraisalId, user); };
+
 export const getEmployeeAppraisalGoals = async (organizationId: string, user: AuthUser, appraisalId: string) => {
   await employeeAppraisalOwner(organizationId, user.id, appraisalId);
   const appraisal = await prisma.employeeAppraisal.findFirstOrThrow({ where: { id: appraisalId, organizationId }, include: { goals: { orderBy: { createdAt: "asc" } } } });

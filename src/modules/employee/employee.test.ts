@@ -142,7 +142,7 @@ test("shared HRIS appraisal snapshot rejects employee changes to targets and wei
 
 test("employee appraisal routes are registered in the shared employee module", () => {
   const routes = (employeeRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
-  for (const route of ["GET /appraisal", "GET /appraisal/history", "POST /appraisal/:appraisalId/goals", "POST /appraisal/:appraisalId/goals/confirm", "GET /appraisal/:appraisalId/self-assessment", "PUT /appraisal/:appraisalId/self-assessment/draft", "POST /appraisal/:appraisalId/self-assessment/submit", "POST /appraisal/:appraisalId/acknowledge"]) assert.ok(routes.includes(route), route);
+  for (const route of ["GET /appraisal", "GET /appraisal/history", "GET /appraisal/:appraisalId", "POST /appraisal/:appraisalId/goals", "PATCH /appraisal/:appraisalId/goals/:goalId", "POST /appraisal/:appraisalId/goals/confirm", "GET /appraisal/:appraisalId/self-assessment", "PUT /appraisal/:appraisalId/self-assessment/draft", "POST /appraisal/:appraisalId/self-assessment/submit", "POST /appraisal/:appraisalId/acknowledge"]) assert.ok(routes.includes(route), route);
 });
 
 test("appraisal deadline is inclusive in tenant-local time", () => {
