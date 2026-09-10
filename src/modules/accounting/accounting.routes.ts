@@ -45,9 +45,12 @@ import {
   accountingReportQuerySchema, walletTransactionQuerySchema, manualWalletFundingSchema,
   invoiceTemplateCreateSchema, invoiceTemplateUpdateSchema, expenseCategoryCreateSchema,
   uiReminderSettingsSchema,
+  paystackFundingSchema, paystackReferenceParamsSchema,
 } from "./accounting.validation";
 
 export const accountingRouter = Router();
+export const accountingPaystackWebhookRouter = Router();
+accountingPaystackWebhookRouter.post("/", asyncHandler(controller.paystackWebhookController));
 
 accountingRouter.get(
   "/dashboard",
@@ -350,9 +353,12 @@ accountingRouter.get("/reports", authorize("accounting:invoices:view"), validate
 accountingRouter.get("/reports/export.csv", authorize("accounting:invoices:view"), validate({ query: accountingReportQuerySchema }), asyncHandler(controller.exportAccountingReportCsvController));
 accountingRouter.get("/reports/export.pdf", authorize("accounting:invoices:view"), validate({ query: accountingReportQuerySchema }), asyncHandler(controller.exportAccountingReportPdfController));
 accountingRouter.get("/reports/vat", authorize("accounting:tax:view"), validate({ query: accountingReportQuerySchema }), asyncHandler(controller.getVatReportController));
+accountingRouter.get("/reports/wht", authorize("accounting:tax:view"), validate({ query: accountingReportQuerySchema }), asyncHandler(controller.getWhtReportController));
 accountingRouter.get("/wallet/summary", authorize("accounting:wallets:view"), asyncHandler(controller.getWalletSummaryController));
 accountingRouter.get("/wallet/transactions", authorize("accounting:wallets:view"), validate({ query: walletTransactionQuerySchema }), asyncHandler(controller.listWalletTransactionsController));
 accountingRouter.post("/wallet/manual-funding", authorize("accounting:wallets:update"), validate({ body: manualWalletFundingSchema }), asyncHandler(controller.fundWalletManuallyController));
+accountingRouter.post("/wallet/paystack/initialize", authorize("accounting:wallets:update"), validate({ body: paystackFundingSchema }), asyncHandler(controller.initializePaystackWalletFundingController));
+accountingRouter.get("/wallet/paystack/verify/:reference", authorize("accounting:wallets:update"), validate({ params: paystackReferenceParamsSchema }), asyncHandler(controller.verifyPaystackWalletFundingController));
 accountingRouter.get("/wallet/transactions/:id/receipt", authorize("accounting:wallets:view"), validate({ params: accountingEntityParamsSchema }), asyncHandler(controller.getWalletReceiptController));
 accountingRouter.get("/settings/invoice-templates", authorize("accounting:invoices:view"), asyncHandler(controller.listInvoiceTemplatesController));
 accountingRouter.post("/settings/invoice-templates", authorize("accounting:invoices:create"), validate({ body: invoiceTemplateCreateSchema }), asyncHandler(controller.createInvoiceTemplateController));

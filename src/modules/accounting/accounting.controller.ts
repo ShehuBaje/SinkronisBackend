@@ -49,12 +49,13 @@ import {
   updateInvoice,
   updateReminderConfiguration,
   voidExpense,
-  getAccountingReport, getVatReport, getWalletSummary, listWalletTransactions,
+  getAccountingReport, getVatReport, getWhtReport, getWalletSummary, listWalletTransactions,
   fundWalletManually, getWalletReceipt, listInvoiceTemplates, createInvoiceTemplate,
   updateInvoiceTemplate, setDefaultInvoiceTemplate, deleteInvoiceTemplate,
   listExpenseCategories, createExpenseCategory, deleteExpenseCategory,
   getUiReminderSettings, updateUiReminderSettings,
   exportAccountingReportCsv, exportAccountingReportPdf, downloadAccountingInvoicePdf,
+  initializePaystackWalletFunding, verifyPaystackWalletFunding, processPaystackWebhook,
 } from "./accounting.service";
 import type {
   AccountingListQuery,
@@ -80,7 +81,7 @@ import type {
   ReminderListQuery,
   ReminderConfigurationInput,
   AccountingReportQuery, WalletTransactionQuery, ManualWalletFundingInput,
-  InvoiceTemplateInput, ExpenseCategoryInput, UiReminderSettingsInput,
+  InvoiceTemplateInput, ExpenseCategoryInput, UiReminderSettingsInput, PaystackFundingInput,
 } from "./accounting.interface";
 
 type Request = ExpressRequest<any>;
@@ -574,10 +575,14 @@ export const downloadAccountingExportController = async (req: Request, res: Resp
 
 export const getAccountingReportController = async (req: Request,res: Response) => sendSuccess(res,"Accounting report retrieved",await getAccountingReport(req.organizationId!,req.query as unknown as AccountingReportQuery));
 export const getVatReportController = async (req: Request,res: Response) => sendSuccess(res,"VAT report retrieved",await getVatReport(req.organizationId!,req.query as unknown as AccountingReportQuery));
+export const getWhtReportController = async (req: Request,res: Response) => sendSuccess(res,"WHT report retrieved",await getWhtReport(req.organizationId!,req.query as unknown as AccountingReportQuery));
 export const getWalletSummaryController = async (req: Request,res: Response) => sendSuccess(res,"Wallet summary retrieved",await getWalletSummary(req.organizationId!));
 export const listWalletTransactionsController = async (req: Request,res: Response) => sendSuccess(res,"Wallet transactions retrieved",await listWalletTransactions(req.organizationId!,req.query as unknown as WalletTransactionQuery));
 export const fundWalletManuallyController = async (req: Request,res: Response) => sendSuccess(res,"Wallet funded",await fundWalletManually(req.organizationId!,req.body as ManualWalletFundingInput,req.user!),{ status: 201 });
 export const getWalletReceiptController = async (req: Request,res: Response) => sendSuccess(res,"Wallet receipt retrieved",await getWalletReceipt(req.organizationId!,req.params.id));
+export const initializePaystackWalletFundingController = async (req: Request,res: Response) => sendSuccess(res,"Paystack wallet funding initialized",await initializePaystackWalletFunding(req.organizationId!,req.body as PaystackFundingInput,req.user!),{ status: 201 });
+export const verifyPaystackWalletFundingController = async (req: Request,res: Response) => sendSuccess(res,"Paystack wallet funding verified",await verifyPaystackWalletFunding(req.organizationId!,req.params.reference));
+export const paystackWebhookController = async (req: Request,res: Response) => sendSuccess(res,"Paystack webhook received",await processPaystackWebhook(req.rawBody,req.header("x-paystack-signature") ?? undefined));
 export const listInvoiceTemplatesController = async (req: Request,res: Response) => sendSuccess(res,"Invoice templates retrieved",await listInvoiceTemplates(req.organizationId!));
 export const createInvoiceTemplateController = async (req: Request,res: Response) => sendSuccess(res,"Invoice template created",await createInvoiceTemplate(req.organizationId!,req.body as InvoiceTemplateInput,req.user!),{ status: 201 });
 export const updateInvoiceTemplateController = async (req: Request,res: Response) => sendSuccess(res,"Invoice template updated",await updateInvoiceTemplate(req.organizationId!,req.params.id,req.body as Partial<InvoiceTemplateInput>,req.user!));

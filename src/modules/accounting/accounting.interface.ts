@@ -81,6 +81,8 @@ export interface InvoiceCreateInput {
   issueDate?: Date;
   dueDate: Date;
   notes?: string;
+  whtApplicable?: boolean;
+  whtRate?: 5 | 10;
   items: InvoiceItemInput[];
 }
 
@@ -184,6 +186,10 @@ export interface UiReminderSettingsInput {
   overdueReminderFrequency: "NEVER" | "ONCE" | "EVERY_3_DAYS" | "EVERY_7_DAYS";
   inAppEnabled: boolean;
   emailEnabled: boolean;
+}
+export interface PaystackFundingInput {
+  walletAccountId: string;
+  amount: MoneyInput;
 }
 export interface ExpenseListQuery extends PaginationQuery {
   search?: string;

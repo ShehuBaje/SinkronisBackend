@@ -172,18 +172,22 @@ export const invoiceLineSchema = z
       (value.description && value.unitPrice !== undefined),
     "Catalogue item or description and unit price are required",
   );
-const invoiceBody = z
-  .object({
+const invoiceBody = z.object({
     clientId: z.string().trim().min(1),
     assignedAgentId: z.string().trim().min(1).nullable().optional(),
     projectId: z.string().trim().min(1).nullable().optional(),
     issueDate: z.coerce.date().optional(),
     dueDate: z.coerce.date(),
     notes: optionalText,
+    whtApplicable: z.boolean().default(false),
+    whtRate: z.union([z.literal(5), z.literal(10)]).optional(),
     items: z.array(invoiceLineSchema).min(1).max(200),
-  })
-  .strict();
+  }).strict();
 export const invoiceCreateSchema = invoiceBody.superRefine((value, context) => {
+    if (value.whtApplicable && value.whtRate === undefined)
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["whtRate"], message: "WHT rate is required when WHT is enabled" });
+    if (!value.whtApplicable && value.whtRate !== undefined)
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["whtRate"], message: "WHT rate requires WHT to be enabled" });
   const issueDay = new Date(
     (value.issueDate ?? new Date()).toISOString().slice(0, 10),
   );
@@ -393,6 +397,12 @@ export const manualWalletFundingSchema = z.object({
   walletAccountId: z.string().trim().min(1), amount: positiveMoney,
   description: z.string().trim().min(2).max(500),
   externalReference: z.string().trim().min(2).max(191),
+}).strict();
+export const paystackFundingSchema = z.object({
+  walletAccountId: z.string().trim().min(1), amount: positiveMoney,
+}).strict();
+export const paystackReferenceParamsSchema = z.object({
+  reference: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._-]+$/),
 }).strict();
 export const invoiceTemplateCreateSchema = z.object({
   name: z.string().trim().min(2).max(191), paymentTerms: optionalText,

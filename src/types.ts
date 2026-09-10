@@ -20,6 +20,7 @@ declare global {
     interface Request {
       user?: AuthUser;
       organizationId?: string;
+      rawBody?: Buffer;
     }
   }
 }

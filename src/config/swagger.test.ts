@@ -70,6 +70,7 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
     || operation.includes(" /api/v1/accounting/exports")
     || operation.includes(" /api/v1/accounting/reports")
     || operation.includes(" /api/v1/accounting/wallet/")
+    || operation.includes(" /api/v1/accounting/paystack/webhook")
     || operation.includes(" /api/v1/accounting/settings/");
   const ignored = (operation: string) =>
     operation === "GET /" ||

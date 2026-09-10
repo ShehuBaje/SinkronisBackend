@@ -17,7 +17,7 @@ import { authRouter } from "./modules/auth/auth.routes";
 import { adminRouter } from "./modules/admin";
 import { subscriptionsRouter } from "./modules/subscriptions/subscriptions.routes";
 import { hrisRouter } from "./modules/hris/hris.routes";
-import { accountingRouter } from "./modules/accounting/accounting.routes";
+import { accountingPaystackWebhookRouter, accountingRouter } from "./modules/accounting/accounting.routes";
 import { payrollRouter } from "./modules/payroll/payroll.routes";
 import { mediaRouter } from "./modules/media/media.routes";
 import { platformAdminRouter } from "./modules/platform-admin";
@@ -44,7 +44,10 @@ app.use(cors({
   credentials: true
 }));
 app.use(compression());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "1mb", verify: (req, _res, buffer) => {
+  const request = req as express.Request;
+  if (request.originalUrl.startsWith(`${env.API_PREFIX}/accounting/paystack/webhook`)) request.rawBody = Buffer.from(buffer);
+} }));
 app.use(requestContextMiddleware);
 app.use(morgan(env.NODE_ENV === "production" ? "combined" : "dev"));
 if (env.STORAGE_PROVIDER === "local") {
@@ -139,6 +142,7 @@ app.get([swaggerPath, `${swaggerPath}/`], (_req, res) => {
 });
 
 app.use(`${env.API_PREFIX}/media`, mediaRouter);
+app.use(`${env.API_PREFIX}/accounting/paystack/webhook`, accountingPaystackWebhookRouter);
 app.use(`${env.API_PREFIX}/internal`, internalRouter);
 app.use(`${env.API_PREFIX}/auth`, authRouter);
 app.use(`${env.API_PREFIX}/platform-admin`, authenticate, platformAdminRouter);

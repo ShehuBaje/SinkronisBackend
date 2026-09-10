@@ -798,6 +798,10 @@ model Invoice {
   subtotal         Decimal                          @db.Decimal(14, 2)
   taxAmount        Decimal                          @default(0.00) @db.Decimal(14, 2)
   total            Decimal                          @db.Decimal(14, 2)
+  whtApplicable    Boolean                          @default(false)
+  whtRate          Decimal?                         @db.Decimal(5, 2)
+  whtAmount        Decimal                          @default(0.00) @db.Decimal(14, 2)
+  amountPayable    Decimal                          @default(0.00) @db.Decimal(14, 2)
   notes            String?                          @db.Text
   templateSnapshot Json?
   projectId        String?
@@ -1342,6 +1346,7 @@ model Organization {
   usersession                  UserSession[]
   walletaccount                WalletAccount[]
   walletTransactions           WalletTransaction[]
+  walletFundingAttempts        WalletFundingAttempt[]
   payrollTaxRemittances        PayrollTaxRemittance[]
   payrollAvcs                  PayrollAvcContribution[]
   payrollPfaTransfers          PayrollPfaTransfer[]
@@ -2185,19 +2190,47 @@ model UserTwoFactor {
 }
 
 model WalletAccount {
-  id                 String               @id @default(cuid())
+  id                 String                 @id @default(cuid())
   organizationId     String
   name               String
-  balance            Decimal              @default(0.00) @db.Decimal(14, 2)
-  currency           String               @default("NGN")
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
-  organization       Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletAccount_organizationId_fkey")
+  balance            Decimal                @default(0.00) @db.Decimal(14, 2)
+  currency           String                 @default("NGN")
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletAccount_organizationId_fkey")
   walletdisbursement WalletDisbursement[]
   transactions       WalletTransaction[]
+  fundingAttempts    WalletFundingAttempt[]
 
   @@index([organizationId], map: "WalletAccount_organizationId_idx")
   @@map("WalletAccount")
+}
+
+model WalletFundingAttempt {
+  id                String        @id @default(cuid())
+  organizationId    String
+  walletAccountId   String
+  provider          String        @default("PAYSTACK")
+  reference         String
+  amount            Decimal       @db.Decimal(14, 2)
+  currency          String        @default("NGN")
+  status            String        @default("PENDING")
+  authorizationUrl  String?
+  accessCode        String?
+  providerReference String?
+  providerPayload   Json?
+  failureReason     String?
+  verifiedAt        DateTime?
+  createdById       String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletFundingAttempt_org_fkey")
+  wallet            WalletAccount @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletFundingAttempt_wallet_fkey")
+
+  @@unique([reference], map: "WalletFundingAttempt_reference_key")
+  @@index([organizationId, status, createdAt], map: "WalletFundingAttempt_org_status_created_idx")
+  @@index([walletAccountId, createdAt], map: "WalletFundingAttempt_wallet_created_idx")
+  @@map("WalletFundingAttempt")
 }
 
 model WalletTransaction {

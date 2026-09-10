@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { accountingRouter } from "./accounting.routes";
-import { accountingInvoiceDisplayStatus, billedVsValuePercentage } from "./accounting.service";
+import { accountingInvoiceDisplayStatus, billedVsValuePercentage, calculateInvoiceWht } from "./accounting.service";
 import { createPayslipPdf } from "../employee/employee.service";
-import { accountingListQuerySchema, agentBulkInviteSchema, agentInviteSchema, catalogueCreateSchema, catalogueListQuerySchema, customerCreateSchema, expenseCreateSchema, expenseListQuerySchema, invoiceCreateSchema, invoiceListQuerySchema, invoicePaymentSchema, paymentRequestDisbursementSchema, paymentRequestListQuerySchema, projectCreateSchema, projectListQuerySchema, reminderConfigurationSchema, reminderListQuerySchema, accountingReportQuerySchema, walletTransactionQuerySchema, manualWalletFundingSchema, invoiceTemplateCreateSchema, expenseCategoryCreateSchema, uiReminderSettingsSchema } from "./accounting.validation";
+import { accountingListQuerySchema, agentBulkInviteSchema, agentInviteSchema, catalogueCreateSchema, catalogueListQuerySchema, customerCreateSchema, expenseCreateSchema, expenseListQuerySchema, invoiceCreateSchema, invoiceListQuerySchema, invoicePaymentSchema, paymentRequestDisbursementSchema, paymentRequestListQuerySchema, projectCreateSchema, projectListQuerySchema, reminderConfigurationSchema, reminderListQuerySchema, accountingReportQuerySchema, walletTransactionQuerySchema, manualWalletFundingSchema, invoiceTemplateCreateSchema, expenseCategoryCreateSchema, uiReminderSettingsSchema, paystackFundingSchema, paystackReferenceParamsSchema } from "./accounting.validation";
 
 const routes = (accountingRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
 
@@ -16,7 +16,7 @@ test("continued Accounting workflows remain in the same router", () => {
 });
 
 test("reports, wallet and Accounting settings routes remain in the existing router", () => {
-  for (const route of ["GET /reports", "GET /reports/export.csv", "GET /reports/export.pdf", "GET /reports/vat", "GET /invoices/:id/download", "GET /wallet/summary", "GET /wallet/transactions", "POST /wallet/manual-funding", "GET /wallet/transactions/:id/receipt", "GET /settings/invoice-templates", "POST /settings/invoice-templates", "PATCH /settings/invoice-templates/:id", "POST /settings/invoice-templates/:id/default", "DELETE /settings/invoice-templates/:id", "GET /settings/expense-categories", "POST /settings/expense-categories", "DELETE /settings/expense-categories/:id", "GET /settings/reminders", "PUT /settings/reminders"]) assert.ok(routes.includes(route), route);
+  for (const route of ["GET /reports", "GET /reports/export.csv", "GET /reports/export.pdf", "GET /reports/vat", "GET /reports/wht", "GET /invoices/:id/download", "GET /wallet/summary", "GET /wallet/transactions", "POST /wallet/manual-funding", "POST /wallet/paystack/initialize", "GET /wallet/paystack/verify/:reference", "GET /wallet/transactions/:id/receipt", "GET /settings/invoice-templates", "POST /settings/invoice-templates", "PATCH /settings/invoice-templates/:id", "POST /settings/invoice-templates/:id/default", "DELETE /settings/invoice-templates/:id", "GET /settings/expense-categories", "POST /settings/expense-categories", "DELETE /settings/expense-categories/:id", "GET /settings/reminders", "PUT /settings/reminders"]) assert.ok(routes.includes(route), route);
 });
 
 test("new Accounting DTOs reject tenant injection and unsafe financial/settings input", () => {
@@ -26,6 +26,11 @@ test("new Accounting DTOs reject tenant injection and unsafe financial/settings 
   assert.equal(walletTransactionQuerySchema.safeParse({ direction: "INFLOW" }).success, true);
   assert.equal(manualWalletFundingSchema.safeParse({ walletAccountId: "w", amount: "100.00", description: "Bank deposit", externalReference: "TELLER-1" }).success, true);
   assert.equal(manualWalletFundingSchema.safeParse({ walletAccountId: "w", amount: 0, description: "Bank deposit", externalReference: "TELLER-1" }).success, false);
+  assert.equal(paystackFundingSchema.safeParse({ walletAccountId: "w", amount: "100.00" }).success, true);
+  assert.equal(paystackFundingSchema.safeParse({ walletAccountId: "w", amount: 0 }).success, false);
+  assert.equal(paystackFundingSchema.safeParse({ walletAccountId: "w", amount: 100, callbackUrl: "https://attacker.example" }).success, false);
+  assert.equal(paystackReferenceParamsSchema.safeParse({ reference: "PSK-12345678" }).success, true);
+  assert.equal(paystackReferenceParamsSchema.safeParse({ reference: "../unsafe" }).success, false);
   assert.equal(invoiceTemplateCreateSchema.safeParse({ name: "Standard", paymentTerms: "Net 30" }).success, true);
   assert.equal(expenseCategoryCreateSchema.safeParse({ name: "Travel" }).success, true);
   assert.equal(uiReminderSettingsSchema.safeParse({ automaticRemindersEnabled: true, firstReminderDaysBeforeDue: 7, overdueReminderFrequency: "EVERY_3_DAYS", inAppEnabled: true, emailEnabled: false }).success, true);
@@ -38,6 +43,21 @@ test("invoice input is snapshot-oriented and rejects client-calculated totals", 
   assert.equal(invoiceCreateSchema.safeParse({ ...valid, total: 5000 }).success, false);
   assert.equal(invoiceCreateSchema.safeParse({ ...valid, items: [{ description: "Bad", quantity: 0, unitPrice: 1 }] }).success, false);
   assert.equal(invoiceListQuerySchema.safeParse({ tenantId: "other" }).success, false);
+});
+
+test("invoice WHT is manual, restricted to 5% or 10%, and based on subtotal before VAT", () => {
+  const base = { clientId: "client", dueDate: "2026-09-30", items: [{ description: "Professional service", quantity: "1", unitPrice: "100000", vatApplicable: true }] };
+  assert.equal(invoiceCreateSchema.safeParse({ ...base, whtApplicable: true, whtRate: 5 }).success, true);
+  assert.equal(invoiceCreateSchema.safeParse({ ...base, whtApplicable: true }).success, false);
+  assert.equal(invoiceCreateSchema.safeParse({ ...base, whtRate: 10 }).success, false);
+  assert.equal(invoiceCreateSchema.safeParse({ ...base, whtApplicable: true, whtRate: 7.5 }).success, false);
+
+  const fivePercent = calculateInvoiceWht("100000", true, 5);
+  assert.equal(fivePercent.rate?.toString(), "0.05");
+  assert.equal(fivePercent.amount.toFixed(2), "5000.00");
+  const disabled = calculateInvoiceWht("100000", false);
+  assert.equal(disabled.rate, null);
+  assert.equal(disabled.amount.toFixed(2), "0.00");
 });
 
 test("agent, payment, expense and reminder DTOs enforce workflow boundaries", () => {

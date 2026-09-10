@@ -2,7 +2,8 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
 import type { AuthUser } from "../../types";
-import { conflict, notFound } from "../../core/http-error";
+import { conflict, notFound, serviceUnavailable, unauthorized } from "../../core/http-error";
+import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
 import { createObjectKey, deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { deliverUserNotification } from "../../core/notifications";
@@ -39,6 +40,7 @@ import type {
   InvoiceTemplateInput,
   ExpenseCategoryInput,
   UiReminderSettingsInput,
+  PaystackFundingInput,
 } from "./accounting.interface";
 import {
   clientCreateSchema,
@@ -122,6 +124,16 @@ export const agentInvitationsCrudOptions = {
 
 const zero = () => new Prisma.Decimal(0);
 const amount = (value: Prisma.Decimal | null | undefined) => Number(value ?? 0);
+const invoiceReceivable = (invoice: { total: Prisma.Decimal; whtAmount?: Prisma.Decimal | null; amountPayable?: Prisma.Decimal | null }) =>
+  invoice.amountPayable && invoice.amountPayable.gt(0)
+    ? invoice.amountPayable
+    : invoice.total.sub(invoice.whtAmount ?? zero());
+export const calculateInvoiceWht = (subtotal: Prisma.Decimal.Value, applicable: boolean, rate?: 5 | 10) => {
+  if (!applicable) return { rate: null, amount: zero() };
+  if (rate !== 5 && rate !== 10) throw conflict("WHT rate must be 5 or 10 percent");
+  const decimalRate = new Prisma.Decimal(rate).div(100);
+  return { rate: decimalRate, amount: new Prisma.Decimal(subtotal).mul(decimalRate).toDecimalPlaces(2) };
+};
 const pagination = (page: number, limit: number, total: number) => ({
   page,
   limit,
@@ -235,15 +247,15 @@ export const getAccountingDashboard = async (
       include: { client: { select: { name: true } } },
     }),
     prisma.accountingInvoicePayment.aggregate({ where: { organizationId }, _sum: { amount: true } }),
-    prisma.invoice.findMany({ where: { organizationId, status: { in: ["SENT", "PARTIALLY_PAID", "OVERDUE"] } }, select: { id: true, total: true, taxAmount: true, dueDate: true, payments: { select: { amount: true } } } }),
+    prisma.invoice.findMany({ where: { organizationId, status: { in: ["SENT", "PARTIALLY_PAID", "OVERDUE"] } }, select: { id: true, total: true, amountPayable: true, whtAmount: true, taxAmount: true, dueDate: true, payments: { select: { amount: true } } } }),
   ]);
   const grouped = new Map(invoiceGroups.map((row) => [row.status, row]));
   const paid = grouped.get("PAID");
   const sent = grouped.get("SENT");
   const explicitOverdue = grouped.get("OVERDUE");
-  const outstandingBalances = unsettledInvoices.map((invoice) => Prisma.Decimal.max(zero(), invoice.total.sub(invoice.payments.reduce((sum, payment) => sum.add(payment.amount), zero()))));
+  const outstandingBalances = unsettledInvoices.map((invoice) => Prisma.Decimal.max(zero(), invoiceReceivable(invoice).sub(invoice.payments.reduce((sum, payment) => sum.add(payment.amount), zero()))));
   const actualOutstanding = outstandingBalances.reduce((sum, balance) => sum.add(balance), zero());
-  const actualOverdue = unsettledInvoices.filter((invoice) => invoice.dueDate && invoice.dueDate < now).reduce((sum, invoice) => sum.add(Prisma.Decimal.max(zero(), invoice.total.sub(invoice.payments.reduce((paidSum, payment) => paidSum.add(payment.amount), zero())))), zero());
+  const actualOverdue = unsettledInvoices.filter((invoice) => invoice.dueDate && invoice.dueDate < now).reduce((sum, invoice) => sum.add(Prisma.Decimal.max(zero(), invoiceReceivable(invoice).sub(invoice.payments.reduce((paidSum, payment) => paidSum.add(payment.amount), zero())))), zero());
   const sentCount = Math.max(
     0,
     (sent?._count._all ?? 0) -
@@ -486,6 +498,7 @@ export const getAccountingCustomer = async (
           assignedAgent: {
             select: { id: true, firstName: true, lastName: true },
           },
+          payments: { select: { amount: true } },
         },
       },
       projects: {
@@ -514,9 +527,7 @@ export const getAccountingCustomer = async (
     (sum, row) => sum.add(row.total),
     zero(),
   );
-  const paid = customer.invoice
-    .filter((row) => row.status === "PAID")
-    .reduce((sum, row) => sum.add(row.total), zero());
+  const paid = customer.invoice.reduce((sum, row) => sum.add(row.payments.reduce((paymentSum,payment) => paymentSum.add(payment.amount),zero())), zero());
   return {
     id: customer.id,
     customerId: customer.reference,
@@ -543,6 +554,9 @@ export const getAccountingCustomer = async (
       subtotal: amount(row.subtotal),
       taxAmount: amount(row.taxAmount),
       total: amount(row.total),
+      whtRate: row.whtRate ? amount(row.whtRate.mul(100)) : null,
+      whtAmount: amount(row.whtAmount),
+      amountPayable: amount(invoiceReceivable(row)),
       status: accountingInvoiceDisplayStatus(row.status, row.dueDate),
     })),
     projects: customer.projects.map((row) => ({
@@ -883,6 +897,7 @@ export const getAccountingProject = async (
           assignedAgent: {
             select: { id: true, firstName: true, lastName: true },
           },
+          payments: { select: { amount: true } },
         },
       },
     },
@@ -892,9 +907,7 @@ export const getAccountingProject = async (
     (sum, invoice) => sum.add(invoice.total),
     zero(),
   );
-  const paid = row.invoices
-    .filter((invoice) => invoice.status === "PAID")
-    .reduce((sum, invoice) => sum.add(invoice.total), zero());
+  const paid = row.invoices.reduce((sum, invoice) => sum.add(invoice.payments.reduce((paymentSum,payment) => paymentSum.add(payment.amount),zero())), zero());
   return {
     ...row,
     value: amount(row.value),
@@ -910,6 +923,9 @@ export const getAccountingProject = async (
       subtotal: amount(invoice.subtotal),
       vat: amount(invoice.taxAmount),
       total: amount(invoice.total),
+      whtRate: invoice.whtRate ? amount(invoice.whtRate.mul(100)) : null,
+      whtAmount: amount(invoice.whtAmount),
+      amountPayable: amount(invoiceReceivable(invoice)),
       status: accountingInvoiceDisplayStatus(invoice.status, invoice.dueDate),
     })),
   };
@@ -951,7 +967,7 @@ const invoiceView = (row: any, now = new Date()) => {
   );
   const balanceDue = Prisma.Decimal.max(
     zero(),
-    new Prisma.Decimal(row.total).sub(paidAmount),
+    invoiceReceivable(row).sub(paidAmount),
   );
   const displayStatus = accountingInvoiceDisplayStatus(
     row.status,
@@ -964,6 +980,10 @@ const invoiceView = (row: any, now = new Date()) => {
     subtotal: amount(row.subtotal),
     vat: amount(row.taxAmount),
     total: amount(row.total),
+    whtApplicable: row.whtApplicable,
+    whtRate: row.whtRate ? amount(row.whtRate.mul(100)) : null,
+    whtAmount: amount(row.whtAmount),
+    amountPayable: amount(invoiceReceivable(row)),
     paidAmount: amount(paidAmount),
     balanceDue: amount(balanceDue),
     payments: (row.payments ?? []).map((payment: any) => ({
@@ -1145,6 +1165,8 @@ export const createInvoice = async (
     where: { organizationId, isDefault: true },
     select: { id: true, name: true, paymentTerms: true, headerNote: true, footerNote: true },
   });
+  const wht = calculateInvoiceWht(subtotal, input.whtApplicable ?? false, input.whtRate);
+  const total = subtotal.add(taxAmount);
   const invoice = await prisma.$transaction(async (tx) => {
     const row = await tx.invoice.create({
       data: {
@@ -1158,7 +1180,11 @@ export const createInvoice = async (
         status: "DRAFT",
         subtotal,
         taxAmount,
-        total: subtotal.add(taxAmount),
+        total,
+        whtApplicable: input.whtApplicable ?? false,
+        whtRate: wht.rate,
+        whtAmount: wht.amount,
+        amountPayable: total.sub(wht.amount),
         notes: input.notes,
         templateSnapshot: defaultTemplate ?? Prisma.JsonNull,
         items: { create: lines },
@@ -1214,6 +1240,14 @@ export const updateInvoice = async (
     (sum, line) => sum.add(line.vatAmount),
     zero(),
   );
+  const finalSubtotal = subtotal ?? current.subtotal;
+  const finalTaxAmount = taxAmount ?? current.taxAmount;
+  const whtApplicable = input.whtApplicable ?? current.whtApplicable;
+  const requestedRate = input.whtRate ?? (current.whtRate ? Number(current.whtRate.mul(100)) as 5 | 10 : undefined);
+  if (!whtApplicable && input.whtRate !== undefined)
+    throw conflict("WHT rate requires WHT to be enabled");
+  const wht = calculateInvoiceWht(finalSubtotal, whtApplicable, requestedRate);
+  const finalTotal = finalSubtotal.add(finalTaxAmount);
   await prisma.invoice.update({
     where: { id },
     data: {
@@ -1223,11 +1257,15 @@ export const updateInvoice = async (
       issueDate: input.issueDate,
       dueDate: input.dueDate,
       notes: input.notes,
+      whtApplicable,
+      whtRate: wht.rate,
+      whtAmount: wht.amount,
+      amountPayable: finalTotal.sub(wht.amount),
       ...(lines
         ? {
             subtotal,
             taxAmount,
-            total: subtotal!.add(taxAmount!),
+            total: finalTotal,
             items: { deleteMany: {}, create: lines },
           }
         : {}),
@@ -1261,7 +1299,7 @@ export const sendInvoice = async (
     to: current.client.email,
     recipientName: current.client.name,
     subject: `Invoice ${current.invoiceNo} from ${organization?.name ?? "Sinkronis"}`,
-    message: `Invoice ${current.invoiceNo} for ${current.total.toFixed(2)} is due ${current.dueDate?.toISOString().slice(0, 10) ?? "on receipt"}.`,
+    message: `Invoice ${current.invoiceNo} for ${invoiceReceivable(current).toFixed(2)} is due ${current.dueDate?.toISOString().slice(0, 10) ?? "on receipt"}.`,
   });
   const now = new Date();
   await prisma.$transaction([
@@ -1316,7 +1354,7 @@ export const recordInvoicePayment = async (
     zero(),
   );
   const paymentAmount = new Prisma.Decimal(input.amount);
-  const balance = new Prisma.Decimal(current.total).sub(alreadyPaid);
+  const balance = invoiceReceivable(current).sub(alreadyPaid);
   if (paymentAmount.gt(balance))
     throw conflict("Payment amount cannot exceed the invoice balance");
   const paidAt = input.paidAt ?? new Date();
@@ -1414,7 +1452,7 @@ export const exportInvoices = async (
     invoices.push(...pageResult.invoices);
     if (pageNumber >= pageResult.pagination.totalPages) break;
   }
-  const csv = `\uFEFF${[["Invoice", "Customer", "Agent", "Project", "Subtotal", "VAT", "Total", "Paid", "Balance", "Issue Date", "Due Date", "Status"], ...invoices.map((row: any) => [row.invoiceNo, row.client.name, row.assignedAgent ? `${row.assignedAgent.firstName} ${row.assignedAgent.lastName}` : "", row.project?.name ?? "", row.subtotal, row.vat, row.total, row.paidAmount, row.balanceDue, row.issueDate.toISOString(), row.dueDate?.toISOString() ?? "", row.status])].map((line) => line.map(csvCell).join(",")).join("\r\n")}\r\n`;
+  const csv = `\uFEFF${[["Invoice", "Customer", "Agent", "Project", "Subtotal", "VAT", "Total", "WHT Rate", "WHT Amount", "Amount Payable", "Paid", "Balance", "Issue Date", "Due Date", "Status"], ...invoices.map((row: any) => [row.invoiceNo, row.client.name, row.assignedAgent ? `${row.assignedAgent.firstName} ${row.assignedAgent.lastName}` : "", row.project?.name ?? "", row.subtotal, row.vat, row.total, row.whtRate ?? "", row.whtAmount, row.amountPayable, row.paidAmount, row.balanceDue, row.issueDate.toISOString(), row.dueDate?.toISOString() ?? "", row.status])].map((line) => line.map(csvCell).join(",")).join("\r\n")}\r\n`;
   await audit(
     organizationId,
     user,
@@ -2391,7 +2429,7 @@ const generateInvoiceReminders = async (
         (sum, payment) => sum.add(payment.amount),
         zero(),
       );
-      const balance = Prisma.Decimal.max(zero(), invoice.total.sub(paid));
+      const balance = Prisma.Decimal.max(zero(), invoiceReceivable(invoice).sub(paid));
       if (balance.lte(0)) return [];
       return [
         deliverUserNotification({
@@ -2581,7 +2619,7 @@ const reportRows = (organizationId: string, query: AccountingReportQuery) => pri
 const reportFinancialRows = async (organizationId: string, query: AccountingReportQuery) => {
   const invoices = await prisma.invoice.findMany({
     where: reportInvoiceWhere(organizationId, query),
-    select: { id: true, clientId: true, assignedAgentId: true, projectId: true, status: true, dueDate: true, total: true, taxAmount: true },
+    select: { id: true, clientId: true, assignedAgentId: true, projectId: true, status: true, dueDate: true, total: true, taxAmount: true, whtAmount: true, amountPayable: true },
   });
   const payments = invoices.length ? await prisma.accountingInvoicePayment.groupBy({
     by: ["invoiceId"], where: { organizationId, invoiceId: { in: invoices.map(row => row.id) } }, _sum: { amount: true },
@@ -2607,9 +2645,9 @@ const databaseReportSummary = async (organizationId: string, query: AccountingRe
   const rows = await prisma.$queryRaw<Array<{ totalRevenue: Prisma.Decimal; outstanding: Prisma.Decimal; overdue: Prisma.Decimal; vatCollected: Prisma.Decimal }>>(Prisma.sql`
     SELECT
       COALESCE(SUM(COALESCE(p.paidAmount, 0)), 0) AS totalRevenue,
-      COALESCE(SUM(CASE WHEN i.status NOT IN ('DRAFT','VOID') AND GREATEST(i.total - COALESCE(p.paidAmount,0),0) > 0 AND (i.dueDate IS NULL OR i.dueDate >= CURRENT_TIMESTAMP(3)) THEN GREATEST(i.total - COALESCE(p.paidAmount,0),0) ELSE 0 END),0) AS outstanding,
-      COALESCE(SUM(CASE WHEN i.status NOT IN ('DRAFT','VOID') AND GREATEST(i.total - COALESCE(p.paidAmount,0),0) > 0 AND i.dueDate < CURRENT_TIMESTAMP(3) THEN GREATEST(i.total - COALESCE(p.paidAmount,0),0) ELSE 0 END),0) AS overdue,
-      COALESCE(SUM(CASE WHEN i.total > 0 THEN i.taxAmount * LEAST(COALESCE(p.paidAmount,0),i.total) / i.total ELSE 0 END),0) AS vatCollected
+      COALESCE(SUM(CASE WHEN i.status NOT IN ('DRAFT','VOID') AND GREATEST(i.amountPayable - COALESCE(p.paidAmount,0),0) > 0 AND (i.dueDate IS NULL OR i.dueDate >= CURRENT_TIMESTAMP(3)) THEN GREATEST(i.amountPayable - COALESCE(p.paidAmount,0),0) ELSE 0 END),0) AS outstanding,
+      COALESCE(SUM(CASE WHEN i.status NOT IN ('DRAFT','VOID') AND GREATEST(i.amountPayable - COALESCE(p.paidAmount,0),0) > 0 AND i.dueDate < CURRENT_TIMESTAMP(3) THEN GREATEST(i.amountPayable - COALESCE(p.paidAmount,0),0) ELSE 0 END),0) AS overdue,
+      COALESCE(SUM(CASE WHEN i.amountPayable > 0 THEN i.taxAmount * LEAST(COALESCE(p.paidAmount,0),i.amountPayable) / i.amountPayable ELSE 0 END),0) AS vatCollected
     FROM Invoice i
     JOIN Client c ON c.id = i.clientId AND c.organizationId = i.organizationId
     LEFT JOIN (SELECT invoiceId, SUM(amount) AS paidAmount FROM AccountingInvoicePayment WHERE organizationId = ${organizationId} GROUP BY invoiceId) p ON p.invoiceId = i.id
@@ -2640,7 +2678,7 @@ export const getAccountingReport = async (organizationId: string, query: Account
     const id = (query.groupBy === "CLIENT" ? row.clientId : query.groupBy === "AGENT" ? row.assignedAgentId : row.projectId) ?? "UNASSIGNED";
     const name = groupNames.get(id) ?? "Unassigned";
     const current = map.get(id) ?? { id, name, invoiceCount: 0, invoiceValue: zero(), revenuePaid: zero(), outstanding: zero(), vatCharged: zero() };
-    const paid = row.payments.reduce((s: Prisma.Decimal, p: any) => s.add(p.amount), zero()); current.invoiceCount++; current.invoiceValue = current.invoiceValue.add(row.total); current.revenuePaid = current.revenuePaid.add(paid); current.outstanding = current.outstanding.add(Prisma.Decimal.max(zero(), row.total.sub(paid))); current.vatCharged = current.vatCharged.add(row.taxAmount); map.set(id, current); return map;
+    const paid = row.payments.reduce((s: Prisma.Decimal, p: any) => s.add(p.amount), zero()); current.invoiceCount++; current.invoiceValue = current.invoiceValue.add(row.total); current.revenuePaid = current.revenuePaid.add(paid); current.outstanding = current.outstanding.add(Prisma.Decimal.max(zero(), invoiceReceivable(row).sub(paid))); current.vatCharged = current.vatCharged.add(row.taxAmount); map.set(id, current); return map;
   }, new Map()).values()).map((g: any) => ({ ...g, invoiceValue: amount(g.invoiceValue), revenuePaid: amount(g.revenuePaid), outstanding: amount(g.outstanding), vatCharged: amount(g.vatCharged) })) : undefined;
   return { appliedFilters: query, summary, invoices: pageRows.map(r => invoiceView(r)), ...(groups ? { groups } : {}), pagination: pagination(query.page, query.limit, total) };
 };
@@ -2658,12 +2696,32 @@ export const getVatReport = async (organizationId: string, query: AccountingRepo
   const config = await getPlatformConfigurationValue();
   return { summary: { totalVat: amount(aggregate._sum.taxAmount), vatPayers: byCompany.length, configuredRate: config.vatRate }, byCompany, invoices: rows.map(r => ({ id: r.id, invoiceReference: r.invoiceNo, client: r.client, issueDate: r.issueDate, subtotal: amount(r.subtotal), vat: amount(r.taxAmount), total: amount(r.total) })), pagination: pagination(query.page,query.limit,total) };
 };
+export const getWhtReport = async (organizationId: string, query: AccountingReportQuery) => {
+  const where: Prisma.InvoiceWhereInput = { ...reportInvoiceWhere(organizationId, query), whtApplicable: true, whtAmount: { gt: zero() } };
+  const [configured, deducted, grouped, rows, total] = await Promise.all([
+    prisma.invoice.aggregate({ where, _sum: { whtAmount: true }, _count: { _all: true } }),
+    prisma.invoice.aggregate({ where: { ...where, status: "PAID" }, _sum: { whtAmount: true } }),
+    prisma.invoice.groupBy({ by: ["whtRate"], where, _count: { _all: true }, _sum: { whtAmount: true } }),
+    prisma.invoice.findMany({ where, orderBy: { [query.sortBy]: query.sortOrder }, skip: (query.page - 1) * query.limit, take: query.limit, include: { client: { select: { id: true, name: true, taxId: true } } } }),
+    prisma.invoice.count({ where }),
+  ]);
+  return {
+    summary: {
+      totalWhtConfigured: amount(configured._sum.whtAmount),
+      totalWhtDeducted: amount(deducted._sum.whtAmount),
+      whtInvoices: configured._count._all,
+      rates: grouped.map(group => ({ rate: group.whtRate ? amount(group.whtRate.mul(100)) : null, invoiceCount: group._count._all, amount: amount(group._sum.whtAmount) })),
+    },
+    invoices: rows.map(row => ({ id: row.id, invoiceReference: row.invoiceNo, client: row.client, issueDate: row.issueDate, subtotal: amount(row.subtotal), vat: amount(row.taxAmount), total: amount(row.total), whtRate: row.whtRate ? amount(row.whtRate.mul(100)) : null, whtAmount: amount(row.whtAmount), amountPayable: amount(invoiceReceivable(row)), status: accountingInvoiceDisplayStatus(row.status,row.dueDate) })),
+    pagination: pagination(query.page,query.limit,total),
+  };
+};
 export const exportAccountingReportCsv = async (organizationId: string, query: AccountingReportQuery) => {
   const rows = await reportRows(organizationId, query);
   const summary = await databaseReportSummary(organizationId, query);
   const table = [
-    ["Invoice", "Client", "Agent", "Project", "Subtotal", "VAT", "Total", "Paid", "Outstanding", "Status", "Issue Date", "Due Date"],
-    ...rows.map((row: any) => { const view = invoiceView(row); return [view.invoiceNo, view.client.name, view.assignedAgent ? `${view.assignedAgent.firstName} ${view.assignedAgent.lastName}` : "", view.project?.name ?? "", view.subtotal, view.vat, view.total, view.paidAmount, view.balanceDue, view.status, view.issueDate.toISOString(), view.dueDate?.toISOString() ?? ""]; }),
+    ["Invoice", "Client", "Agent", "Project", "Subtotal", "VAT", "Total", "WHT Rate", "WHT Amount", "Amount Payable", "Paid", "Outstanding", "Status", "Issue Date", "Due Date"],
+    ...rows.map((row: any) => { const view = invoiceView(row); return [view.invoiceNo, view.client.name, view.assignedAgent ? `${view.assignedAgent.firstName} ${view.assignedAgent.lastName}` : "", view.project?.name ?? "", view.subtotal, view.vat, view.total, view.whtRate ?? "", view.whtAmount, view.amountPayable, view.paidAmount, view.balanceDue, view.status, view.issueDate.toISOString(), view.dueDate?.toISOString() ?? ""]; }),
     [], ["Total Revenue", summary.totalRevenue], ["Outstanding", summary.outstanding], ["Overdue", summary.overdue], ["VAT Collected", summary.vatCollected], ["Expenses", summary.totalExpenses], ["Net Profit", summary.netProfit],
   ];
   return `\uFEFF${table.map(line => line.map(csvCell).join(",")).join("\r\n")}\r\n`;
@@ -2671,13 +2729,13 @@ export const exportAccountingReportCsv = async (organizationId: string, query: A
 export const exportAccountingReportPdf = async (organizationId: string, query: AccountingReportQuery) => {
   const rows = await reportRows(organizationId, query);
   const summary = await databaseReportSummary(organizationId, query);
-  return createPayslipPdf(["SINKRONIS ACCOUNTING REPORT", `Total revenue: ${summary.totalRevenue}`, `Outstanding: ${summary.outstanding}`, `Overdue: ${summary.overdue}`, `VAT collected: ${summary.vatCollected}`, `Expenses: ${summary.totalExpenses}`, `Net profit: ${summary.netProfit}`, "INVOICES", ...rows.map((row: any) => `${row.invoiceNo} | ${row.client.name} | ${amount(row.total)} | ${accountingInvoiceDisplayStatus(row.status,row.dueDate)}`)]);
+  return createPayslipPdf(["SINKRONIS ACCOUNTING REPORT", `Total revenue: ${summary.totalRevenue}`, `Outstanding: ${summary.outstanding}`, `Overdue: ${summary.overdue}`, `VAT collected: ${summary.vatCollected}`, `Expenses: ${summary.totalExpenses}`, `Net profit: ${summary.netProfit}`, "INVOICES", ...rows.map((row: any) => `${row.invoiceNo} | ${row.client.name} | Total ${amount(row.total)} | WHT ${amount(row.whtAmount)} | Payable ${amount(invoiceReceivable(row))} | ${accountingInvoiceDisplayStatus(row.status,row.dueDate)}`)]);
 };
 export const downloadAccountingInvoicePdf = async (organizationId: string, id: string, user: AuthUser) => {
   const invoice = await getInvoiceById(organizationId,id) as any;
   const organization = await prisma.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { name: true, email: true, taxId: true, currency: true } });
   const template = invoice.templateSnapshot && typeof invoice.templateSnapshot === "object" ? invoice.templateSnapshot as Record<string,unknown> : {};
-  const buffer = createPayslipPdf([organization.name, String(template.headerNote ?? "INVOICE"), `Invoice: ${invoice.invoiceNo}`, `Customer: ${invoice.client.name}`, `Issue date: ${invoice.issueDate.toISOString().slice(0,10)}`, `Due date: ${invoice.dueDate?.toISOString().slice(0,10) ?? ""}`, ...invoice.items.map((item: any) => `${item.description} x ${item.quantity} @ ${item.unitPrice} = ${item.total}`), `Subtotal: ${invoice.subtotal} ${organization.currency}`, `VAT: ${invoice.vat} ${organization.currency}`, `Total: ${invoice.total} ${organization.currency}`, `Paid: ${invoice.paidAmount} ${organization.currency}`, `Balance: ${invoice.balanceDue} ${organization.currency}`, String(template.paymentTerms ?? ""), String(template.footerNote ?? "")].filter(Boolean));
+  const buffer = createPayslipPdf([organization.name, String(template.headerNote ?? "INVOICE"), `Invoice: ${invoice.invoiceNo}`, `Customer: ${invoice.client.name}`, `Issue date: ${invoice.issueDate.toISOString().slice(0,10)}`, `Due date: ${invoice.dueDate?.toISOString().slice(0,10) ?? ""}`, ...invoice.items.map((item: any) => `${item.description} x ${item.quantity} @ ${item.unitPrice} = ${item.total}`), `Subtotal: ${invoice.subtotal} ${organization.currency}`, `VAT: ${invoice.vat} ${organization.currency}`, `Invoice total: ${invoice.total} ${organization.currency}`, ...(invoice.whtApplicable ? [`WHT (${invoice.whtRate}% of subtotal): -${invoice.whtAmount} ${organization.currency}`] : []), `Amount payable: ${invoice.amountPayable} ${organization.currency}`, `Paid: ${invoice.paidAmount} ${organization.currency}`, `Balance: ${invoice.balanceDue} ${organization.currency}`, String(template.paymentTerms ?? ""), String(template.footerNote ?? "")].filter(Boolean));
   await audit(organizationId,user,"ACCOUNTING_INVOICE_DOWNLOADED","INVOICE",id,`Downloaded invoice ${invoice.invoiceNo}`);
   return { buffer, filename: `${invoice.invoiceNo}.pdf` };
 };
@@ -2698,6 +2756,102 @@ export const fundWalletManually = async (organizationId: string, input: ManualWa
   await audit(organizationId,user,"ACCOUNTING_WALLET_FUNDED","WALLET_TRANSACTION",tx.id,"Manually funded Accounting wallet",{ amount: input.amount, reference: tx.reference }); return { ...tx, amount: amount(tx.amount), balanceBefore: amount(tx.balanceBefore), balanceAfter: amount(tx.balanceAfter) };
 };
 export const getWalletReceipt = async (organizationId: string, id: string) => { const row = await prisma.walletTransaction.findFirst({ where: { id, organizationId }, include: { wallet: { select: { name: true, currency: true } } } }); if (!row) throw notFound("Wallet transaction not found"); return { ...row, amount: amount(row.amount), balanceBefore: amount(row.balanceBefore), balanceAfter: amount(row.balanceAfter) }; };
+
+type PaystackResponse<T> = { status: boolean; message: string; data?: T };
+type PaystackInitializeData = { authorization_url: string; access_code: string; reference: string };
+type PaystackVerifyData = { status: string; reference: string; amount: number; currency: string; paid_at?: string; gateway_response?: string };
+
+const paystackSecret = () => {
+  if (!env.PAYSTACK_SECRET_KEY) throw serviceUnavailable("Paystack funding is not configured");
+  return env.PAYSTACK_SECRET_KEY;
+};
+
+const paystackRequest = async <T>(path: string, init?: RequestInit): Promise<PaystackResponse<T>> => {
+  let response: globalThis.Response;
+  try {
+    response = await fetch(`https://api.paystack.co${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${paystackSecret()}`, "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw serviceUnavailable("Paystack is temporarily unavailable");
+  }
+  const payload = await response.json().catch(() => null) as PaystackResponse<T> | null;
+  if (!response.ok || !payload?.status || !payload.data) throw serviceUnavailable(payload?.message || "Paystack request failed");
+  return payload;
+};
+
+const paystackMinorUnits = (value: Prisma.Decimal.Value) => new Prisma.Decimal(value).mul(100).toDecimalPlaces(0).toNumber();
+
+export const initializePaystackWalletFunding = async (organizationId: string, input: PaystackFundingInput, user: AuthUser) => {
+  if (!env.PAYSTACK_CALLBACK_URL) throw serviceUnavailable("Paystack callback URL is not configured");
+  const wallet = await prisma.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId } });
+  if (!wallet) throw notFound("Wallet not found");
+  if (wallet.currency !== "NGN") throw conflict("Paystack wallet funding currently supports NGN wallets only");
+  const fundingAmount = new Prisma.Decimal(input.amount);
+  const referenceValue = reference("PSK");
+  const attempt = await prisma.walletFundingAttempt.create({ data: { organizationId, walletAccountId: wallet.id, reference: referenceValue, amount: fundingAmount, currency: wallet.currency, createdById: user.id } });
+  try {
+    const response = await paystackRequest<PaystackInitializeData>("/transaction/initialize", { method: "POST", body: JSON.stringify({ email: user.email, amount: paystackMinorUnits(fundingAmount), currency: wallet.currency, reference: referenceValue, callback_url: env.PAYSTACK_CALLBACK_URL, metadata: { fundingAttemptId: attempt.id, organizationId, walletAccountId: wallet.id } }) });
+    const updated = await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { authorizationUrl: response.data!.authorization_url, accessCode: response.data!.access_code, providerReference: response.data!.reference, providerPayload: response.data as unknown as Prisma.InputJsonValue } });
+    await audit(organizationId, user, "ACCOUNTING_WALLET_FUNDING_INITIALIZED", "WALLET_FUNDING", updated.id, `Initialized Paystack wallet funding ${updated.reference}`);
+    return { id: updated.id, provider: updated.provider, reference: updated.reference, amount: amount(updated.amount), currency: updated.currency, status: updated.status, authorizationUrl: updated.authorizationUrl, accessCode: updated.accessCode };
+  } catch (error) {
+    await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "FAILED", failureReason: error instanceof Error ? error.message.slice(0, 500) : "Initialization failed" } });
+    throw error;
+  }
+};
+
+const finalizeVerifiedPaystackFunding = async (attemptId: string, verification: PaystackVerifyData) => {
+  const result = await prisma.$transaction(async db => {
+    const attempt = await db.walletFundingAttempt.findUnique({ where: { id: attemptId } });
+    if (!attempt) throw notFound("Wallet funding attempt not found");
+    if (attempt.status === "COMPLETED") {
+      const existing = await db.walletTransaction.findFirst({ where: { walletAccountId: attempt.walletAccountId, sourceType: "PAYSTACK_FUNDING", sourceId: attempt.id, type: "WALLET_FUNDING" } });
+      return { attempt, transaction: existing, idempotentReplay: true };
+    }
+    if (verification.status !== "success" || verification.reference !== attempt.reference || verification.amount !== paystackMinorUnits(attempt.amount) || verification.currency !== attempt.currency) throw conflict("Paystack payment verification does not match the funding request");
+    const claimed = await db.walletFundingAttempt.updateMany({ where: { id: attempt.id, status: { in: ["PENDING", "FAILED"] } }, data: { status: "PROCESSING", providerPayload: verification as unknown as Prisma.InputJsonValue } });
+    if (claimed.count !== 1) throw conflict("Wallet funding is already being processed");
+    const wallet = await db.walletAccount.findFirst({ where: { id: attempt.walletAccountId, organizationId: attempt.organizationId } });
+    if (!wallet) throw notFound("Wallet not found");
+    const updatedWallet = await db.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: attempt.amount } } });
+    const transaction = await db.walletTransaction.create({ data: { organizationId: attempt.organizationId, walletAccountId: wallet.id, type: "WALLET_FUNDING", direction: "CREDIT", amount: attempt.amount, balanceBefore: wallet.balance, balanceAfter: updatedWallet.balance, reference: reference("WLT"), transferReference: attempt.reference, description: "Paystack wallet funding", sourceType: "PAYSTACK_FUNDING", sourceId: attempt.id, createdById: attempt.createdById } });
+    const completed = await db.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "COMPLETED", verifiedAt: verification.paid_at ? new Date(verification.paid_at) : new Date(), providerReference: verification.reference, failureReason: null } });
+    return { attempt: completed, transaction, idempotentReplay: false };
+  });
+  if (!result.idempotentReplay) await createAuditLog({ organizationId: result.attempt.organizationId, actorUserId: result.attempt.createdById ?? undefined, action: "ACCOUNTING_WALLET_FUNDING_COMPLETED", resource: "WALLET_FUNDING", resourceId: result.attempt.id, summary: `Verified Paystack wallet funding ${result.attempt.reference}` });
+  return { reference: result.attempt.reference, status: result.attempt.status, amount: amount(result.attempt.amount), currency: result.attempt.currency, transactionId: result.transaction?.id ?? null, idempotentReplay: result.idempotentReplay };
+};
+
+const verifyPaystackReference = async (referenceValue: string) => {
+  const response = await paystackRequest<PaystackVerifyData>(`/transaction/verify/${encodeURIComponent(referenceValue)}`);
+  return response.data!;
+};
+
+export const verifyPaystackWalletFunding = async (organizationId: string, referenceValue: string) => {
+  const attempt = await prisma.walletFundingAttempt.findFirst({ where: { reference: referenceValue, organizationId } });
+  if (!attempt) throw notFound("Wallet funding attempt not found");
+  if (attempt.status === "COMPLETED") return finalizeVerifiedPaystackFunding(attempt.id, { status: "success", reference: attempt.reference, amount: paystackMinorUnits(attempt.amount), currency: attempt.currency });
+  const verification = await verifyPaystackReference(referenceValue);
+  return finalizeVerifiedPaystackFunding(attempt.id, verification);
+};
+
+export const processPaystackWebhook = async (rawBody: Buffer | undefined, signature: string | undefined) => {
+  if (!rawBody || !signature) throw unauthorized("Invalid Paystack webhook signature");
+  const expected = crypto.createHmac("sha512", paystackSecret()).update(rawBody).digest("hex");
+  const supplied = Buffer.from(signature, "utf8");
+  const calculated = Buffer.from(expected, "utf8");
+  if (supplied.length !== calculated.length || !crypto.timingSafeEqual(supplied, calculated)) throw unauthorized("Invalid Paystack webhook signature");
+  const event = JSON.parse(rawBody.toString("utf8")) as { event?: string; data?: { reference?: string } };
+  if (event.event !== "charge.success" || !event.data?.reference) return { received: true, processed: false };
+  const attempt = await prisma.walletFundingAttempt.findUnique({ where: { reference: event.data.reference } });
+  if (!attempt) return { received: true, processed: false };
+  const verification = await verifyPaystackReference(attempt.reference);
+  const result = await finalizeVerifiedPaystackFunding(attempt.id, verification);
+  return { received: true, processed: true, ...result };
+};
 
 export const listInvoiceTemplates = (organizationId: string) => prisma.accountingInvoiceTemplate.findMany({ where: { organizationId }, orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }] });
 export const createInvoiceTemplate = async (organizationId: string, input: InvoiceTemplateInput, user: AuthUser) => { const count = await prisma.accountingInvoiceTemplate.count({ where: { organizationId } }); const row = await prisma.accountingInvoiceTemplate.create({ data: { organizationId, ...input, normalizedName: input.name.trim().toLowerCase(), isDefault: count === 0 } }); await audit(organizationId,user,"ACCOUNTING_INVOICE_TEMPLATE_CREATED","ACCOUNTING_INVOICE_TEMPLATE",row.id,"Created invoice template"); return row; };
