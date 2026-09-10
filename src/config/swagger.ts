@@ -3712,4 +3712,119 @@ const options: swaggerJSDoc.Options = {
   ]
 };
 
-export const openApiSpec = swaggerJSDoc(options);
+type OpenApiRecord = Record<string, any>;
+
+const exampleByName = (name: string, schema: OpenApiRecord = {}) => {
+  const key = name.toLowerCase();
+  if (schema.enum?.length) return schema.enum[0];
+  if (schema.default !== undefined) return schema.default;
+  if (key.includes("email")) return "ada.okafor@acmelogistics.com";
+  if (key.includes("phone")) return "+2348012345678";
+  if (key === "password" || key.includes("newpassword")) return "SecurePass123!";
+  if (key.includes("url")) return "https://cdn.example.com/documents/sample.pdf";
+  if (key.includes("currency")) return "NGN";
+  if (key.includes("country")) return "NG";
+  if (key.includes("timezone")) return "Africa/Lagos";
+  if (key.includes("date") || key.endsWith("from")) return "2026-10-01";
+  if (key.endsWith("to")) return "2026-12-31";
+  if (key.includes("deadline")) return "2027-01-15";
+  if (key.includes("time")) return "09:00";
+  if (key === "id" || key.endsWith("id")) return `${name.replace(/id$/i, "").replace(/[^a-z0-9]/gi, "-").toLowerCase() || "resource"}_01J9Z6Y2K7M8N9P0Q1R2S3T4V5`;
+  if (key.includes("amount") || key.includes("salary") || key.includes("price") || key.includes("balance")) return 250000;
+  if (key.includes("rate") || key.includes("percent")) return 7.5;
+  if (key.includes("quantity") || key.includes("count") || key.includes("days")) return 1;
+  if (key.includes("rating") || key.includes("score")) return 4;
+  if (key.startsWith("is") || key.startsWith("has") || key.includes("enabled") || key === "active" || key === "submit") return true;
+  if (key.includes("description")) return "Quarterly business performance review";
+  if (key.includes("comment") || key.includes("feedback") || key.includes("notes")) return "Performance is on track against the agreed objectives.";
+  if (key.includes("name") || key.includes("title")) return "Q4 2026 Performance Review";
+  if (key.includes("address")) return "12 Marina Road, Lagos";
+  if (key.includes("reference")) return "REF-2026-0001";
+  if (schema.type === "integer" || schema.type === "number") return Math.max(schema.minimum ?? 1, 1);
+  if (schema.type === "boolean") return true;
+  return "Sample value";
+};
+
+const buildSchemaExample = (schema: OpenApiRecord | undefined, schemas: OpenApiRecord, name = "value", seen = new Set<string>()): any => {
+  if (!schema) return exampleByName(name);
+  if (schema.example !== undefined) return schema.example;
+  if (schema.examples?.length) return schema.examples[0];
+  if (schema.$ref) {
+    const refName = String(schema.$ref).split("/").pop()!;
+    if (seen.has(refName)) return undefined;
+    return buildSchemaExample(schemas[refName], schemas, refName, new Set([...seen, refName]));
+  }
+  if (schema.oneOf?.length || schema.anyOf?.length) return buildSchemaExample((schema.oneOf ?? schema.anyOf)[0], schemas, name, seen);
+  if (schema.allOf?.length) return Object.assign({}, ...schema.allOf.map((part: OpenApiRecord) => buildSchemaExample(part, schemas, name, seen)).filter((value: any) => value && typeof value === "object"));
+  if (schema.type === "array") {
+    const item = buildSchemaExample(schema.items, schemas, name.replace(/s$/, ""), seen);
+    return item === undefined ? [] : [item];
+  }
+  if (schema.type === "object" || schema.properties) {
+    return Object.fromEntries(Object.entries<OpenApiRecord>(schema.properties ?? {})
+      .map(([property, definition]) => [property, buildSchemaExample(definition, schemas, property, seen)])
+      .filter(([, value]) => value !== undefined));
+  }
+  if (schema.format === "date") return exampleByName(name, schema);
+  if (schema.format === "date-time") return "2026-10-01T09:00:00.000Z";
+  if (schema.format === "uuid") return "550e8400-e29b-41d4-a716-446655440000";
+  return exampleByName(name, schema);
+};
+
+const appraisalExamples: Record<string, { request?: unknown; response: unknown }> = {
+  [`POST ${hrisBase}/appraisals/cycles`]: {
+    request: { cycleName: "Q4 2026 Performance Review", templateId: "template_01J9Z6Y2K7M8N9P0Q1R2S3T4V5", periodFrom: "2026-10-01", periodTo: "2026-12-31", submissionDeadline: "2027-01-15", description: "Company-wide review of Q4 goals and competencies.", launchMode: "SAVE_AS_DRAFT" },
+    response: { id: "cycle_01J9Z7A3B4C5D6E7F8G9H0J1K2", cycleName: "Q4 2026 Performance Review", templateId: "template_01J9Z6Y2K7M8N9P0Q1R2S3T4V5", periodFrom: "2026-10-01", periodTo: "2026-12-31", submissionDeadline: "2027-01-15", status: "DRAFT", description: "Company-wide review of Q4 goals and competencies.", createdAt: "2026-09-10T10:30:00.000Z" }
+  },
+  [`POST ${hrisBase}/appraisals/{appraisalId}/goals`]: {
+    request: { title: "Reduce monthly order-processing time", description: "Improve the fulfilment workflow by removing manual approval bottlenecks.", successCriteria: "Reduce average processing time from 48 hours to 24 hours or less.", targetDate: "2026-12-15" },
+    response: { id: "goal_01J9Z8B4C5D6E7F8G9H0J1K2L3", title: "Reduce monthly order-processing time", status: "NOT_STARTED", targetDate: "2026-12-15", rating: null }
+  },
+  [`PATCH ${hrisBase}/appraisals/{appraisalId}/goals/{goalId}`]: {
+    request: { status: "COMPLETED", rating: 4, comment: "The target was met consistently during November and December." },
+    response: { id: "goal_01J9Z8B4C5D6E7F8G9H0J1K2L3", status: "COMPLETED", rating: 4, comment: "The target was met consistently during November and December." }
+  },
+  [`POST ${hrisBase}/appraisals/{appraisalId}/self-assessment`]: {
+    request: { sections: [{ section: "KRA", totalWeight: 100, objectives: [{ title: "Operational efficiency", weight: 100, keyResults: [{ keyResult: "Reduce average order-processing time", kpiWeight: 100, target: 24, achieved: 22 }] }] }], reflections: [{ questionId: "question_achievements", response: "I automated two approval steps and documented the new workflow." }], submit: true },
+    response: { appraisalId: "appraisal_01J9Z9C5D6E7F8G9H0J1K2L3M4", stage: "MANAGER_REVIEW", selfAssessmentSubmittedAt: "2027-01-10T14:20:00.000Z", overallScore: 4 }
+  },
+  [`POST ${hrisBase}/appraisals/{appraisalId}/manager-review`]: {
+    request: { goalRatings: [{ goalId: "goal_01J9Z8B4C5D6E7F8G9H0J1K2L3", rating: 4, comment: "The agreed processing-time target was exceeded." }], responses: [{ questionId: "question_manager_feedback", response: "Ada delivered the agreed operational improvements." }], overallFeedback: "Strong delivery with clear, measurable impact on fulfilment time.", recommendation: "EXCEEDS_EXPECTATION", submit: true },
+    response: { appraisalId: "appraisal_01J9Z9C5D6E7F8G9H0J1K2L3M4", stage: "HR_APPROVAL", recommendation: "EXCEEDS_EXPECTATION", managerReviewSubmittedAt: "2027-01-12T11:00:00.000Z" }
+  },
+  [`POST ${hrisBase}/appraisals/{appraisalId}/hr-approval`]: {
+    request: { decision: "APPROVED", hrNotes: "Ratings and supporting comments comply with the review policy." },
+    response: { appraisalId: "appraisal_01J9Z9C5D6E7F8G9H0J1K2L3M4", stage: "ACKNOWLEDGMENT", decision: "APPROVED", approvedAt: "2027-01-13T09:15:00.000Z" }
+  }
+};
+
+const enrichOpenApiExamples = (spec: OpenApiRecord) => {
+  const schemas = spec.components?.schemas ?? {};
+  for (const [pathName, pathItem] of Object.entries<OpenApiRecord>(spec.paths ?? {})) {
+    for (const method of ["get", "post", "put", "patch", "delete"] as const) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      const operationKey = `${method.toUpperCase()} ${pathName}`;
+      const curated = appraisalExamples[operationKey];
+      for (const parameter of operation.parameters ?? []) {
+        if (parameter.example === undefined) parameter.example = buildSchemaExample(parameter.schema, schemas, parameter.name);
+      }
+      const jsonRequest = operation.requestBody?.content?.["application/json"];
+      if (jsonRequest && jsonRequest.example === undefined && !jsonRequest.examples) {
+        jsonRequest.example = curated?.request ?? buildSchemaExample(jsonRequest.schema, schemas, "request");
+      }
+      const successEntry = Object.entries<OpenApiRecord>(operation.responses ?? {}).find(([status]) => /^2\d\d$/.test(status) && status !== "204");
+      if (!successEntry) continue;
+      const [, response] = successEntry;
+      response.content ??= { "application/json": { schema: { type: "object", additionalProperties: true } } };
+      const jsonResponse = response.content["application/json"];
+      if (!jsonResponse || jsonResponse.example !== undefined || jsonResponse.examples) continue;
+      jsonResponse.example = curated?.response ?? (jsonResponse.schema
+        ? buildSchemaExample(jsonResponse.schema, schemas, "response")
+        : { message: response.description ?? "Request completed successfully" });
+    }
+  }
+  return spec;
+};
+
+export const openApiSpec = enrichOpenApiExamples(swaggerJSDoc(options) as OpenApiRecord);

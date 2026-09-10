@@ -116,3 +116,34 @@ test("HRIS appraisal mutations publish their complete frontend contract", () => 
     assert.ok(paths[path].post.parameters.some((parameter: any) => parameter.in === "path" && parameter.required));
   }
 });
+
+test("mutation contracts provide usable request and success response examples", () => {
+  const paths = (openApiSpec as any).paths;
+  for (const [path, pathItem] of Object.entries<any>(paths)) {
+    for (const method of ["post", "put", "patch", "delete"]) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      const request = operation.requestBody?.content?.["application/json"];
+      if (request) {
+        assert.notEqual(request.example, undefined, `${method.toUpperCase()} ${path} must publish a JSON request example`);
+        assert.doesNotMatch(JSON.stringify(request.example), /:"string"/i, `${method.toUpperCase()} ${path} still contains an unusable Swagger string placeholder`);
+      }
+      const success = Object.entries<any>(operation.responses ?? {}).find(([status]) => /^2\d\d$/.test(status) && status !== "204")?.[1];
+      if (!success) continue;
+      const json = success.content?.["application/json"];
+      assert.ok(json?.example !== undefined || json?.examples, `${method.toUpperCase()} ${path} must publish a JSON success response example`);
+    }
+  }
+});
+
+test("appraisal cycle examples follow the documented date and workflow rules", () => {
+  const operation = (openApiSpec as any).paths["/api/v1/hris/appraisals/cycles"].post;
+  const request = operation.requestBody.content["application/json"].example;
+  assert.equal(request.launchMode, "SAVE_AS_DRAFT");
+  assert.ok(request.templateId.startsWith("template_"));
+  assert.ok(new Date(request.periodFrom) < new Date(request.periodTo));
+  assert.ok(new Date(request.periodTo) < new Date(request.submissionDeadline));
+  const response = operation.responses["201"].content["application/json"].example;
+  assert.equal(response.status, "DRAFT");
+  assert.equal(response.cycleName, request.cycleName);
+});
