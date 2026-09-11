@@ -166,3 +166,18 @@ test("appraisal UI routes publish role, filter, detail, and employee action cont
   assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/self-assessment/submit"].post.responses["200"].content["application/json"].example.data.status, "SUBMITTED");
   assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/acknowledge"].post.responses["200"].content["application/json"].example.data.stage, "COMPLETED");
 });
+
+test("Notifications and Alerts examples match their runtime field types", () => {
+  const paths = (openApiSpec as any).paths;
+  const preference = paths["/api/v1/admin/notifications-alerts/preferences/{channelKey}"].get;
+  assert.deepEqual(preference.parameters.find((item: any) => item.name === "channelKey").schema.enum, ["IN_APP", "EMAIL"]);
+  const example = preference.responses["200"].content["application/json"].example;
+  assert.equal(example.data.channel.name, "In-App Notifications");
+  assert.equal(typeof example.data.modules[0].entitled, "boolean");
+  assert.equal(typeof example.data.modules[0].controlsEnabled, "boolean");
+  assert.equal(typeof example.data.modules[0].notifications[0].enabled, "boolean");
+  assert.doesNotMatch(JSON.stringify(example), /Q4 2026 Performance Review/);
+  const overview = paths["/api/v1/admin/notifications-alerts/overview"].get.responses["200"].content["application/json"].example;
+  assert.equal(typeof overview.data.unreadAnnouncementCount, "number");
+  assert.doesNotMatch(JSON.stringify(overview), /Q4 2026 Performance Review/);
+});

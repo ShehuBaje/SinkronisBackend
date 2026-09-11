@@ -161,14 +161,13 @@ model AppraisalSignOff {
 }
 
 model AppraisalSetting {
-  id                     String                 @id @default(cuid())
-  organizationId         String                 @unique(map: "AppraisalSetting_organizationId_key")
-  defaultReviewFrequency String                 @default("QUARTERLY")
+  id                     String       @id @default(cuid())
+  organizationId         String       @unique(map: "AppraisalSetting_organizationId_key")
+  defaultReviewFrequency String       @default("QUARTERLY")
   updatedById            String?
-  createdAt              DateTime               @default(now())
-  updatedAt              DateTime               @updatedAt
-  organization           Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AppraisalSetting_organizationId_fkey")
-  NotificationCategory   NotificationCategory[]
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+  organization           Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AppraisalSetting_organizationId_fkey")
 
   @@map("AppraisalSetting")
 }
@@ -1217,8 +1216,6 @@ model NotificationCategory {
   updatedAt                    DateTime                       @updatedAt
   tenantnotificationpreference TenantNotificationPreference[]
   userNotifications            UserNotification[]
-  appraisalSetting             AppraisalSetting?              @relation(fields: [appraisalSettingId], references: [id])
-  appraisalSettingId           String?
 
   @@unique([moduleKey, key], map: "NotificationCategory_moduleKey_key_key")
   @@index([moduleKey, isActive, sortOrder], map: "NotificationCategory_moduleKey_isActive_sortOrder_idx")

@@ -10,6 +10,7 @@
     "postinstall": "prisma generate",
     "test": "cross-env NODE_ENV=test tsx --test src/**/*.test.ts",
     "test:appraisal:integration": "cross-env NODE_ENV=test RUN_APPRAISAL_DB_INTEGRATION=true tsx --test src/modules/hris/hris.appraisal.integration.test.ts",
+    "test:admin-notifications:integration": "cross-env NODE_ENV=test RUN_ADMIN_NOTIFICATIONS_HTTP_INTEGRATION=true tsx --test src/modules/admin/admin.notifications.integration.test.ts",
     "start": "node dist/src/local-server.js",
     "lint": "eslint \"src/**/*.ts\"",
     "prisma:generate": "prisma generate",
