@@ -181,3 +181,18 @@ test("Notifications and Alerts examples match their runtime field types", () => 
   assert.equal(typeof overview.data.unreadAnnouncementCount, "number");
   assert.doesNotMatch(JSON.stringify(overview), /Q4 2026 Performance Review/);
 });
+
+test("generated examples do not leak appraisal copy or generic placeholders across modules", () => {
+  const paths = (openApiSpec as any).paths;
+  const nonAppraisalOperations = Object.fromEntries(Object.entries(paths).filter(([path]) => !path.includes("appraisal")));
+  assert.doesNotMatch(JSON.stringify(nonAppraisalOperations), /Q4 2026 Performance Review|Quarterly business performance review|Performance is on track against the agreed objectives\.|Sample value/);
+  assert.doesNotMatch(JSON.stringify(paths), /Sample value/);
+
+  const payee = paths["/api/v1/payroll/payees"].post.requestBody.content["application/json"].example;
+  assert.equal(typeof payee.accountNumber, "string");
+  assert.equal(typeof payee.accountName, "string");
+  const organization = paths["/api/v1/admin/organization"].patch.requestBody.content["application/json"].example;
+  assert.equal(organization.country, "NG");
+  const payment = paths["/api/v1/accounting/invoices/{id}/payment"].post.requestBody.content["application/json"].example;
+  assert.equal(typeof payment.amount, "string");
+});

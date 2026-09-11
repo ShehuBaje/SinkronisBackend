@@ -3724,31 +3724,56 @@ const exampleByName = (name: string, schema: OpenApiRecord = {}) => {
   const key = name.toLowerCase();
   if (schema.enum?.length) return schema.enum[0];
   if (schema.default !== undefined) return schema.default;
+  if (schema.type === "boolean") return true;
+  if (schema.format === "date-time") return "2026-09-15T09:00:00.000Z";
+  if (schema.format === "date") return "2026-09-15";
+  if (schema.format === "uuid") return "550e8400-e29b-41d4-a716-446655440000";
+  if (schema.type === "integer" || schema.type === "number") {
+    if (key.includes("year")) return 2026;
+    if (key.includes("amount") || key.includes("salary") || key.includes("price") || key.includes("balance") || key.includes("cost") || key.includes("revenue") || key.includes("total")) return 250000;
+    if (key.includes("rate") || key.includes("percent")) return 7.5;
+    if (key.includes("rating") || key.includes("score")) return 4;
+    return Math.max(schema.minimum ?? 1, 1);
+  }
   if (key.includes("email")) return "ada.okafor@acmelogistics.com";
   if (key.includes("phone")) return "+2348012345678";
   if (key === "password" || key.includes("newpassword")) return "SecurePass123!";
-  if (key.includes("url")) return "https://cdn.example.com/documents/sample.pdf";
+  if (key.includes("url")) return "https://example.com/resources/details";
   if (key.includes("currency")) return "NGN";
   if (key.includes("country")) return "NG";
   if (key.includes("timezone")) return "Africa/Lagos";
-  if (key.includes("date") || key.endsWith("from")) return "2026-10-01";
-  if (key.endsWith("to")) return "2026-12-31";
-  if (key.includes("deadline")) return "2027-01-15";
+  if (key.includes("deadline")) return "2026-09-30";
+  if (key.includes("date") || key.endsWith("from")) return "2026-09-01";
+  if (key.endsWith("to")) return "2026-09-30";
   if (key.includes("time")) return "09:00";
   if (key === "id" || key.endsWith("id")) return `${name.replace(/id$/i, "").replace(/[^a-z0-9]/gi, "-").toLowerCase() || "resource"}_01J9Z6Y2K7M8N9P0Q1R2S3T4V5`;
-  if (key.includes("amount") || key.includes("salary") || key.includes("price") || key.includes("balance")) return 250000;
-  if (key.includes("rate") || key.includes("percent")) return 7.5;
-  if (key.includes("quantity") || key.includes("count") || key.includes("days")) return 1;
-  if (key.includes("rating") || key.includes("score")) return 4;
-  if (key.startsWith("is") || key.startsWith("has") || key.includes("enabled") || key === "active" || key === "submit") return true;
-  if (key.includes("description")) return "Quarterly business performance review";
-  if (key.includes("comment") || key.includes("feedback") || key.includes("notes")) return "Performance is on track against the agreed objectives.";
-  if (key.includes("name") || key.includes("title")) return "Q4 2026 Performance Review";
+  if (key.includes("accountnumbermasked")) return "******6789";
+  if (key.includes("accountnumber")) return "0123456789";
+  if (key.includes("accountname")) return "Ada Okafor";
+  if (key.includes("accounttype")) return "CURRENT";
+  if (key.includes("amount")) return "250000.00";
+  if (key === "firstname") return "Ada";
+  if (key === "lastname") return "Okafor";
+  if (key.includes("fullname") || key === "employeename") return "Ada Okafor";
+  if (key.includes("bankname")) return "Example Commercial Bank";
+  if (key.includes("pfaname") || key.includes("pensionfund")) return "Example Pension Fund Administrator";
+  if (key.includes("departmentname")) return "Engineering";
+  if (key.includes("rolename") || key === "role" || key.includes("jobtitle")) return "Software Engineer";
+  if (key.includes("period")) return "September 2026";
+  if (key.includes("month")) return "2026-09";
+  if (key.includes("description")) return "Example description for this record.";
+  if (key.includes("comment") || key.includes("feedback") || key.includes("notes")) return "Example supporting information for this action.";
+  if (key.includes("summary")) return "Example summary of the current record.";
+  if (key.includes("message")) return "Request completed successfully";
+  if (key.includes("name")) return "Example name";
+  if (key.includes("title")) return "Example title";
   if (key.includes("address")) return "12 Marina Road, Lagos";
   if (key.includes("reference")) return "REF-2026-0001";
-  if (schema.type === "integer" || schema.type === "number") return Math.max(schema.minimum ?? 1, 1);
-  if (schema.type === "boolean") return true;
-  return "Sample value";
+  if (key.includes("code")) return "EXAMPLE-001";
+  if (key.includes("reason")) return "Example reason for this request.";
+  if (key.includes("content")) return "Example content for this record.";
+  const label = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim().toLowerCase();
+  return `Example ${label || "value"}`;
 };
 
 const buildSchemaExample = (schema: OpenApiRecord | undefined, schemas: OpenApiRecord, name = "value", seen = new Set<string>()): any => {
@@ -3771,9 +3796,6 @@ const buildSchemaExample = (schema: OpenApiRecord | undefined, schemas: OpenApiR
       .map(([property, definition]) => [property, buildSchemaExample(definition, schemas, property, seen)])
       .filter(([, value]) => value !== undefined));
   }
-  if (schema.format === "date") return exampleByName(name, schema);
-  if (schema.format === "date-time") return "2026-10-01T09:00:00.000Z";
-  if (schema.format === "uuid") return "550e8400-e29b-41d4-a716-446655440000";
   return exampleByName(name, schema);
 };
 
