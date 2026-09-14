@@ -75,6 +75,7 @@ import {
   updateSecurityTwoFactorPolicyController,
   toggleIpAllowlistController,
   updateOrganizationController,
+  verifyOrganizationCacController,
   updateRoleController,
   updateUserAccessController,
   updateUserGroupController,
@@ -138,6 +139,7 @@ import {
   ipAllowlistEntryCreateSchema,
   loginActivityQuerySchema,
   organizationUpdateSchema,
+  cacVerificationSchema,
   roleCloneSchema,
   roleCreateSchema,
   roleUpdateSchema,
@@ -275,6 +277,13 @@ adminRouter.patch(
   authorize("admin:organization:update"),
   validate({ params: moduleParamsSchema, body: moduleStatusUpdateSchema }),
   asyncHandler(updateModuleStatusController)
+);
+
+adminRouter.post(
+  "/organization/cac-verification",
+  authorize("admin:organization:update"),
+  validate({ body: cacVerificationSchema }),
+  asyncHandler(verifyOrganizationCacController)
 );
 
 adminRouter.post(

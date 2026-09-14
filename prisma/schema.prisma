@@ -359,8 +359,11 @@ model AuthEvent {
   ipAddress       String?
   userAgent       String?      @db.Text
   deviceName      String?
+  locationCity    String?
   locationState   String?
   locationCountry String?
+  locationTimezone String?
+  locationProvider String?
   occurredAt      DateTime     @default(now())
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuthEvent_organizationId_fkey")
   user            User?        @relation(fields: [userId], references: [id], map: "AuthEvent_userId_fkey")
@@ -1281,6 +1284,13 @@ model Organization {
   profileImageUrl              String?
   industry                     String?
   cacNumber                    String?
+  cacVerificationStatus        String                           @default("UNVERIFIED")
+  cacVerificationCheckedAt     DateTime?
+  cacVerifiedAt                DateTime?
+  cacVerifiedName              String?
+  cacVerificationProvider      String?
+  cacVerificationReference     String?
+  cacRegistryStatus            String?
   registrationAddress          String?                          @db.Text
   website                      String?
   fiscalYearStart              String?
@@ -2153,8 +2163,11 @@ model UserSession {
   deviceName       String?
   userAgent        String?      @db.Text
   ipAddress        String?
+  locationCity     String?
   locationState    String?
   locationCountry  String?
+  locationTimezone String?
+  locationProvider String?
   isCurrent        Boolean      @default(false)
   revokedAt        DateTime?
   revokeReason     String?

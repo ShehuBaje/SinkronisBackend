@@ -31,9 +31,7 @@ import { enforcePlatformMaintenance } from "./middleware/maintenance.middleware"
 
 export const app = express();
 
-if (env.NODE_ENV === "production") {
-  app.set("trust proxy", 1);
-}
+if (env.TRUST_PROXY_HOPS > 0) app.set("trust proxy", env.TRUST_PROXY_HOPS);
 
 app.use(helmet());
 const configuredCorsOrigins = env.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean);

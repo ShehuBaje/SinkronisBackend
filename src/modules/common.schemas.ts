@@ -27,6 +27,10 @@ export const organizationUpdateSchema = z.object({
   companySize: z.string().min(2).optional()
 });
 
+export const cacVerificationSchema = z.object({
+  cacNumber: z.string().trim().toUpperCase().regex(/^(?:RC|BN|IT)?[\s-]?\d{1,10}$/, "CAC number must be an RC, BN, IT, or numeric registration number")
+});
+
 export const departmentCreateSchema = z.object({
   name: z.string().min(2),
   description: optionalText,

@@ -15,6 +15,8 @@ import { billingPlans as sharedBillingPlans, calculateBillingAmount, type Billin
 import { getEffectivePlanCatalogue, resolveRecurringPrices } from "../billing/pricing.service";
 import { sendSubscriptionRenewalEmail, sendWorkspaceInvitationEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
 import { isIpAllowed } from "../auth/auth.service";
+import { formatLocation } from "../../core/request-metadata";
+import { companyNamesMatch, getCompanyRegistryProvider, normalizeRegistrationNumber } from "./company-registry.service";
 import { deriveSubscriptionStatus, isRenewalReminderDue } from "../billing/billing.rules";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
 import { supportedCurrencies, supportedDateFormats, supportedLanguages, type AdminAuditLogInput, type AuditLogRow, type BrandingSettingsResponse, type LocaleSettingsResponse, type NotificationChannelPreferences, type PlatformAnnouncementResponse, type QuickAction, type SystemAlertRow, type TenantNotificationChannelKey } from "./admin.interface";
@@ -2954,6 +2956,13 @@ export const getOrganization = async (organizationId: string) => {
       currency: true,
       taxId: true,
       cacNumber: true,
+      cacVerificationStatus: true,
+      cacVerificationCheckedAt: true,
+      cacVerifiedAt: true,
+      cacVerifiedName: true,
+      cacVerificationProvider: true,
+      cacVerificationReference: true,
+      cacRegistryStatus: true,
       website: true,
       fiscalYearStart: true,
       companySize: true,
@@ -2965,9 +2974,25 @@ export const getOrganization = async (organizationId: string) => {
 };
 
 export const updateOrganization = async (req: Request) => {
+  const current = await prisma.organization.findUniqueOrThrow({ where: { id: req.organizationId }, select: { name: true, cacNumber: true } });
+  const nextBody = { ...req.body } as Record<string, unknown>;
+  if (typeof nextBody.cacNumber === "string") nextBody.cacNumber = normalizeRegistrationNumber(nextBody.cacNumber);
+  const identityChanged = (typeof nextBody.name === "string" && nextBody.name !== current.name)
+    || (typeof nextBody.cacNumber === "string" && nextBody.cacNumber !== current.cacNumber);
   const organization = await prisma.organization.update({
     where: { id: req.organizationId },
-    data: req.body
+    data: {
+      ...nextBody,
+      ...(identityChanged ? {
+        cacVerificationStatus: "UNVERIFIED",
+        cacVerificationCheckedAt: null,
+        cacVerifiedAt: null,
+        cacVerifiedName: null,
+        cacVerificationProvider: null,
+        cacVerificationReference: null,
+        cacRegistryStatus: null
+      } : {})
+    }
   });
 
   await logAdminActivity({
@@ -2981,6 +3006,42 @@ export const updateOrganization = async (req: Request) => {
   });
 
   return organization;
+};
+
+export const verifyOrganizationCac = async (req: Request) => {
+  const registrationNumber = normalizeRegistrationNumber(String(req.body.cacNumber));
+  const organization = await prisma.organization.findUniqueOrThrow({ where: { id: req.organizationId }, select: { id: true, name: true } });
+  const readiness = getCompanyRegistryProvider();
+  const provider = readiness.provider;
+  const checkedAt = new Date();
+
+  if (!provider) {
+    await prisma.organization.update({ where: { id: organization.id }, data: {
+      cacNumber: registrationNumber,
+      cacVerificationStatus: "PROVIDER_UNAVAILABLE",
+      cacVerificationCheckedAt: checkedAt,
+      cacVerifiedAt: null,
+      cacVerifiedName: null,
+      cacVerificationProvider: null,
+      cacVerificationReference: null,
+      cacRegistryStatus: null
+    } });
+    await logAdminActivity({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "CAC_VERIFICATION_UNAVAILABLE", resource: "ORGANIZATION", resourceId: organization.id, summary: "CAC verification requested while an approved registry provider is unavailable", metadata: { registrationNumber } });
+    return { verified: false, verificationStatus: "PROVIDER_UNAVAILABLE", registrationNumber, registeredName: null, registryStatus: null, provider: null, checkedAt, verifiedAt: null };
+  }
+
+  const result = await provider.verifyRegistration(registrationNumber);
+  const matches = result.verified && !!result.registeredName && companyNamesMatch(organization.name, result.registeredName);
+  const verificationStatus = result.verified ? (matches ? "VERIFIED" : "MISMATCH") : "FAILED";
+  const verifiedAt = matches ? checkedAt : null;
+  await prisma.organization.update({ where: { id: organization.id }, data: {
+    cacNumber: registrationNumber, cacVerificationStatus: verificationStatus, cacVerificationCheckedAt: checkedAt,
+    cacVerifiedAt: verifiedAt, cacVerifiedName: result.registeredName ?? null,
+    cacVerificationProvider: result.provider, cacVerificationReference: result.reference ?? null,
+    cacRegistryStatus: result.registryStatus ?? null
+  } });
+  await logAdminActivity({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "CAC_VERIFICATION_CHECKED", resource: "ORGANIZATION", resourceId: organization.id, summary: `CAC verification completed with status ${verificationStatus}`, metadata: { registrationNumber, verificationStatus, provider: result.provider } });
+  return { verified: matches, verificationStatus, registrationNumber, registeredName: result.registeredName ?? null, registryStatus: result.registryStatus ?? null, provider: result.provider, checkedAt, verifiedAt };
 };
 
 export const getUserManagementAnalytics = async (req: Request) => {
@@ -4489,8 +4550,10 @@ export const listActiveSessions = async (req: Request) => {
       device: row.deviceName ?? resolveDeviceName(row.userAgent),
       ipAddress: row.ipAddress,
       location: {
+        city: row.locationCity,
         state: row.locationState,
-        country: row.locationCountry
+        country: row.locationCountry,
+        displayName: formatLocation(row)
       },
       lastSeenAt: row.lastSeenAt,
       createdAt: row.createdAt,
@@ -4777,8 +4840,10 @@ export const listLoginActivity = async (req: Request) => {
       ipAddress: row.ipAddress,
       device: row.deviceName ?? resolveDeviceName(row.userAgent),
       location: {
+        city: row.locationCity,
         state: row.locationState,
-        country: row.locationCountry
+        country: row.locationCountry,
+        displayName: formatLocation(row)
       },
       occurredAt: row.occurredAt
     }))

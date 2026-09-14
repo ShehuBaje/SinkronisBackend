@@ -64,6 +64,7 @@ import {
   updateSecurityPasswordPolicy,
   updateSecurityTwoFactorPolicy,
   updateOrganization,
+  verifyOrganizationCac,
   updateRole,
   updateModuleStatus,
   updateMyPlanBillingAddress,
@@ -191,6 +192,11 @@ export const updateOrganizationController = async (req: any, res: any) => {
 export const updateModuleStatusController = async (req: any, res: any) => {
   const data = await updateModuleStatus(req);
   res.json(data);
+};
+
+export const verifyOrganizationCacController = async (req: any, res: any) => {
+  const result = await verifyOrganizationCac(req);
+  sendSuccess(res, result.verificationStatus === "PROVIDER_UNAVAILABLE" ? "CAC verification provider is not configured" : "CAC verification completed", result);
 };
 
 export const getMyPlanOverviewController = async (req: any, res: any) => {

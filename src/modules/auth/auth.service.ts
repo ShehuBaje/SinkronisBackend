@@ -26,6 +26,7 @@ import type { z } from "zod";
 import { getGlobalPasswordPolicy } from "../platform-admin/platform-admin.service";
 import { billingModuleKeys, billingPlans } from "../billing/billing.catalog";
 import { createAuditLog } from "../admin/admin.audit";
+import { extractClientIp, resolveRequestLocation, type RequestMetadata } from "../../core/request-metadata";
 
 const prismaAny = prisma as any;
 const loadOtpLibrary = () => import("otplib");
@@ -122,21 +123,6 @@ const resolveDeviceName = (userAgent?: string | null): string => {
   return `${browser} / ${os}`;
 };
 
-const extractClientIp = (requestMeta?: { headers?: Record<string, unknown>; ip?: string | null }): string | null => {
-  if (requestMeta?.ip) return requestMeta.ip.replace(/^::ffff:/, "");
-  const forwarded = requestMeta?.headers?.["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.length > 0) {
-    return forwarded.split(",")[0]?.trim() ?? null;
-  }
-
-  const realIp = requestMeta?.headers?.["x-real-ip"];
-  if (typeof realIp === "string" && realIp.length > 0) {
-    return realIp.trim();
-  }
-
-  return requestMeta?.ip ?? null;
-};
-
 export const isIpAllowed = (ip: string, allowlist: string[]): boolean => {
   if (!ip || allowlist.length === 0) return false;
   const family = isIP(ip);
@@ -228,6 +214,7 @@ const logAuthEvent = async (input: {
   ipAddress?: string | null;
   userAgent?: string | null;
   deviceName?: string | null;
+  location?: Awaited<ReturnType<typeof resolveRequestLocation>>;
 }) => {
   await prismaAny.authEvent.create({
     data: {
@@ -240,6 +227,11 @@ const logAuthEvent = async (input: {
       ipAddress: input.ipAddress ?? null,
       userAgent: input.userAgent ?? null,
       deviceName: input.deviceName ?? resolveDeviceName(input.userAgent)
+      ,locationCity: input.location?.city ?? null
+      ,locationState: input.location?.state ?? null
+      ,locationCountry: input.location?.country ?? null
+      ,locationTimezone: input.location?.timezone ?? null
+      ,locationProvider: input.location?.provider ?? null
     }
   });
 };
@@ -493,9 +485,10 @@ const completeLoginSuccess = async (
     lastName: string;
     role: { name: string };
   },
-  requestMeta?: { headers?: Record<string, unknown>; ip?: string | null }
+  requestMeta?: RequestMetadata
 ) => {
   const clientIp = extractClientIp(requestMeta);
+  const clientLocation = await resolveRequestLocation(requestMeta);
   const clientUserAgent = typeof requestMeta?.headers?.["user-agent"] === "string" ? requestMeta.headers["user-agent"] : null;
 
   const sessionId = crypto.randomUUID();
@@ -531,6 +524,11 @@ const completeLoginSuccess = async (
         userAgent: clientUserAgent,
         deviceName: resolveDeviceName(clientUserAgent),
         ipAddress: clientIp,
+        locationCity: clientLocation.city,
+        locationState: clientLocation.state,
+        locationCountry: clientLocation.country,
+        locationTimezone: clientLocation.timezone,
+        locationProvider: clientLocation.provider,
         isCurrent: true,
         expiresAt: tokenExpiresAt(tokens.refreshToken)
       }
@@ -544,7 +542,8 @@ const completeLoginSuccess = async (
     eventType: "LOGIN_SUCCESS",
     status: "SUCCESS",
     ipAddress: clientIp,
-    userAgent: clientUserAgent
+    userAgent: clientUserAgent,
+    location: clientLocation
   });
 
   return {
@@ -674,13 +673,14 @@ export const registerOrganization = async (input: z.infer<typeof registerOrganiz
 
 export const login = async (
   input: z.infer<typeof loginSchema>,
-  requestMeta?: { headers?: Record<string, unknown>; ip?: string | null }
+  requestMeta?: RequestMetadata
 ) => {
   const user = await resolveUserByEmailAndOrganization(input.email, input.organizationSlug);
   if (!user || !user.isActive) throw unauthorized("Invalid credentials");
 
   const clientIp = extractClientIp(requestMeta);
   const clientUserAgent = typeof requestMeta?.headers?.["user-agent"] === "string" ? requestMeta.headers["user-agent"] : null;
+  const clientLocation = await resolveRequestLocation(requestMeta);
 
   const securityPolicy = await getSecurityPolicyForOrganization(user.organizationId);
 
@@ -700,7 +700,8 @@ export const login = async (
         status: "BLOCKED",
         reasonCode: "IP_NOT_ALLOWED",
         ipAddress: clientIp,
-        userAgent: clientUserAgent
+        userAgent: clientUserAgent,
+        location: clientLocation
       });
       throw unauthorized("Login blocked by organization IP allowlist policy");
     }
@@ -715,7 +716,8 @@ export const login = async (
       status: "BLOCKED",
       reasonCode: "ACCOUNT_LOCKED",
       ipAddress: clientIp,
-      userAgent: clientUserAgent
+      userAgent: clientUserAgent,
+      location: clientLocation
     });
     throw unauthorized("Account is temporarily locked due to too many failed login attempts");
   }
@@ -735,7 +737,8 @@ export const login = async (
       status: shouldLock ? "BLOCKED" : "FAILED",
       reasonCode: shouldLock ? "ACCOUNT_LOCKED" : "INVALID_PASSWORD",
       ipAddress: clientIp,
-      userAgent: clientUserAgent
+      userAgent: clientUserAgent,
+      location: clientLocation
     });
 
     throw unauthorized("Invalid credentials");
@@ -753,7 +756,8 @@ export const login = async (
       status: "BLOCKED",
       reasonCode: "PASSWORD_EXPIRED",
       ipAddress: clientIp,
-      userAgent: clientUserAgent
+      userAgent: clientUserAgent,
+      location: clientLocation
     });
     throw unauthorized("Password has expired. Reset your password to continue.");
   }
@@ -854,7 +858,8 @@ export const login = async (
       eventType: "LOGIN_2FA_CHALLENGE",
       status: "SUCCESS",
       ipAddress: clientIp,
-      userAgent: clientUserAgent
+      userAgent: clientUserAgent,
+      location: clientLocation
     });
 
     const challengeToken = signLoginChallengeToken({ userId: user.id, challengeId: challenge.id });

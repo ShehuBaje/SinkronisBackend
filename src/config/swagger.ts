@@ -2775,6 +2775,23 @@ const options: swaggerJSDoc.Options = {
           }
         }
       },
+      [`${adminBase}/organization/cac-verification`]: {
+        post: {
+          tags: ["Admin"], summary: "Verify an organization CAC/RC number",
+          description: "Verifies a registration number through the configured official registry provider. PROVIDER_UNAVAILABLE means no registry check occurred and is not evidence that the number is invalid. The current CAC adapter remains disabled until CAC supplies the exact account-specific RC lookup contract and credentials.",
+          security: [{ bearerAuth: [] }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["cacNumber"], additionalProperties: false, properties: { cacNumber: { type: "string", pattern: "^(RC|BN|IT)?[ -]?[0-9]{1,10}$" } } }, example: { cacNumber: "RC-1234567" } } } },
+          responses: {
+            "200": { description: "Verification attempt completed", content: { "application/json": { examples: {
+              verified: { summary: "Registry record and company name matched", value: { success: true, message: "CAC verification completed", data: { verified: true, verificationStatus: "VERIFIED", registrationNumber: "RC1234567", registeredName: "Example Technologies Limited", registryStatus: "ACTIVE", provider: "CAC", checkedAt: "2026-09-14T10:00:00.000Z", verifiedAt: "2026-09-14T10:00:00.000Z" } } },
+              mismatch: { summary: "RC exists but official name does not match", value: { success: true, message: "CAC verification completed", data: { verified: false, verificationStatus: "MISMATCH", registrationNumber: "RC1234567", registeredName: "Different Company Limited", registryStatus: "ACTIVE", provider: "CAC", checkedAt: "2026-09-14T10:00:00.000Z", verifiedAt: null } } },
+              failed: { summary: "Registry did not validate the registration number", value: { success: true, message: "CAC verification completed", data: { verified: false, verificationStatus: "FAILED", registrationNumber: "RC1234567", registeredName: null, registryStatus: null, provider: "CAC", checkedAt: "2026-09-14T10:00:00.000Z", verifiedAt: null } } },
+              unavailable: { summary: "No registry check could be performed", value: { success: true, message: "CAC verification provider is not configured", data: { verified: false, verificationStatus: "PROVIDER_UNAVAILABLE", registrationNumber: "RC1234567", registeredName: null, registryStatus: null, provider: null, checkedAt: "2026-09-14T10:00:00.000Z", verifiedAt: null } } }
+            } } } },
+            "400": { description: "Invalid CAC number" }, "401": { description: "Unauthorized" }, "403": { description: "admin:organization:update permission required" }
+          }
+        }
+      },
       [`${adminBase}/security/policy`]: {
         get: {
           tags: ["Admin"],
@@ -2977,7 +2994,7 @@ const options: swaggerJSDoc.Options = {
             { in: "query", name: "to", schema: { type: "string", format: "date-time" } }
           ],
           responses: {
-            "200": { description: "Login activity payload" },
+            "200": { description: "Login activity with approximate public-IP-derived location. Client IP resolution uses generic Express trusted-proxy semantics and is hosting independent. Local/private addresses display Local / Private Network; provider failure displays Unknown and never blocks authentication.", content: { "application/json": { example: { data: [{ id: "auth-event-id", user: { id: "user-id", name: "Amina Bello", email: "amina@example.com" }, ipAddress: "197.210.1.10", device: "Chrome / Windows", location: { city: "Lagos", state: "Lagos", country: "Nigeria", displayName: "Lagos, Nigeria" }, status: "SUCCESS", occurredAt: "2026-09-14T09:30:00.000Z" }], pagination: { page: 1, limit: 25, total: 1, pages: 1 } } } } },
             "401": { description: "Unauthorized" },
             "403": { description: "Forbidden" }
           }

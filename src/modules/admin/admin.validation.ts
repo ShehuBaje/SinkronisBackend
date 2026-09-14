@@ -11,6 +11,7 @@ import {
   employeeCreateSchema,
   employeeUpdateSchema,
   organizationUpdateSchema,
+  cacVerificationSchema,
   optionalText,
   roleCreateSchema as baseRoleCreateSchema,
   roleUpdateSchema as baseRoleUpdateSchema,
@@ -28,6 +29,8 @@ import {
   userManagementUsersQuerySchema,
   workScheduleUpsertSchema
 } from "../common.schemas";
+
+export { cacVerificationSchema };
 
 export const actionParamsSchema = z.object({ id: z.string().min(1) });
 export const moduleParamsSchema = z.object({ moduleKey: z.enum(["hris", "accounting", "payroll"]) });

@@ -39,6 +39,15 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("*"),
   FRONTEND_URL: z.string().url().optional(),
   PUBLIC_BASE_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+  IP_GEOLOCATION_PROVIDER: z.enum(["NONE", "IPINFO"]).default("NONE"),
+  IPINFO_TOKEN: z.string().min(1).optional(),
+  IP_GEOLOCATION_TIMEOUT_MS: z.coerce.number().int().min(100).max(10000).default(1500),
+  DEV_CLIENT_IP_OVERRIDE: z.string().ip().optional(),
+  COMPANY_REGISTRY_PROVIDER: z.enum(["NONE", "CAC"]).default("NONE"),
+  CAC_API_BASE_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
+  CAC_API_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().min(1).optional()),
+  CAC_API_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
   PAYSTACK_SECRET_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^sk_(test|live)_[A-Za-z0-9]+$/).optional()),
   PAYSTACK_PUBLIC_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^pk_(test|live)_[A-Za-z0-9]+$/).optional()),
   PAYSTACK_CALLBACK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
@@ -50,6 +59,7 @@ const envSchema = z.object({
   DEFAULT_SUPER_ADMIN_EMAIL: z.string().email().default("admin@example.com"),
   DEFAULT_SUPER_ADMIN_PASSWORD: z.string().min(8).default("ChangeMe123!")
 }).superRefine((value, context) => {
+  if (value.NODE_ENV === "production" && value.DEV_CLIENT_IP_OVERRIDE) context.addIssue({ code: z.ZodIssueCode.custom, path: ["DEV_CLIENT_IP_OVERRIDE"], message: "DEV_CLIENT_IP_OVERRIDE is forbidden in production" });
   if (value.NODE_ENV !== "production") return;
   if (value.CORS_ORIGIN.split(",").map((origin) => origin.trim()).includes("*")) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["CORS_ORIGIN"], message: "CORS_ORIGIN must be an explicit frontend origin in production" });

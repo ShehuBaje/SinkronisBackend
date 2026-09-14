@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RequestHandler } from "express";
+import { extractClientIp } from "./request-metadata";
 
 type RequestContext = {
   ipAddress: string | null;
@@ -9,8 +10,7 @@ type RequestContext = {
 const requestContext = new AsyncLocalStorage<RequestContext>();
 
 export const requestContextMiddleware: RequestHandler = (req, _res, next) => {
-  const forwardedFor = req.header("x-forwarded-for");
-  const ipAddress = forwardedFor?.split(",")[0]?.trim() || req.ip || null;
+  const ipAddress = extractClientIp({ headers: req.headers, ip: req.ip });
   const userAgent = req.header("user-agent") || null;
 
   requestContext.run({ ipAddress, userAgent }, next);
