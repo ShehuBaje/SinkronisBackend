@@ -1,18 +1,13 @@
 import { Router } from "express";
 import multer from "multer";
 import { asyncHandler } from "../../core/async-handler";
-import { createCrudRouter } from "../../core/crud-router";
 import { validate } from "../../core/validate";
 import { authorize } from "../../middleware/rbac.middleware";
 import { acknowledgeAppraisalController, applyLeaveController, approveAppraisalHRController, approveBankDetailsUpdateRequestController, approveLeaveController, approveLeaveRequestController, clockInController, clockOutController, createAppraisalGoalController, createAttendanceDisputeController, createEmployeeController, downloadEmployeeTemplateController, exportAttendanceController, getActiveAppraisalCycleController, getAppraisalController, getAppraisalOverviewController, getAttendanceController, getAttendanceDisputeController, getAttendanceOverviewController, getDailyAttendanceController, getDepartmentAttendanceController, getEmployeeActivityController, getEmployeeAppraisalsController, getEmployeeAttendanceController, getEmployeeConductController, getEmployeeController, getEmployeeLeaveController, getEmployeePayrollController, getHRApprovalController, getHRISDashboardController, getLeaveOverviewController, getManagerReviewController, getMonthlyAttendanceController, getMyAttendanceTodayController, getSelfAssessmentController, importEmployeesController, inviteEmployeeController, listAppraisalsController, listAttendanceDisputesController, listAttendanceLogsController, listBankDetailsUpdateRequestsController, listEmployeesController, listLeavesController, listLifecycleEmployeesController, overrideAttendanceController, rejectBankDetailsUpdateRequestController, rejectLeaveController, rejectLeaveRequestController, resolveAttendanceDisputeController, saveManagerReviewController, saveSelfAssessmentController, scoreAppraisalGoalController, updateEmployeeController, updateEmployeeStatusController } from "./hris.controller";
 import { userManagementInviteSchema } from "../admin/admin.validation";
-import {
-  attendanceCrudOptions,
-  employeesCrudOptions,
-  leaveCrudOptions
-} from "./hris.service";
 import { acknowledgeAppraisalSchema, appraisalGoalParamsSchema, appraisalListQuerySchema, appraisalParamsSchema, applyLeaveSchema, approveBankUpdateRequestSchema, attendanceDateQuerySchema, attendanceLogsQuerySchema, attendanceOverrideSchema, attendanceParamsSchema, bankUpdateRequestParamsSchema, bankUpdateRequestsQuerySchema, clockInSchema, clockOutParamsSchema, createAppraisalGoalSchema, createAttendanceDisputeSchema, createManagedEmployeeSchema, disputeListQuerySchema, disputeParamsSchema, employeeHistoryQuerySchema, employeeListQuerySchema, employeeParamsSchema, hrApprovalSchema, leaveApproveSchema, leaveDecisionParamsSchema, leaveListQuerySchema, leaveParamsSchema, leaveRejectSchema, lifecycleQuerySchema, managerReviewSchema, monthlyAttendanceQuerySchema, rejectBankUpdateRequestSchema, rejectLeaveSchema, resolveAttendanceDisputeSchema, scoreAppraisalGoalSchema, submitSelfAssessmentSchema, updateEmployeeStatusSchema, updateManagedEmployeeSchema } from "./hris.validation";
-import { badRequest } from "../../core/http-error";
+import { badRequest, payloadTooLarge } from "../../core/http-error";
+import { boundedMemoryStorage } from "../../core/bounded-memory-storage";
 import { completeAppraisalCycleController, createAppraisalCycleController, createAppraisalTemplateController, createConductQueryController, createSuspensionController, deleteAppraisalCycleController, deleteAppraisalTemplateController, getAppraisalSettingsController, getAppraisalTemplateController, getConductController, getConductOverviewController, launchAppraisalCycleController, listAppraisalCyclesController, listAppraisalTemplatesController, listConductController, listCycleReviewsController, signOffAppraisalController, updateAppraisalSettingsController, updateAppraisalTemplateController, updateConductStatusController } from "./hris.controller";
 import { openAppraisalSelfAssessmentController } from "./hris.controller";
 import { downloadManagedEmployeeDocumentController } from "./hris.controller";
@@ -20,15 +15,20 @@ import { appraisalCycleParamsSchema, appraisalCyclesQuerySchema, appraisalSettin
 import { employeeDocumentParamsSchema } from "./hris.validation";
 
 export const hrisRouter = Router();
-const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 }, fileFilter: (_req, file, callback) => {
+const csvUpload = multer({ storage: boundedMemoryStorage({ perFileBytes: 20 * 1024 * 1024, totalBytes: 20 * 1024 * 1024 }), limits: { fileSize: 20 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => {
   if (file.mimetype !== "text/csv" && file.mimetype !== "application/vnd.ms-excel") return callback(badRequest("Bulk employee import requires a CSV file") as any);
   return callback(null, true);
 } });
-const employeeUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 11 }, fileFilter: (_req, file, callback) => {
+const employeeUpload = multer({ storage: boundedMemoryStorage({ perFileBytes: 10 * 1024 * 1024, totalBytes: 30 * 1024 * 1024 }), limits: { fileSize: 10 * 1024 * 1024, files: 11 }, fileFilter: (_req, file, callback) => {
   const images = ["image/png", "image/jpeg"]; const documents = [...images, "application/pdf"];
   const accepted = file.fieldname === "profileImage" ? images.includes(file.mimetype) : documents.includes(file.mimetype);
   return accepted ? callback(null, true) : callback(badRequest("Unsupported employee file MIME type") as any);
 } }).fields([{ name: "profileImage", maxCount: 1 }, { name: "appointmentLetter", maxCount: 1 }, { name: "documents", maxCount: 9 }]);
+const enforceEmployeeUploadTotal = (req: any, _res: any, next: any) => {
+  const declared = Number(req.header("content-length") ?? 0);
+  if (declared > 30 * 1024 * 1024) return next(payloadTooLarge("Employee upload must not exceed 30MB in total"));
+  return next();
+};
 const normalizeEmployeeMultipart = (req: any, _res: any, next: any) => {
   try { if (typeof req.body.data === "string") req.body = JSON.parse(req.body.data); next(); } catch { next(badRequest("Employee multipart data must be valid JSON")); }
 };
@@ -104,7 +104,7 @@ hrisRouter.get("/employees/import/template", authorize("hris:employees:create"),
 hrisRouter.post("/employees/import", authorize("hris:employees:create"), csvUpload.single("file"), asyncHandler(importEmployeesController));
 hrisRouter.post("/employees/invite", authorize("hris:employees:create"), validate({ body: userManagementInviteSchema }), asyncHandler(inviteEmployeeController));
 hrisRouter.get("/employees", authorize("hris:employees:view"), validate({ query: employeeListQuerySchema }), asyncHandler(listEmployeesController));
-hrisRouter.post("/employees", authorize("hris:employees:create"), employeeUpload, normalizeEmployeeMultipart, validate({ body: createManagedEmployeeSchema }), asyncHandler(createEmployeeController));
+hrisRouter.post("/employees", authorize("hris:employees:create"), enforceEmployeeUploadTotal, employeeUpload, normalizeEmployeeMultipart, validate({ body: createManagedEmployeeSchema }), asyncHandler(createEmployeeController));
 hrisRouter.patch("/employees/:employeeId/status", authorize("hris:employees:update"), validate({ params: employeeParamsSchema, body: updateEmployeeStatusSchema }), asyncHandler(updateEmployeeStatusController));
 hrisRouter.get("/employees/:employeeId/attendance", authorize("hris:employees:view", "hris:attendance:view"), validate({ params: employeeParamsSchema, query: employeeHistoryQuerySchema }), asyncHandler(getEmployeeAttendanceController));
 hrisRouter.get("/employees/:employeeId/leave-history", authorize("hris:employees:view", "hris:leave:view"), validate({ params: employeeParamsSchema, query: employeeHistoryQuerySchema }), asyncHandler(getEmployeeLeaveController));
@@ -116,10 +116,6 @@ hrisRouter.get("/employees/:employeeId/documents/:documentId/download", authoriz
 hrisRouter.get("/employees/:employeeId", authorize("hris:employees:view"), validate({ params: employeeParamsSchema }), asyncHandler(getEmployeeController));
 hrisRouter.patch("/employees/:employeeId", authorize("hris:employees:update"), validate({ params: employeeParamsSchema, body: updateManagedEmployeeSchema }), asyncHandler(updateEmployeeController));
 
-hrisRouter.use(
-  "/employees",
-  createCrudRouter(employeesCrudOptions)
-);
 
 hrisRouter.post(
   "/attendance/clock-in",
@@ -147,14 +143,4 @@ hrisRouter.post(
   authorize("hris:attendance:update"),
   validate({ params: clockOutParamsSchema }),
   asyncHandler(clockOutController)
-);
-
-hrisRouter.use(
-  "/attendance",
-  createCrudRouter(attendanceCrudOptions)
-);
-
-hrisRouter.use(
-  "/leave",
-  createCrudRouter(leaveCrudOptions)
 );

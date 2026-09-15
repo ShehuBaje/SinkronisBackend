@@ -51,11 +51,11 @@ export const getEmployeeTaskProjection = async (organizationId: string, user: Au
   if (!employee) throw notFound("Authenticated user is not linked to an employee");
   const payrollEnabled = await isOrganizationModuleEnabled(organizationId, "payroll");
   const [appraisals, leaveRequests, disputes, payslips, notifications] = await Promise.all([
-    prisma.employeeAppraisal.findMany({ where: { organizationId, employeeId: employee.id }, include: { cycle: true, goals: { select: { id: true } }, selfAssessment: { select: { status: true, submittedAt: true } } }, orderBy: { createdAt: "desc" } }),
-    prisma.leaveRequest.findMany({ where: { organizationId, employeeId: employee.id, status: { in: ["PENDING", "APPROVED", "REJECTED"] } }, orderBy: { submittedAt: "desc" } }),
-    prisma.attendanceDispute.findMany({ where: { organizationId, employeeId: employee.id }, orderBy: { createdAt: "desc" } }),
-    payrollEnabled ? prisma.payslip.findMany({ where: { organizationId, employeeId: employee.id, payrollrun: { status: { in: ["APPROVED", "PAID"] } } }, include: { payrollrun: true }, orderBy: [{ payrollrun: { periodEnd: "desc" } }, { createdAt: "desc" }] }) : Promise.resolve([]),
-    prisma.userNotification.findMany({ where: { organizationId, recipientUserId: user.id }, orderBy: { createdAt: "desc" }, take: 500, select: { type: true, metadata: true, readAt: true } })
+    prisma.employeeAppraisal.findMany({ where: { organizationId, employeeId: employee.id }, include: { cycle: true, goals: { select: { id: true } }, selfAssessment: { select: { status: true, submittedAt: true } } }, orderBy: { createdAt: "desc" }, take: 50 }),
+    prisma.leaveRequest.findMany({ where: { organizationId, employeeId: employee.id, status: { in: ["PENDING", "APPROVED", "REJECTED"] } }, orderBy: { submittedAt: "desc" }, take: 50 }),
+    prisma.attendanceDispute.findMany({ where: { organizationId, employeeId: employee.id }, orderBy: { createdAt: "desc" }, take: 50 }),
+    payrollEnabled ? prisma.payslip.findMany({ where: { organizationId, employeeId: employee.id, payrollrun: { status: { in: ["APPROVED", "PAID"] } } }, include: { payrollrun: true }, orderBy: [{ payrollrun: { periodEnd: "desc" } }, { createdAt: "desc" }], take: 24 }) : Promise.resolve([]),
+    prisma.userNotification.findMany({ where: { organizationId, recipientUserId: user.id }, orderBy: { createdAt: "desc" }, take: 200, select: { type: true, metadata: true, readAt: true } })
   ]);
   const items: EmployeeInboxItem[] = [];
   for (const appraisal of appraisals) {

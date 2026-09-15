@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Router } from "express";
 import multer from "multer";
+import { boundedMemoryStorage } from "../../core/bounded-memory-storage";
 import { env } from "../../config/env";
 import { badRequest } from "../../core/http-error";
 import { createObjectKey, uploadObject } from "../../core/object-storage";
@@ -17,7 +18,7 @@ const allowedMimeTypes = new Set([
 ]);
 
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: boundedMemoryStorage({ perFileBytes: env.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024, totalBytes: env.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024 }),
   limits: {
     fileSize: env.UPLOAD_MAX_FILE_SIZE_MB * 1024 * 1024,
     files: 1,
@@ -77,6 +78,7 @@ mediaRouter.post("/upload", (req, res, next) => {
         key,
         body: uploadReq.file!.buffer,
         contentType: uploadReq.file!.mimetype,
+        visibility: "public",
         publicBaseUrl: `${uploadReq.protocol}://${uploadReq.get("host")}`
       });
       uploadRes.status(201).json({

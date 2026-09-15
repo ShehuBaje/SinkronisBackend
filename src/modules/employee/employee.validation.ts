@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { dateOnlyString } from "../../core/date-only";
 import { acknowledgeAppraisalSchema, createAppraisalGoalSchema, scoreAppraisalGoalSchema, submitSelfAssessmentSchema } from "../hris/hris.validation";
 
 // The dashboard identity is derived exclusively from authentication context.
@@ -13,7 +14,7 @@ export const employeeAttendanceDisputeSchema = z.object({
   claimedClockIn: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Expected HH:mm").optional(),
   claimedClockOut: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Expected HH:mm").optional()
 }).strict();
-const leaveDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
+const leaveDate = dateOnlyString;
 export const employeeLeaveQuerySchema = z.object({
   month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Expected YYYY-MM").optional(),
   page: z.coerce.number().int().min(1).default(1),

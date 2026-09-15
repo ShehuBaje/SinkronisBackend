@@ -40,6 +40,7 @@ const envSchema = z.object({
   FRONTEND_URL: z.string().url().optional(),
   PUBLIC_BASE_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+  TRUST_PROXY_CIDRS: z.string().default(""),
   IP_GEOLOCATION_PROVIDER: z.enum(["NONE", "IPINFO"]).default("NONE"),
   IPINFO_TOKEN: z.string().min(1).optional(),
   IP_GEOLOCATION_TIMEOUT_MS: z.coerce.number().int().min(100).max(10000).default(1500),
@@ -53,6 +54,9 @@ const envSchema = z.object({
   PAYSTACK_CALLBACK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   STORAGE_PROVIDER: z.enum(["local", "vercel-blob"]).default("local"),
   BLOB_READ_WRITE_TOKEN: z.string().optional(),
+  PRIVATE_FILE_MIGRATION_MODE: z.enum(["CROSS_STORE", "SAME_STORE"]).optional(),
+  SOURCE_BLOB_READ_WRITE_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(1).optional()),
+  DESTINATION_BLOB_READ_WRITE_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(1).optional()),
   UPLOAD_DIR: z.string().default("uploads"),
   UPLOAD_PUBLIC_BASE_PATH: z.string().startsWith("/").default("/uploads"),
   UPLOAD_MAX_FILE_SIZE_MB: z.coerce.number().int().positive().default(5),
@@ -64,11 +68,14 @@ const envSchema = z.object({
   if (value.CORS_ORIGIN.split(",").map((origin) => origin.trim()).includes("*")) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["CORS_ORIGIN"], message: "CORS_ORIGIN must be an explicit frontend origin in production" });
   }
-  if (value.STORAGE_PROVIDER !== "vercel-blob" || !value.BLOB_READ_WRITE_TOKEN) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["BLOB_READ_WRITE_TOKEN"], message: "Vercel Blob storage must be configured in production" });
+  if (value.STORAGE_PROVIDER === "vercel-blob" && !value.BLOB_READ_WRITE_TOKEN) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["BLOB_READ_WRITE_TOKEN"], message: "The selected Vercel Blob provider requires BLOB_READ_WRITE_TOKEN" });
   }
   if (!value.CRON_SECRET) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["CRON_SECRET"], message: "CRON_SECRET is required in production" });
+  }
+  if (value.TRUST_PROXY_HOPS > 0 && !value.TRUST_PROXY_CIDRS.trim()) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["TRUST_PROXY_CIDRS"], message: "Production proxy trust requires explicit trusted proxy CIDRs; numeric hop trust is permitted only outside production" });
   }
   if (!value.PUBLIC_BASE_URL) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["PUBLIC_BASE_URL"], message: "PUBLIC_BASE_URL is required in production" });

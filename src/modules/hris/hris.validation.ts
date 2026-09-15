@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { dateOnlyString } from "../../core/date-only";
 import {
   appraisalCreateSchema,
   appraisalUpdateSchema,
@@ -45,7 +46,7 @@ const pageFields = {
   limit: z.coerce.number().int().min(1).max(100).default(25)
 };
 const id = z.string().trim().min(1).max(191);
-const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
+const dateOnly = dateOnlyString;
 const timeOnly = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Expected HH:mm");
 
 export const employeeParamsSchema = z.object({ employeeId: id }).strict();

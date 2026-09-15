@@ -193,7 +193,7 @@ export const getAccountingDashboard = async (
     paymentRequests,
     overdueAlerts,
     receivedPayments,
-    unsettledInvoices,
+    unsettledTotals,
   ] = await Promise.all([
     prisma.invoice.groupBy({
       by: ["status"],
@@ -247,15 +247,14 @@ export const getAccountingDashboard = async (
       include: { client: { select: { name: true } } },
     }),
     prisma.accountingInvoicePayment.aggregate({ where: { organizationId }, _sum: { amount: true } }),
-    prisma.invoice.findMany({ where: { organizationId, status: { in: ["SENT", "PARTIALLY_PAID", "OVERDUE"] } }, select: { id: true, total: true, amountPayable: true, whtAmount: true, taxAmount: true, dueDate: true, payments: { select: { amount: true } } } }),
+    prisma.$queryRaw<Array<{ outstanding: Prisma.Decimal; overdue: Prisma.Decimal }>>(Prisma.sql`SELECT COALESCE(SUM(GREATEST(CASE WHEN i.amountPayable>0 THEN i.amountPayable ELSE i.total-COALESCE(i.whtAmount,0) END-COALESCE(p.paid,0),0)),0) outstanding,COALESCE(SUM(CASE WHEN i.dueDate<${now} THEN GREATEST(CASE WHEN i.amountPayable>0 THEN i.amountPayable ELSE i.total-COALESCE(i.whtAmount,0) END-COALESCE(p.paid,0),0) ELSE 0 END),0) overdue FROM Invoice i LEFT JOIN (SELECT invoiceId,SUM(amount) paid FROM AccountingInvoicePayment WHERE organizationId=${organizationId} GROUP BY invoiceId) p ON p.invoiceId=i.id WHERE i.organizationId=${organizationId} AND i.status IN ('SENT','PARTIALLY_PAID','OVERDUE')`),
   ]);
   const grouped = new Map(invoiceGroups.map((row) => [row.status, row]));
   const paid = grouped.get("PAID");
   const sent = grouped.get("SENT");
   const explicitOverdue = grouped.get("OVERDUE");
-  const outstandingBalances = unsettledInvoices.map((invoice) => Prisma.Decimal.max(zero(), invoiceReceivable(invoice).sub(invoice.payments.reduce((sum, payment) => sum.add(payment.amount), zero()))));
-  const actualOutstanding = outstandingBalances.reduce((sum, balance) => sum.add(balance), zero());
-  const actualOverdue = unsettledInvoices.filter((invoice) => invoice.dueDate && invoice.dueDate < now).reduce((sum, invoice) => sum.add(Prisma.Decimal.max(zero(), invoiceReceivable(invoice).sub(invoice.payments.reduce((paidSum, payment) => paidSum.add(payment.amount), zero())))), zero());
+  const actualOutstanding = unsettledTotals[0]?.outstanding ?? zero();
+  const actualOverdue = unsettledTotals[0]?.overdue ?? zero();
   const sentCount = Math.max(
     0,
     (sent?._count._all ?? 0) -
@@ -2589,11 +2588,11 @@ export const requestAccountingExport = async (organizationId: string, type: "INV
   await audit(organizationId, user, "ACCOUNTING_EXPORT_REQUESTED", "ACCOUNTING_EXPORT", job.id, `Requested ${type.toLowerCase()} CSV export`);
   return { id: job.id, type: job.type, status: job.status, requestedAt: job.requestedAt };
 };
-export const getAccountingExportStatus = async (organizationId: string, id: string) => { const job = await prisma.accountingExportJob.findFirst({ where: { id, organizationId }, select: { id: true, type: true, status: true, fileName: true, fileSize: true, requestedAt: true, processingAt: true, completedAt: true, failedAt: true, expiresAt: true, errorMessage: true } }); if (!job) throw notFound("Accounting export not found"); return { ...job, downloadPath: job.status === "COMPLETED" && job.expiresAt && job.expiresAt > new Date() ? `/api/v1/accounting/exports/${job.id}/download` : null }; };
+export const getAccountingExportStatus = async (organizationId: string, id: string) => { const job = await prisma.accountingExportJob.findFirst({ where: { id, organizationId }, select: { id: true, type: true, status: true, fileName: true, fileSize: true, requestedAt: true, processingAt: true, completedAt: true, failedAt: true, expiresAt: true, errorMessage: true } }); if (!job) throw notFound("Accounting export not found"); const available=job.status==="COMPLETED"&&Boolean(job.expiresAt&&job.expiresAt>new Date()); return { ...job, available, reasonCode: available?null:job.status==="FAILED"?"EXPORT_FAILED":job.status==="EXPIRED"?"EXPORT_EXPIRED":"EXPORT_PROCESSING", retryable: job.status==="FAILED", availableActions: available?["DOWNLOAD"]:job.status==="FAILED"?["REQUEST_NEW_EXPORT"]:["REFRESH_STATUS"], nextAction: available?"DOWNLOAD":job.status==="FAILED"?"REQUEST_NEW_EXPORT":"WAIT", downloadPath: available ? `/api/v1/accounting/exports/${job.id}/download` : null }; };
 export const downloadAccountingExport = async (organizationId: string, id: string) => { const job = await prisma.accountingExportJob.findFirst({ where: { id, organizationId, status: "COMPLETED", expiresAt: { gt: new Date() } } }); if (!job?.fileReference || !job.fileName) throw notFound("Completed Accounting export not found or has expired"); return { buffer: await readObject(job.fileReference), fileName: job.fileName }; };
 export const fulfillAccountingExport = async (id: string, publicBaseUrl?: string) => { const claimed = await prisma.accountingExportJob.updateMany({ where: { id, status: "PENDING" }, data: { status: "PROCESSING", processingAt: new Date(), errorMessage: null } }); if (!claimed.count) return prisma.accountingExportJob.findUnique({ where: { id } }); const job = await prisma.accountingExportJob.findUniqueOrThrow({ where: { id }, include: { requestedBy: { select: { id: true, organizationId: true, email: true, roleId: true, isPlatformAdmin: true } } } }); let stored: Awaited<ReturnType<typeof uploadObject>> | undefined; try { const user: AuthUser = { ...job.requestedBy, permissions: [] }; const filters = job.filters as Record<string, unknown>; const csv = job.type === "INVOICES" ? await exportInvoices(job.organizationId, invoiceListQuerySchema.parse(filters), user) : await exportExpenses(job.organizationId, expenseListQuerySchema.parse(filters), user); const fileName = `accounting-${job.type.toLowerCase()}-${job.id}.csv`; stored = await uploadObject({ key: createObjectKey(`accounting-exports/${job.organizationId}`, fileName), body: Buffer.from(csv, "utf8"), contentType: "text/csv; charset=utf-8", publicBaseUrl }); const completedAt = new Date(); const expiresAt = new Date(completedAt.getTime() + ACCOUNTING_EXPORT_TTL_MS); const completed = await prisma.accountingExportJob.update({ where: { id }, data: { status: "COMPLETED", fileName, fileReference: stored.key, fileSize: stored.size, completedAt, expiresAt } }); await deliverUserNotification({ organizationId: job.organizationId, recipientUserId: job.requestedByUserId, moduleKey: "accounting", categoryKey: "record-updates", eventKey: `accounting-export:${job.id}:ready`, type: "ACCOUNTING_EXPORT_READY", title: "Accounting export ready", message: `Your ${job.type.toLowerCase()} export is ready and expires in seven days.`, metadata: { exportId: job.id, type: job.type, expiresAt: expiresAt.toISOString() } }); return completed; } catch (error) { if (stored) await deleteObject(stored.key).catch(() => undefined); await prisma.accountingExportJob.update({ where: { id }, data: { status: "FAILED", failedAt: new Date(), errorMessage: error instanceof Error ? error.message.slice(0, 2000) : "Export failed" } }); throw error; } };
 export const processPendingAccountingExports = async (publicBaseUrl?: string) => { const jobs = await prisma.accountingExportJob.findMany({ where: { status: "PENDING" }, orderBy: { requestedAt: "asc" }, take: 10, select: { id: true } }); const results = []; for (const job of jobs) { try { results.push({ id: job.id, status: (await fulfillAccountingExport(job.id, publicBaseUrl))?.status }); } catch { results.push({ id: job.id, status: "FAILED" }); } } return results; };
-export const expireAccountingExports = async (now = new Date()) => { const jobs = await prisma.accountingExportJob.findMany({ where: { status: "COMPLETED", expiresAt: { lte: now } }, select: { id: true, fileReference: true } }); for (const job of jobs) { await deleteObject(job.fileReference).catch(() => undefined); await prisma.accountingExportJob.update({ where: { id: job.id }, data: { status: "EXPIRED", fileReference: null } }); } return { expired: jobs.length }; };
+export const expireAccountingExports = async (now = new Date()) => { const jobs = await prisma.accountingExportJob.findMany({ where: { status: "COMPLETED", expiresAt: { lte: now } }, orderBy: { expiresAt: "asc" }, take: 25, select: { id: true, fileReference: true } }); for (let offset = 0; offset < jobs.length; offset += 5) await Promise.all(jobs.slice(offset, offset + 5).map(async (job) => { await deleteObject(job.fileReference).catch(() => undefined); await prisma.accountingExportJob.update({ where: { id: job.id }, data: { status: "EXPIRED", fileReference: null } }); })); return { expired: jobs.length }; };
 
 const reportInvoiceWhere = (organizationId: string, query: AccountingReportQuery): Prisma.InvoiceWhereInput => ({
   organizationId,
@@ -2610,19 +2609,19 @@ const reportInvoiceWhere = (organizationId: string, query: AccountingReportQuery
   ...(query.search ? { OR: [{ invoiceNo: { contains: query.search } }, { client: { name: { contains: query.search } } }] } : {}),
 });
 
-const reportRows = (organizationId: string, query: AccountingReportQuery) => prisma.invoice.findMany({
-  where: reportInvoiceWhere(organizationId, query), orderBy: { [query.sortBy]: query.sortOrder }, include: invoiceInclude,
-});
-const reportFinancialRows = async (organizationId: string, query: AccountingReportQuery) => {
-  const invoices = await prisma.invoice.findMany({
-    where: reportInvoiceWhere(organizationId, query),
-    select: { id: true, clientId: true, assignedAgentId: true, projectId: true, status: true, dueDate: true, total: true, taxAmount: true, whtAmount: true, amountPayable: true },
-  });
-  const payments = invoices.length ? await prisma.accountingInvoicePayment.groupBy({
-    by: ["invoiceId"], where: { organizationId, invoiceId: { in: invoices.map(row => row.id) } }, _sum: { amount: true },
-  }) : [];
-  const paidByInvoice = new Map(payments.map(row => [row.invoiceId, row._sum.amount ?? zero()]));
-  return invoices.map(row => ({ ...row, payments: [{ amount: paidByInvoice.get(row.id) ?? zero() }] }));
+const reportRows = async (organizationId: string, query: AccountingReportQuery) => {
+  const rows: any[] = [];
+  let cursor: string | undefined;
+  while (true) {
+    const batch = await prisma.invoice.findMany({
+      where: reportInvoiceWhere(organizationId, query), orderBy: [{ [query.sortBy]: query.sortOrder }, { id: "asc" }], include: invoiceInclude,
+      take: 250, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    rows.push(...batch);
+    if (batch.length < 250) break;
+    cursor = batch.at(-1)!.id;
+  }
+  return rows;
 };
 const reportSqlWhere = (organizationId: string, query: AccountingReportQuery) => {
   const clauses: Prisma.Sql[] = [Prisma.sql`i.organizationId = ${organizationId}`];
@@ -2656,6 +2655,26 @@ const databaseReportSummary = async (organizationId: string, query: AccountingRe
   const expenses = expense?._sum.amount ?? zero();
   return { totalRevenue: amount(financial.totalRevenue), outstanding: amount(financial.outstanding), overdue: amount(financial.overdue), vatCollected: amount(new Prisma.Decimal(financial.vatCollected).toDecimalPlaces(2)), totalExpenses: amount(expenses), netProfit: amount(new Prisma.Decimal(financial.totalRevenue).sub(expenses)) };
 };
+const databaseReportGroups = async (organizationId: string, query: AccountingReportQuery) => {
+  if (!query.groupBy) return undefined;
+  const key = query.groupBy === "CLIENT" ? Prisma.sql`i.clientId` : query.groupBy === "AGENT" ? Prisma.sql`i.assignedAgentId` : Prisma.sql`i.projectId`;
+  const name = query.groupBy === "CLIENT" ? Prisma.sql`MAX(c.name)` : query.groupBy === "AGENT" ? Prisma.sql`MAX(CONCAT(COALESCE(u.firstName,''),' ',COALESCE(u.lastName,'')))` : Prisma.sql`MAX(ap.name)`;
+  const join = query.groupBy === "AGENT" ? Prisma.sql`LEFT JOIN User u ON u.id = i.assignedAgentId AND u.organizationId = i.organizationId` : query.groupBy === "PROJECT" ? Prisma.sql`LEFT JOIN AccountingProject ap ON ap.id = i.projectId AND ap.organizationId = i.organizationId` : Prisma.empty;
+  const rows = await prisma.$queryRaw<Array<{ id: string | null; name: string | null; invoiceCount: bigint; invoiceValue: Prisma.Decimal; revenuePaid: Prisma.Decimal; outstanding: Prisma.Decimal; vatCharged: Prisma.Decimal }>>(Prisma.sql`
+    SELECT ${key} AS id, ${name} AS name, COUNT(*) AS invoiceCount,
+      COALESCE(SUM(i.total),0) AS invoiceValue, COALESCE(SUM(COALESCE(p.paidAmount,0)),0) AS revenuePaid,
+      COALESCE(SUM(GREATEST(i.amountPayable - COALESCE(p.paidAmount,0),0)),0) AS outstanding,
+      COALESCE(SUM(i.taxAmount),0) AS vatCharged
+    FROM Invoice i
+    JOIN Client c ON c.id = i.clientId AND c.organizationId = i.organizationId
+    ${join}
+    LEFT JOIN (SELECT invoiceId, SUM(amount) AS paidAmount FROM AccountingInvoicePayment WHERE organizationId = ${organizationId} GROUP BY invoiceId) p ON p.invoiceId = i.id
+    WHERE ${reportSqlWhere(organizationId, query)}
+    GROUP BY ${key}
+    ORDER BY invoiceValue DESC
+  `);
+  return rows.map(row => ({ id: row.id ?? "UNASSIGNED", name: row.name?.trim() || "Unassigned", invoiceCount: Number(row.invoiceCount), invoiceValue: amount(row.invoiceValue), revenuePaid: amount(row.revenuePaid), outstanding: amount(row.outstanding), vatCharged: amount(row.vatCharged) }));
+};
 export const getAccountingReport = async (organizationId: string, query: AccountingReportQuery) => {
   const where = reportInvoiceWhere(organizationId, query);
   const [summary, pageRows, total] = await Promise.all([
@@ -2663,20 +2682,7 @@ export const getAccountingReport = async (organizationId: string, query: Account
     prisma.invoice.findMany({ where, orderBy: { [query.sortBy]: query.sortOrder }, skip: (query.page - 1) * query.limit, take: query.limit, include: invoiceInclude }),
     prisma.invoice.count({ where }),
   ]);
-  const financialRows = query.groupBy ? await reportFinancialRows(organizationId,query) : [];
-  const groupIds = query.groupBy ? [...new Set(financialRows.map(row => query.groupBy === "CLIENT" ? row.clientId : query.groupBy === "AGENT" ? row.assignedAgentId : row.projectId).filter(Boolean) as string[])] : [];
-  const namedGroups = !query.groupBy ? [] : query.groupBy === "CLIENT"
-    ? await prisma.client.findMany({ where: { organizationId, id: { in: groupIds } }, select: { id: true, name: true } })
-    : query.groupBy === "AGENT"
-      ? (await prisma.user.findMany({ where: { organizationId, id: { in: groupIds } }, select: { id: true, firstName: true, lastName: true } })).map(row => ({ id: row.id, name: `${row.firstName} ${row.lastName}`.trim() }))
-      : await prisma.accountingProject.findMany({ where: { organizationId, id: { in: groupIds } }, select: { id: true, name: true } });
-  const groupNames = new Map(namedGroups.map(row => [row.id,row.name]));
-  const groups = query.groupBy ? Array.from(financialRows.reduce((map: Map<string, any>, row: any) => {
-    const id = (query.groupBy === "CLIENT" ? row.clientId : query.groupBy === "AGENT" ? row.assignedAgentId : row.projectId) ?? "UNASSIGNED";
-    const name = groupNames.get(id) ?? "Unassigned";
-    const current = map.get(id) ?? { id, name, invoiceCount: 0, invoiceValue: zero(), revenuePaid: zero(), outstanding: zero(), vatCharged: zero() };
-    const paid = row.payments.reduce((s: Prisma.Decimal, p: any) => s.add(p.amount), zero()); current.invoiceCount++; current.invoiceValue = current.invoiceValue.add(row.total); current.revenuePaid = current.revenuePaid.add(paid); current.outstanding = current.outstanding.add(Prisma.Decimal.max(zero(), invoiceReceivable(row).sub(paid))); current.vatCharged = current.vatCharged.add(row.taxAmount); map.set(id, current); return map;
-  }, new Map()).values()).map((g: any) => ({ ...g, invoiceValue: amount(g.invoiceValue), revenuePaid: amount(g.revenuePaid), outstanding: amount(g.outstanding), vatCharged: amount(g.vatCharged) })) : undefined;
+  const groups = await databaseReportGroups(organizationId, query);
   return { appliedFilters: query, summary, invoices: pageRows.map(r => invoiceView(r)), ...(groups ? { groups } : {}), pagination: pagination(query.page, query.limit, total) };
 };
 export const getVatReport = async (organizationId: string, query: AccountingReportQuery) => {
@@ -2749,7 +2755,7 @@ export const fundWalletManually = async (organizationId: string, input: ManualWa
     if (existing.walletAccountId !== input.walletAccountId || !existing.amount.equals(new Prisma.Decimal(input.amount)) || existing.type !== "MANUAL_FUNDING") throw conflict("External funding reference is already in use");
     return { ...existing, amount: amount(existing.amount), idempotentReplay: true };
   }
-  const value = new Prisma.Decimal(input.amount); const tx = await prisma.$transaction(async db => { const wallet = await db.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId } }); if (!wallet) throw notFound("Wallet not found"); const updated = await db.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: value } } }); return db.walletTransaction.create({ data: { organizationId, walletAccountId: wallet.id, type: "MANUAL_FUNDING", direction: "CREDIT", amount: value, balanceBefore: wallet.balance, balanceAfter: updated.balance, reference: reference("WLT"), transferReference: input.externalReference, description: input.description, sourceType: "MANUAL_FUNDING", sourceId: input.externalReference, createdById: user.id } }); });
+  const value = new Prisma.Decimal(input.amount); const tx = await prisma.$transaction(async db => { const wallet = await db.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId } }); if (!wallet) throw notFound("Wallet not found"); const updated = await db.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: value } } }); return db.walletTransaction.create({ data: { organizationId, walletAccountId: wallet.id, type: "MANUAL_FUNDING", direction: "CREDIT", amount: value, balanceBefore: wallet.balance, balanceAfter: updated.balance, reference: reference("WLT"), transferReference: input.externalReference, description: input.description, sourceType: "MANUAL_FUNDING", sourceId: input.externalReference, createdById: user.id } }); }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   await audit(organizationId,user,"ACCOUNTING_WALLET_FUNDED","WALLET_TRANSACTION",tx.id,"Manually funded Accounting wallet",{ amount: input.amount, reference: tx.reference }); return { ...tx, amount: amount(tx.amount), balanceBefore: amount(tx.balanceBefore), balanceAfter: amount(tx.balanceAfter) };
 };
 export const getWalletReceipt = async (organizationId: string, id: string) => { const row = await prisma.walletTransaction.findFirst({ where: { id, organizationId }, include: { wallet: { select: { name: true, currency: true } } } }); if (!row) throw notFound("Wallet transaction not found"); return { ...row, amount: amount(row.amount), balanceBefore: amount(row.balanceBefore), balanceAfter: amount(row.balanceAfter) }; };
@@ -2759,7 +2765,7 @@ type PaystackInitializeData = { authorization_url: string; access_code: string; 
 type PaystackVerifyData = { status: string; reference: string; amount: number; currency: string; paid_at?: string; gateway_response?: string };
 
 const paystackSecret = () => {
-  if (!env.PAYSTACK_SECRET_KEY) throw serviceUnavailable("Paystack funding is not configured");
+  if (!env.PAYSTACK_SECRET_KEY) throw serviceUnavailable("Paystack funding is not configured", { available: false, reasonCode: "PAYMENT_PROVIDER_NOT_CONFIGURED", retryable: false, availableActions: ["CONTACT_PLATFORM_SUPPORT"], nextAction: "CONTACT_PLATFORM_SUPPORT" });
   return env.PAYSTACK_SECRET_KEY;
 };
 
@@ -2772,17 +2778,17 @@ const paystackRequest = async <T>(path: string, init?: RequestInit): Promise<Pay
       signal: AbortSignal.timeout(15_000),
     });
   } catch {
-    throw serviceUnavailable("Paystack is temporarily unavailable");
+    throw serviceUnavailable("Paystack is temporarily unavailable", { available: false, reasonCode: "PAYMENT_PROVIDER_UNAVAILABLE", retryable: true, availableActions: ["RETRY"], nextAction: "RETRY" });
   }
   const payload = await response.json().catch(() => null) as PaystackResponse<T> | null;
-  if (!response.ok || !payload?.status || !payload.data) throw serviceUnavailable(payload?.message || "Paystack request failed");
+  if (!response.ok || !payload?.status || !payload.data) throw serviceUnavailable(payload?.message || "Paystack request failed", { available: false, reasonCode: "PAYMENT_PROVIDER_REJECTED_REQUEST", retryable: response.status >= 500, availableActions: response.status >= 500 ? ["RETRY"] : ["REVIEW_DETAILS"], nextAction: response.status >= 500 ? "RETRY" : "REVIEW_DETAILS" });
   return payload;
 };
 
 const paystackMinorUnits = (value: Prisma.Decimal.Value) => new Prisma.Decimal(value).mul(100).toDecimalPlaces(0).toNumber();
 
 export const initializePaystackWalletFunding = async (organizationId: string, input: PaystackFundingInput, user: AuthUser) => {
-  if (!env.PAYSTACK_CALLBACK_URL) throw serviceUnavailable("Paystack callback URL is not configured");
+  if (!env.PAYSTACK_CALLBACK_URL) throw serviceUnavailable("Paystack callback URL is not configured", { available: false, reasonCode: "PAYMENT_CALLBACK_NOT_CONFIGURED", retryable: false, availableActions: ["CONTACT_PLATFORM_SUPPORT"], nextAction: "CONTACT_PLATFORM_SUPPORT" });
   const wallet = await prisma.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId } });
   if (!wallet) throw notFound("Wallet not found");
   if (wallet.currency !== "NGN") throw conflict("Paystack wallet funding currently supports NGN wallets only");
@@ -2851,9 +2857,9 @@ export const processPaystackWebhook = async (rawBody: Buffer | undefined, signat
 };
 
 export const listInvoiceTemplates = (organizationId: string) => prisma.accountingInvoiceTemplate.findMany({ where: { organizationId }, orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }] });
-export const createInvoiceTemplate = async (organizationId: string, input: InvoiceTemplateInput, user: AuthUser) => { const count = await prisma.accountingInvoiceTemplate.count({ where: { organizationId } }); const row = await prisma.accountingInvoiceTemplate.create({ data: { organizationId, ...input, normalizedName: input.name.trim().toLowerCase(), isDefault: count === 0 } }); await audit(organizationId,user,"ACCOUNTING_INVOICE_TEMPLATE_CREATED","ACCOUNTING_INVOICE_TEMPLATE",row.id,"Created invoice template"); return row; };
+export const createInvoiceTemplate = async (organizationId: string, input: InvoiceTemplateInput, user: AuthUser) => { const row = await prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM Organization WHERE id = ${organizationId} FOR UPDATE`; const count = await tx.accountingInvoiceTemplate.count({ where: { organizationId } }); const isDefault = count === 0; return tx.accountingInvoiceTemplate.create({ data: { organizationId, ...input, normalizedName: input.name.trim().toLowerCase(), isDefault, defaultKey: isDefault ? "DEFAULT" : null } }); }); await audit(organizationId,user,"ACCOUNTING_INVOICE_TEMPLATE_CREATED","ACCOUNTING_INVOICE_TEMPLATE",row.id,"Created invoice template"); return row; };
 export const updateInvoiceTemplate = async (organizationId: string, id: string, input: Partial<InvoiceTemplateInput>, user: AuthUser) => { const found = await prisma.accountingInvoiceTemplate.findFirst({ where: { id, organizationId } }); if (!found) throw notFound("Invoice template not found"); const row = await prisma.accountingInvoiceTemplate.update({ where: { id }, data: { ...input, ...(input.name ? { normalizedName: input.name.trim().toLowerCase() } : {}) } }); await audit(organizationId,user,"ACCOUNTING_INVOICE_TEMPLATE_UPDATED","ACCOUNTING_INVOICE_TEMPLATE",id,"Updated invoice template"); return row; };
-export const setDefaultInvoiceTemplate = async (organizationId: string, id: string, user: AuthUser) => { const found = await prisma.accountingInvoiceTemplate.findFirst({ where: { id, organizationId } }); if (!found) throw notFound("Invoice template not found"); await prisma.$transaction([prisma.accountingInvoiceTemplate.updateMany({ where: { organizationId, isDefault: true }, data: { isDefault: false } }), prisma.accountingInvoiceTemplate.update({ where: { id }, data: { isDefault: true } })]); await audit(organizationId,user,"ACCOUNTING_INVOICE_TEMPLATE_DEFAULTED","ACCOUNTING_INVOICE_TEMPLATE",id,"Set default invoice template"); return prisma.accountingInvoiceTemplate.findUniqueOrThrow({ where: { id } }); };
+export const setDefaultInvoiceTemplate = async (organizationId: string, id: string, user: AuthUser) => { const found = await prisma.accountingInvoiceTemplate.findFirst({ where: { id, organizationId } }); if (!found) throw notFound("Invoice template not found"); await prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM Organization WHERE id = ${organizationId} FOR UPDATE`; await tx.accountingInvoiceTemplate.updateMany({ where: { organizationId, isDefault: true }, data: { isDefault: false, defaultKey: null } }); await tx.accountingInvoiceTemplate.update({ where: { id }, data: { isDefault: true, defaultKey: "DEFAULT" } }); }); await audit(organizationId,user,"ACCOUNTING_INVOICE_TEMPLATE_DEFAULTED","ACCOUNTING_INVOICE_TEMPLATE",id,"Set default invoice template"); return prisma.accountingInvoiceTemplate.findUniqueOrThrow({ where: { id } }); };
 export const deleteInvoiceTemplate = async (organizationId: string, id: string, user: AuthUser) => { const found = await prisma.accountingInvoiceTemplate.findFirst({ where: { id, organizationId } }); if (!found) throw notFound("Invoice template not found"); if (found.isDefault) throw conflict("Set another template as default before deleting this template"); await prisma.accountingInvoiceTemplate.delete({ where: { id } }); await audit(organizationId,user,"ACCOUNTING_INVOICE_TEMPLATE_DELETED","ACCOUNTING_INVOICE_TEMPLATE",id,"Deleted invoice template"); };
 export const listExpenseCategories = (organizationId: string) => prisma.accountingExpenseCategory.findMany({ where: { organizationId }, orderBy: { name: "asc" } });
 export const createExpenseCategory = async (organizationId: string, input: ExpenseCategoryInput, user: AuthUser) => { const row = await prisma.accountingExpenseCategory.create({ data: { organizationId, reference: reference("EXC"), name: input.name, normalizedName: input.name.trim().toLowerCase(), description: input.description } }); await audit(organizationId,user,"ACCOUNTING_EXPENSE_CATEGORY_CREATED","ACCOUNTING_EXPENSE_CATEGORY",row.id,"Created expense category"); return row; };

@@ -20,7 +20,7 @@ internalRouter.use((req, _res, next) => {
   return next();
 });
 
-internalRouter.get(
+internalRouter.post(
   "/cron/subscriptions",
   asyncHandler(async (_req, res) => {
     const lifecycle = await processMyPlanLifecycle();

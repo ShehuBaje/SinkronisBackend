@@ -7,6 +7,7 @@ import {
   getCurrentAuthenticatedUser,
   getTwoFactorStatus,
   login,
+  logout,
   refreshAuthenticationTokens,
   registerOrganization,
   resendPasswordOtp,
@@ -36,6 +37,10 @@ export const loginController = async (req: any, res: any) => {
 
 export const refreshAuthenticationTokensController = async (req: any, res: any) => {
   res.json(await refreshAuthenticationTokens(req.body));
+};
+
+export const logoutController = async (req: any, res: any) => {
+  res.json(await logout(req.user.id, req.user.organizationId, req.user.sessionId));
 };
 
 export const verifyLoginTwoFactorController = async (req: any, res: any) => {

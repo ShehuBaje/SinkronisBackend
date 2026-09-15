@@ -13,9 +13,11 @@ const server = app.listen(env.PORT, async () => {
 
   try {
     await connectRedis();
-    setQueueBackendAvailability(true);
-    initializeQueues();
-    initializeWorkers();
+    setQueueBackendAvailability(env.BACKGROUND_JOBS_MODE === "queue");
+    if (env.BACKGROUND_JOBS_MODE === "queue") {
+      initializeQueues();
+      initializeWorkers();
+    }
     console.log("⏩ Connected to redis successfully");
   } catch (error) {
     setQueueBackendAvailability(false);

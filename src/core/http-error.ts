@@ -13,4 +13,6 @@ export const unauthorized = (message = "Unauthorized") => new HttpError(401, mes
 export const forbidden = (message = "Forbidden") => new HttpError(403, message);
 export const notFound = (message = "Resource not found") => new HttpError(404, message);
 export const conflict = (message = "Conflict", details?: unknown) => new HttpError(409, message, details);
-export const serviceUnavailable = (message = "Service unavailable") => new HttpError(503, message);
+export const payloadTooLarge = (message = "Payload too large") => new HttpError(413, message);
+export const unsupportedMediaType = (message = "Unsupported media type") => new HttpError(415, message);
+export const serviceUnavailable = (message = "Service unavailable", details?: unknown) => new HttpError(503, message, details);

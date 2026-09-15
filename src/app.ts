@@ -9,6 +9,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import { env } from "./config/env";
 import { requestContextMiddleware } from "./core/request-context";
+import { prisma } from "./core/prisma";
 import { openApiSpec } from "./config/swagger";
 import { errorMiddleware } from "./middleware/error.middleware";
 import { authenticate } from "./middleware/auth.middleware";
@@ -28,10 +29,13 @@ import { requireEffectiveModuleAccess } from "./middleware/module-access.middlew
 import { telemetryRouter } from "./modules/telemetry/telemetry.routes";
 import { employeeRouter } from "./modules/employee/employee.routes";
 import { enforcePlatformMaintenance } from "./middleware/maintenance.middleware";
+import { isQueueBackendAvailable } from "./queues";
 
 export const app = express();
 
-if (env.TRUST_PROXY_HOPS > 0) app.set("trust proxy", env.TRUST_PROXY_HOPS);
+const trustedProxyCidrs = env.TRUST_PROXY_CIDRS.split(",").map((value) => value.trim()).filter(Boolean);
+if (trustedProxyCidrs.length) app.set("trust proxy", trustedProxyCidrs);
+else if (env.TRUST_PROXY_HOPS > 0) app.set("trust proxy", env.TRUST_PROXY_HOPS);
 
 app.use(helmet());
 const configuredCorsOrigins = env.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean);
@@ -49,7 +53,12 @@ app.use(express.json({ limit: "1mb", verify: (req, _res, buffer) => {
 app.use(requestContextMiddleware);
 app.use(morgan(env.NODE_ENV === "production" ? "combined" : "dev"));
 if (env.STORAGE_PROVIDER === "local") {
-  app.use(env.UPLOAD_PUBLIC_BASE_PATH, express.static(path.resolve(process.cwd(), env.UPLOAD_DIR)));
+  const publicUpload = express.static(path.resolve(process.cwd(), env.UPLOAD_DIR));
+  app.use(env.UPLOAD_PUBLIC_BASE_PATH, (req, res, next) => {
+    const normalized = req.path.replace(/^\/+/, "");
+    if (!normalized.startsWith("media/") && !normalized.startsWith("employee-profile/") && !normalized.startsWith("general-settings/branding/")) return res.status(404).end();
+    return publicUpload(req, res, next);
+  });
 }
 app.use(
   rateLimit({
@@ -86,6 +95,15 @@ app.get(["/favicon.ico", "/favicon.png"], (_req, res) => {
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
+});
+
+app.get("/ready", async (_req, res) => {
+  const checks = { database: false, redis: env.RATE_LIMIT_STORE !== "redis" && env.BACKGROUND_JOBS_MODE !== "queue", queues: env.BACKGROUND_JOBS_MODE !== "queue" };
+  try { await prisma.$queryRaw`SELECT 1`; checks.database = true; } catch { /* readiness remains false */ }
+  if (!checks.redis) { try { checks.redis = (await redis.ping()) === "PONG"; } catch { /* readiness remains false */ } }
+  if (!checks.queues) checks.queues = isQueueBackendAvailable();
+  const ready = Object.values(checks).every(Boolean);
+  res.status(ready ? 200 : 503).json({ success: ready, status: ready ? "ready" : "not_ready", checks });
 });
 
 app.get(`${env.API_PREFIX}/docs.json`, (_req, res) => {

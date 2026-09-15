@@ -93,6 +93,7 @@ model AppraisalTemplate {
   description    String?             @db.Text
   configuration  Json
   isDefault      Boolean             @default(false)
+  defaultKey     String?             @db.VarChar(20)
   version        Int                 @default(1)
   archivedAt     DateTime?
   createdAt      DateTime            @default(now())
@@ -101,6 +102,7 @@ model AppraisalTemplate {
   appraisals     EmployeeAppraisal[]
 
   @@unique([organizationId, name], map: "AppraisalTemplate_org_name_key")
+  @@unique([organizationId, defaultKey], map: "AppraisalTemplate_org_default_key")
   @@index([organizationId], map: "AppraisalTemplate_org_idx")
   @@index([organizationId, isDefault, archivedAt], map: "AppraisalTemplate_org_default_archived_idx")
   @@map("AppraisalTemplate")
@@ -601,6 +603,7 @@ model ConductLog {
   details                String?          @db.Text
   type                   String           @default("QUERY")
   status                 String           @default("IN_PROGRESS")
+  activeSuspensionKey    String?          @db.VarChar(20)
   notes                  String?          @db.Text
   durationValue          Int?
   durationUnit           String?
@@ -618,6 +621,7 @@ model ConductLog {
   @@index([employeeId], map: "ConductLog_employeeId_fkey")
   @@index([organizationId, employeeId], map: "ConductLog_organizationId_employeeId_idx")
   @@index([organizationId, type, status], map: "ConductLog_org_type_status_idx")
+  @@unique([organizationId, employeeId, activeSuspensionKey], map: "ConductLog_org_employee_active_suspension_key")
   @@index([organizationId, createdAt], map: "ConductLog_org_created_idx")
   @@map("ConductLog")
 }
@@ -655,6 +659,9 @@ model Employee {
   hireDate                DateTime?
   status                  employee_status            @default(ACTIVE)
   baseSalary              Decimal?                   @db.Decimal(14, 2)
+  payrollPreviewGross     Decimal?                   @db.Decimal(14, 2)
+  payrollPreviewNet       Decimal?                   @db.Decimal(14, 2)
+  payrollPreviewUpdatedAt DateTime?
   bankName                String?
   bankAccountNumber       String?
   bankAccountName         String?
@@ -722,6 +729,8 @@ model Employee {
   @@index([organizationId, departmentId, status], map: "Employee_org_department_status_idx")
   @@index([teamId], map: "Employee_teamId_fkey")
   @@index([organizationId, managerId], map: "Employee_org_manager_idx")
+  @@index([organizationId, payrollPreviewGross, id], map: "Employee_org_preview_gross_idx")
+  @@index([organizationId, payrollPreviewNet, id], map: "Employee_org_preview_net_idx")
   @@map("Employee")
 }
 
@@ -987,11 +996,13 @@ model AccountingInvoiceTemplate {
   headerNote     String?      @db.Text
   footerNote     String?      @db.Text
   isDefault      Boolean      @default(false)
+  defaultKey     String?      @db.VarChar(20)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AccountingInvoiceTemplate_org_fkey")
 
   @@unique([organizationId, normalizedName], map: "AccountingInvoiceTemplate_org_name_key")
+  @@unique([organizationId, defaultKey], map: "AccountingInvoiceTemplate_org_default_key")
   @@index([organizationId, isDefault], map: "AccountingInvoiceTemplate_org_default_idx")
   @@map("AccountingInvoiceTemplate")
 }
@@ -1616,6 +1627,12 @@ model PayrollRun {
   payDate              DateTime?
   status               payrollrun_status          @default(DRAFT)
   employeeCount        Int                        @default(0)
+  expectedEmployeeCount Int                       @default(0)
+  processedEmployeeCount Int                      @default(0)
+  failedEmployeeCount Int                         @default(0)
+  calculationInput     Json?
+  failureReason        String?                    @db.Text
+  processingHeartbeatAt DateTime?
   totalGross           Decimal                    @default(0.00) @db.Decimal(14, 2)
   totalPaye            Decimal                    @default(0.00) @db.Decimal(14, 2)
   totalPension         Decimal                    @default(0.00) @db.Decimal(14, 2)
@@ -1637,10 +1654,36 @@ model PayrollRun {
   walletTransactions   WalletTransaction[]
   taxRemittances       PayrollTaxRemittance[]
   pensionRemittances   PayrollPensionRemittance[]
+  calculationBatches   PayrollCalculationBatch[]
 
   @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
   @@index([organizationId, periodEnd], map: "PayrollRun_organizationId_periodEnd_idx")
   @@map("PayrollRun")
+}
+
+model PayrollCalculationBatch {
+  id               String     @id @default(cuid())
+  organizationId   String
+  payrollRunId     String
+  batchIndex       Int
+  employeeIds      Json
+  status           String     @default("PENDING") @db.VarChar(24)
+  expectedCount    Int
+  processedCount   Int        @default(0)
+  failedCount      Int        @default(0)
+  totals           Json?
+  attempts         Int        @default(0)
+  errorMessage     String?    @db.Text
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  payrollRun       PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "PayrollCalculationBatch_run_fkey")
+
+  @@unique([payrollRunId, batchIndex], map: "PayrollCalculationBatch_run_index_key")
+  @@index([organizationId, status, updatedAt], map: "PayrollCalculationBatch_org_status_updated_idx")
+  @@index([payrollRunId, status], map: "PayrollCalculationBatch_run_status_idx")
+  @@map("PayrollCalculationBatch")
 }
 
 model Payslip {
@@ -2184,6 +2227,27 @@ model UserSession {
   @@map("UserSession")
 }
 
+model PrivateFileMigration {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  resourceType        String   @db.VarChar(64)
+  resourceId          String   @db.VarChar(191)
+  sourceReference     String   @db.Text
+  destinationReference String? @db.Text
+  status              String   @default("PENDING") @db.VarChar(24)
+  attempts            Int      @default(0)
+  errorMessage        String?  @db.Text
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([resourceType, resourceId], map: "PrivateFileMigration_resource_key")
+  @@index([organizationId, status, createdAt], map: "PrivateFileMigration_org_status_created_idx")
+  @@index([status, updatedAt], map: "PrivateFileMigration_status_updated_idx")
+  @@map("PrivateFileMigration")
+}
+
 model UserTwoFactor {
   id                     String   @id @default(cuid())
   userId                 String   @unique(map: "UserTwoFactor_userId_key")
@@ -2205,6 +2269,7 @@ model WalletAccount {
   name               String
   balance            Decimal                @default(0.00) @db.Decimal(14, 2)
   currency           String                 @default("NGN")
+  purpose            String                 @default("PRIMARY") @db.VarChar(191)
   createdAt          DateTime               @default(now())
   updatedAt          DateTime               @updatedAt
   organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletAccount_organizationId_fkey")
@@ -2213,6 +2278,7 @@ model WalletAccount {
   fundingAttempts    WalletFundingAttempt[]
 
   @@index([organizationId], map: "WalletAccount_organizationId_idx")
+  @@unique([organizationId, purpose], map: "WalletAccount_org_purpose_key")
   @@map("WalletAccount")
 }
 

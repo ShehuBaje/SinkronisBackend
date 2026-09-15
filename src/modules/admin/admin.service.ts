@@ -3027,7 +3027,7 @@ export const verifyOrganizationCac = async (req: Request) => {
       cacRegistryStatus: null
     } });
     await logAdminActivity({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "CAC_VERIFICATION_UNAVAILABLE", resource: "ORGANIZATION", resourceId: organization.id, summary: "CAC verification requested while an approved registry provider is unavailable", metadata: { registrationNumber } });
-    return { verified: false, verificationStatus: "PROVIDER_UNAVAILABLE", registrationNumber, registeredName: null, registryStatus: null, provider: null, checkedAt, verifiedAt: null };
+    return { verified: false, verificationStatus: "PROVIDER_UNAVAILABLE", available: false, reasonCode: readiness.reason, retryable: readiness.reason !== "CAC_CONTRACT_NOT_CONFIRMED", availableActions: ["RETRY_LATER"], nextAction: "CONTACT_PLATFORM_SUPPORT", registrationNumber, registeredName: null, registryStatus: null, provider: null, checkedAt, verifiedAt: null };
   }
 
   const result = await provider.verifyRegistration(registrationNumber);
@@ -3041,7 +3041,7 @@ export const verifyOrganizationCac = async (req: Request) => {
     cacRegistryStatus: result.registryStatus ?? null
   } });
   await logAdminActivity({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "CAC_VERIFICATION_CHECKED", resource: "ORGANIZATION", resourceId: organization.id, summary: `CAC verification completed with status ${verificationStatus}`, metadata: { registrationNumber, verificationStatus, provider: result.provider } });
-  return { verified: matches, verificationStatus, registrationNumber, registeredName: result.registeredName ?? null, registryStatus: result.registryStatus ?? null, provider: result.provider, checkedAt, verifiedAt };
+  return { verified: matches, verificationStatus, available: true, reasonCode: verificationStatus, retryable: verificationStatus === "FAILED", availableActions: verificationStatus === "FAILED" ? ["RETRY"] : [], nextAction: verificationStatus === "MISMATCH" ? "REVIEW_REGISTERED_NAME" : null, registrationNumber, registeredName: result.registeredName ?? null, registryStatus: result.registryStatus ?? null, provider: result.provider, checkedAt, verifiedAt };
 };
 
 export const getUserManagementAnalytics = async (req: Request) => {
@@ -4906,6 +4906,9 @@ export const staffCrudOptions = {
   include: { department: true, team: true },
   beforeCreate: async (data: Record<string, unknown>, req: Request) => { await assertOrganizationStructureIds(req.organizationId!, data); return data; },
   beforeUpdate: async (data: Record<string, unknown>, req: Request) => { await assertOrganizationStructureIds(req.organizationId!, data); return data; },
+  beforeDelete: async () => {
+    throw conflict("Staff records must be deactivated or exited through the employee lifecycle workflow");
+  },
   afterCreate: async ({ req, created }: { req: Request; created: unknown }) => {
     await logAdminActivity({
       organizationId: req.organizationId,
@@ -5174,7 +5177,8 @@ export const uploadBrandingLogo = async (req: Request) => {
     key: `general-settings/branding/${req.organizationId!}/${fileName}`,
     body: inspected.buffer,
     contentType: req.file.mimetype,
-    publicBaseUrl: `${req.protocol}://${req.get("host")}`
+    publicBaseUrl: `${req.protocol}://${req.get("host")}`,
+    visibility: "public"
   });
   const logoUrl = stored.url;
   const previous = await prisma.organizationGeneralSettings.findUnique({ where: { organizationId: req.organizationId! } });

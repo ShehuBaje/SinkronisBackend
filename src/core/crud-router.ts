@@ -24,9 +24,9 @@ type CrudOptions = {
   createSchema: z.ZodTypeAny;
   updateSchema: z.ZodTypeAny;
   permission: PermissionKey;
-  createPermission?: PermissionKey;
-  updatePermission?: PermissionKey;
-  deletePermission?: PermissionKey;
+  createPermission: PermissionKey;
+  updatePermission: PermissionKey;
+  deletePermission: PermissionKey;
   searchableFields?: string[];
   include?: Record<string, unknown>;
   orderBy?: Record<string, "asc" | "desc">;
@@ -79,12 +79,15 @@ export const createCrudRouter = (options: CrudOptions) => {
       ]);
 
       res.json({
+        success: true,
+        message: "Records retrieved successfully",
         data,
         meta: {
           page: Number(req.query.page),
           limit: Number(req.query.limit),
           total
-        }
+        },
+        pagination: { page: Number(req.query.page), limit: Number(req.query.limit), total, totalPages: Math.ceil(total / Number(req.query.limit)) }
       });
     })
   );
@@ -99,13 +102,13 @@ export const createCrudRouter = (options: CrudOptions) => {
         include: options.include
       });
       if (!data) throw notFound();
-      res.json(data);
+      res.json({ ...(data as Record<string, unknown>), success: true, message: "Record retrieved successfully", data });
     })
   );
 
   router.post(
     "/",
-    authorize(options.createPermission ?? options.permission),
+    authorize(options.createPermission),
     validate({ body: options.createSchema }),
     asyncHandler(async (req, res) => {
       const data = (await options.beforeCreate?.(req.body, req)) ?? req.body;
@@ -117,13 +120,13 @@ export const createCrudRouter = (options: CrudOptions) => {
       });
 
       await options.afterCreate?.({ req, created });
-      res.status(201).json(created);
+      res.status(201).json({ ...(created as Record<string, unknown>), success: true, message: "Record created successfully", data: created });
     })
   );
 
   router.patch(
     "/:id",
-    authorize(options.updatePermission ?? options.permission),
+    authorize(options.updatePermission),
     validate({ params: idParams, body: options.updateSchema }),
     asyncHandler(async (req, res) => {
       const existing = await delegate.findFirst({ where: tenantWhere(req, { id: req.params.id }) });
@@ -136,13 +139,13 @@ export const createCrudRouter = (options: CrudOptions) => {
       });
 
       await options.afterUpdate?.({ req, updated, previous: existing });
-      res.json(updated);
+      res.json({ ...(updated as Record<string, unknown>), success: true, message: "Record updated successfully", data: updated });
     })
   );
 
   router.delete(
     "/:id",
-    authorize(options.deletePermission ?? options.permission),
+    authorize(options.deletePermission),
     validate({ params: idParams }),
     asyncHandler(async (req, res) => {
       const existing = await delegate.findFirst({ where: tenantWhere(req, { id: req.params.id }) });

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
+import { boundedMemoryStorage } from "../../core/bounded-memory-storage";
 import { asyncHandler } from "../../core/async-handler";
 import { validate } from "../../core/validate";
 import { authorize } from "../../middleware/rbac.middleware";
@@ -13,14 +14,14 @@ import { payrollBikSchema, payrollCreateEmployeeSchema, payrollDashboardQuerySch
 import { payrollPayeeDocumentParamsSchema, payrollPayeeDocumentSchema, payrollPayeeHistoryQuerySchema, payrollPayeeParamsSchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema } from "./payroll.validation";
 import { payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunItemsQuerySchema, payrollPayRunParamsSchema, payrollPayRunsQuerySchema } from "./payroll.validation";
 import { payrollAdjustLoanSchema, payrollCloseLoanSchema, payrollCreateCustomDeductionSchema, payrollCreateLoanSchema, payrollCustomDeductionParamsSchema, payrollCustomDeductionsQuerySchema, payrollLoanParamsSchema, payrollLoansQuerySchema, payrollPayslipParamsSchema, payrollPayslipsQuerySchema } from "./payroll.validation";
-import { payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxQuerySchema, payrollTaxRemittanceParamsSchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletObligationParamsSchema, payrollWalletTransactionParamsSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
+import { payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxQuerySchema, payrollTaxRemittanceParamsSchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletObligationParamsSchema, payrollWalletObligationsQuerySchema, payrollWalletTransactionParamsSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
 import { payrollAvcCreateSchema, payrollPensionMarkRemittedSchema, payrollPensionParamsSchema, payrollPensionQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportExportParamsSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema } from "./payroll.validation";
 import { payrollAllowanceTypeSchema, payrollAllowanceTypeUpdateSchema, payrollDeductionTypeSchema, payrollDeductionTypeUpdateSchema, payrollPayPeriodSettingsSchema, payrollSettingsTypeParamsSchema } from "./payroll.validation";
 import { createPayrollAllowanceTypeController, createPayrollDeductionTypeController, getPayrollPayPeriodSettingsController, getPayrollSettingsController, getPayrollStatutoryRatesController, listPayrollAllowanceTypesController, listPayrollDeductionTypesController, removePayrollAllowanceTypeController, removePayrollDeductionTypeController, updatePayrollAllowanceTypeController, updatePayrollDeductionTypeController, updatePayrollPayPeriodSettingsController } from "./payroll.controller";
 
 export const payrollRouter = Router();
-const payrollCsv = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ["text/csv", "application/vnd.ms-excel"].includes(file.mimetype)) });
-const payrollPayeeDocument = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ["application/pdf", "image/jpeg", "image/png"].includes(file.mimetype)) });
+const payrollCsv = multer({ storage: boundedMemoryStorage({ perFileBytes: 5 * 1024 * 1024, totalBytes: 5 * 1024 * 1024 }), limits: { fileSize: 5 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ["text/csv", "application/vnd.ms-excel"].includes(file.mimetype)) });
+const payrollPayeeDocument = multer({ storage: boundedMemoryStorage({ perFileBytes: 10 * 1024 * 1024, totalBytes: 10 * 1024 * 1024 }), limits: { fileSize: 10 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ["application/pdf", "image/jpeg", "image/png"].includes(file.mimetype)) });
 
 payrollRouter.get("/settings", authorize("payroll:statutory:view"), asyncHandler(getPayrollSettingsController));
 payrollRouter.get("/settings/pay-period", authorize("payroll:statutory:view"), asyncHandler(getPayrollPayPeriodSettingsController));
@@ -97,7 +98,7 @@ payrollRouter.post("/wallet/fund", authorize("payroll:statutory:update"), valida
 payrollRouter.get("/wallet/transactions/export", authorize("payroll:statutory:view"), validate({ query: payrollWalletTransactionsQuerySchema }), asyncHandler(exportPayrollWalletTransactionsController));
 payrollRouter.get("/wallet/transactions", authorize("payroll:statutory:view"), validate({ query: payrollWalletTransactionsQuerySchema }), asyncHandler(listPayrollWalletTransactionsController));
 payrollRouter.get("/wallet/transactions/:transactionId", authorize("payroll:statutory:view"), validate({ params: payrollWalletTransactionParamsSchema }), asyncHandler(getPayrollWalletTransactionController));
-payrollRouter.get("/wallet/obligations", authorize("payroll:statutory:view"), asyncHandler(listPayrollWalletObligationsController));
+payrollRouter.get("/wallet/obligations", authorize("payroll:statutory:view"), validate({ query: payrollWalletObligationsQuerySchema }), asyncHandler(listPayrollWalletObligationsController));
 payrollRouter.post("/wallet/obligations/:obligationId/pay", authorize("payroll:statutory:update"), validate({ params: payrollWalletObligationParamsSchema }), asyncHandler(payPayrollWalletObligationController));
 payrollRouter.get("/tax/overview", authorize("payroll:statutory:view"), validate({ query: payrollTaxQuerySchema }), asyncHandler(getPayrollTaxOverviewController));
 payrollRouter.get("/tax/employees-by-state", authorize("payroll:statutory:view"), validate({ query: payrollTaxEmployeesQuerySchema }), asyncHandler(getPayrollTaxEmployeesController));

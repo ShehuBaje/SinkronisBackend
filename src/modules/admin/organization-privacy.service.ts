@@ -1,5 +1,5 @@
 import archiver from "archiver";
-import { PassThrough } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../core/prisma";
 import { createObjectKey, deleteObject, uploadObject } from "../../core/object-storage";
@@ -13,6 +13,37 @@ const json = (value: unknown) => JSON.stringify(value, (_key, item) => {
   if (typeof item === "bigint") return item.toString();
   return item;
 }, 2);
+
+const pagedJsonArray = (loadPage: (skip: number, take: number) => Promise<unknown[]>) => Readable.from((async function* () {
+  yield "[";
+  let first = true;
+  const take = 200;
+  for (let skip = 0; ; skip += take) {
+    const rows = await loadPage(skip, take);
+    for (const row of rows) { yield `${first ? "" : ","}${json(row)}`; first = false; }
+    if (rows.length < take) break;
+  }
+  yield "]";
+})());
+
+const buildOrganizationExportStream = async (organizationId: string) => {
+  const organization = await prisma.organization.findUniqueOrThrow({ where: { id: organizationId }, select: { id: true, name: true, slug: true, email: true, phone: true, address: true, country: true, currency: true, taxId: true, status: true, industry: true, cacNumber: true, registrationAddress: true, website: true, fiscalYearStart: true, companySize: true, createdAt: true, updatedAt: true, generalSettings: true, departments: true, branches: true } });
+  const output = new PassThrough();
+  const archive = archiver("zip", { zlib: { level: 6 } });
+  archive.on("error", (error) => output.destroy(error));
+  archive.pipe(output);
+  archive.append(json(organization), { name: "organization.json" });
+  archive.append(pagedJsonArray((skip, take) => prisma.user.findMany({ where: { organizationId }, skip, take, orderBy: { id: "asc" }, select: { id: true, email: true, firstName: true, lastName: true, isActive: true, employeeId: true, moduleAccess: true, lastLoginAt: true, createdAt: true, role: { select: { id: true, name: true } } } })), { name: "users.json" });
+  archive.append(pagedJsonArray((skip, take) => prisma.employee.findMany({ where: { organizationId }, skip, take, orderBy: { id: "asc" }, select: { id: true, employeeNo: true, firstName: true, lastName: true, email: true, phone: true, jobTitle: true, hireDate: true, status: true, lifecycleStatus: true, employmentType: true, departmentId: true, teamId: true, createdAt: true, updatedAt: true } })), { name: "employees.json" });
+  archive.append(pagedJsonArray((skip, take) => prisma.attendance.findMany({ where: { organizationId }, skip, take, orderBy: { id: "asc" }, select: { id: true, employeeId: true, attendanceDate: true, clockInAt: true, clockOutAt: true, source: true, manualStatus: true, createdAt: true, updatedAt: true } })), { name: "attendance.json" });
+  archive.append(pagedJsonArray((skip, take) => prisma.invoice.findMany({ where: { organizationId }, skip, take, orderBy: { id: "asc" }, include: { items: true } })), { name: "invoices.json" });
+  archive.append(pagedJsonArray((skip, take) => prisma.paymentRequest.findMany({ where: { organizationId }, skip, take, orderBy: { id: "asc" } })), { name: "expenses-payment-requests.json" });
+  archive.append(pagedJsonArray((skip, take) => prisma.payrollRun.findMany({ where: { organizationId }, skip, take, orderBy: { id: "asc" } })), { name: "payroll-runs.json" });
+  archive.append(pagedJsonArray((skip, take) => prisma.auditLog.findMany({ where: { organizationId }, skip, take, orderBy: { id: "asc" }, select: { id: true, actorUserId: true, action: true, resource: true, resourceId: true, summary: true, createdAt: true } })), { name: "audit-log.json" });
+  archive.append(json({ formatVersion: 1, organizationId, generatedAt: new Date().toISOString(), datasets: ["organization", "users", "employees", "attendance", "invoices", "expenses-payment-requests", "payroll-runs", "audit-log"] }), { name: "manifest.json" });
+  void archive.finalize().catch((error) => output.destroy(error));
+  return output;
+};
 
 export const buildZipArchive = async (files: Array<{ name: string; value: unknown }>) => {
   const output = new PassThrough();
@@ -56,7 +87,7 @@ export const fulfillOrganizationDataExport = async (exportId: string, publicBase
   const record = await prisma.organizationDataExport.findUniqueOrThrow({ where: { id: exportId }, include: { organization: { select: { name: true } } } });
   let stored: Awaited<ReturnType<typeof uploadObject>> | null = null;
   try {
-    const archive = await buildOrganizationExportArchive(record.organizationId);
+    const archive = await buildOrganizationExportStream(record.organizationId);
     const fileName = `sinkronis-${record.organizationId}-${record.id}.zip`;
     stored = await uploadObject({ key: createObjectKey(`organization-exports/${record.organizationId}`, fileName), body: archive, contentType: "application/zip", publicBaseUrl });
     const completedAt = new Date(); const expiresAt = new Date(completedAt.getTime() + EXPORT_TTL_MS);
@@ -80,7 +111,7 @@ export const processPendingOrganizationExports = async (publicBaseUrl?: string) 
 };
 
 export const expireOrganizationExports = async (now = new Date()) => {
-  const rows = await prisma.organizationDataExport.findMany({ where: { status: "COMPLETED", expiresAt: { lte: now } }, select: { id: true, fileReference: true } });
-  for (const row of rows) { await deleteObject(row.fileReference).catch(() => undefined); await prisma.organizationDataExport.update({ where: { id: row.id }, data: { status: "EXPIRED", fileReference: null } }); }
+  const rows = await prisma.organizationDataExport.findMany({ where: { status: "COMPLETED", expiresAt: { lte: now } }, orderBy: { expiresAt: "asc" }, take: 25, select: { id: true, fileReference: true } });
+  for (let offset = 0; offset < rows.length; offset += 5) await Promise.all(rows.slice(offset, offset + 5).map(async (row) => { await deleteObject(row.fileReference).catch(() => undefined); await prisma.organizationDataExport.update({ where: { id: row.id }, data: { status: "EXPIRED", fileReference: null } }); }));
   return { expired: rows.length };
 };

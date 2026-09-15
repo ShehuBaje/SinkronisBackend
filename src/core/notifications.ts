@@ -1,6 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { sendTransactionalNotificationEmail } from "../modules/auth/auth.mailer";
+import { env } from "../config/env";
+import { getQueueByName, NOTIFICATION_QUEUE_NAME } from "../queues";
 
 export interface DeliverUserNotificationInput {
   organizationId: string;
@@ -77,6 +79,15 @@ export const deliverUserNotification = async (input: DeliverUserNotificationInpu
   }
 
   if (!emailEnabled) return { status: inAppEnabled ? "DELIVERED" as const : "DISABLED" as const, notification };
+  if (env.BACKGROUND_JOBS_MODE === "queue") {
+    try {
+      await getQueueByName(NOTIFICATION_QUEUE_NAME).add("deliver-notification-email", { notificationId: notification.id }, { jobId: `notification-email-${notification.id}`, attempts: 5, backoff: { type: "exponential", delay: 5_000 }, removeOnComplete: 1_000, removeOnFail: 5_000 });
+      return { status: "QUEUED" as const, notification };
+    } catch {
+      notification = await prisma.userNotification.update({ where: { id: notification.id }, data: { emailStatus: "FAILED", emailError: "Notification queue is unavailable" } });
+      return { status: inAppEnabled ? "PARTIAL" as const : "FAILED" as const, notification };
+    }
+  }
   try {
     await sendTransactionalNotificationEmail({ to: recipient.email, recipientName: `${recipient.firstName} ${recipient.lastName}`.trim(), subject: input.title, message: input.message });
     notification = await prisma.userNotification.update({ where: { id: notification.id }, data: { emailStatus: "SENT", deliveredAt: notification.deliveredAt ?? new Date() } });
@@ -84,5 +95,17 @@ export const deliverUserNotification = async (input: DeliverUserNotificationInpu
   } catch {
     notification = await prisma.userNotification.update({ where: { id: notification.id }, data: { emailStatus: "FAILED", emailError: "Notification email delivery failed" } });
     return { status: inAppEnabled ? "PARTIAL" as const : "FAILED" as const, notification };
+  }
+};
+
+export const deliverQueuedNotificationEmail = async (notificationId: string) => {
+  const notification = await prisma.userNotification.findUnique({ where: { id: notificationId }, include: { recipient: { select: { email: true, firstName: true, lastName: true } } } });
+  if (!notification || notification.emailStatus === "SENT" || notification.emailStatus === "DISABLED") return notification;
+  try {
+    await sendTransactionalNotificationEmail({ to: notification.recipient.email, recipientName: `${notification.recipient.firstName} ${notification.recipient.lastName}`.trim(), subject: notification.title, message: notification.message });
+    return prisma.userNotification.update({ where: { id: notification.id }, data: { emailStatus: "SENT", emailError: null, deliveredAt: notification.deliveredAt ?? new Date() } });
+  } catch (error) {
+    await prisma.userNotification.update({ where: { id: notification.id }, data: { emailStatus: "FAILED", emailError: "Notification email delivery failed" } });
+    throw error;
   }
 };

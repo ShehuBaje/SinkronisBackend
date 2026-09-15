@@ -1,13 +1,13 @@
 import { z } from "zod";
 
-export const stringId = z.string().min(1);
-export const optionalText = z.string().trim().min(1).optional();
+export const stringId = z.string().trim().min(1).max(191);
+export const optionalText = z.string().trim().min(1).max(5000).optional();
 export const moduleAccessItemSchema = z.enum(["HRIS", "ACCOUNTING", "PAYROLL"]);
 export const optionalE164Phone = z
   .string()
   .regex(/^\+[1-9]\d{7,14}$/, "Phone must be a valid E.164 number")
   .optional();
-export const money = z.coerce.number().nonnegative();
+export const money = z.coerce.number().finite().nonnegative().max(999_999_999_999.99);
 export const dateValue = z.coerce.date();
 
 export const organizationUpdateSchema = z.object({

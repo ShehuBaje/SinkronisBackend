@@ -299,6 +299,16 @@ export const refreshAuthenticationTokens = async (input: z.infer<typeof refreshT
   return { tokens };
 };
 
+export const logout = async (userId: string, organizationId: string, sessionId?: string) => {
+  if (!sessionId) throw unauthorized("This access token is not bound to a revocable session");
+  const now = new Date();
+  await prisma.userSession.updateMany({
+    where: { id: sessionId, userId, organizationId, revokedAt: null },
+    data: { revokedAt: now, revokeReason: "User logged out", isCurrent: false }
+  });
+  return { message: "Logged out successfully", sessionId, revokedAt: now };
+};
+
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
 const generateSixDigitOtp = () => String(Math.floor(100000 + Math.random() * 900000));
@@ -1046,6 +1056,11 @@ export const resetPassword = async (input: z.infer<typeof resetPasswordSchema>) 
     await tx.user.update({
       where: { id: userId },
       data: { passwordHash, passwordChangedAt: new Date() }
+    });
+
+    await tx.userSession.updateMany({
+      where: { userId, organizationId: resetUser.organizationId, revokedAt: null },
+      data: { revokedAt: new Date(), revokeReason: "Password reset", isCurrent: false }
     });
 
     await tx.passwordResetOtp.updateMany({ where: { userId, consumedAt: null }, data: { consumedAt: new Date() } });

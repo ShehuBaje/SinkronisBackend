@@ -1,5 +1,6 @@
 import { Router, type RequestHandler } from "express";
 import multer from "multer";
+import { boundedMemoryStorage } from "../../core/bounded-memory-storage";
 import { asyncHandler } from "../../core/async-handler";
 import { createCrudRouter } from "../../core/crud-router";
 import { paginationQuery } from "../../core/pagination";
@@ -168,7 +169,7 @@ import {
 export const adminRouter = Router();
 
 const brandingLogoUpload = multer({
-  storage: multer.memoryStorage(),
+  storage: boundedMemoryStorage({ perFileBytes: 2 * 1024 * 1024, totalBytes: 2 * 1024 * 1024 }),
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (_req, file, callback) => ["image/png", "image/svg+xml"].includes(file.mimetype)
     ? callback(null, true)

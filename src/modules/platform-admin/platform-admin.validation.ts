@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { dateOnlyUtc } from "../../core/date-only";
 import { billingModuleKeys, billingPlanKeys, platformSubscriptionStatuses, tenantHealthSortFields } from "./platform-admin.interface";
 
 const optionalDate = z.string().datetime({ offset: true }).transform((value) => new Date(value)).optional();
@@ -271,7 +272,7 @@ export type SupportTicketStatus = (typeof supportTicketStatuses)[number];
 namespace PlatformBillingValidation2 {
 export const platformInvoiceStatuses = ["PAID", "OVERDUE", "DRAFT"] as const;
 export const platformInvoiceSortFields = ["dueDate", "amount", "createdAt", "tenantName"] as const;
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).transform((value) => new Date(`${value}T00:00:00.000Z`));
+const isoDate = dateOnlyUtc;
 const period = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Billing period must use YYYY-MM");
 
 const billingDateFilterFields = {
@@ -337,7 +338,7 @@ export type PlatformModulesQuery = z.infer<typeof platformModulesQuerySchema>;
 namespace PlatformAnalyticsValidation2 {
 const dateOnly = z.union([
   z.date(),
-  z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").transform((value) => new Date(`${value}T00:00:00.000Z`))
+  dateOnlyUtc
 ]);
 export const platformAnalyticsQuerySchema = z.object({ from: dateOnly.optional(), to: dateOnly.optional() }).strict().transform((value) => {
   const today = new Date(); const currentDay = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));

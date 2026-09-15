@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { app } from "../../app";
 import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
+import { logout, resetPassword } from "../auth/auth.service";
 
 const enabled = process.env.RUN_ADMIN_NOTIFICATIONS_HTTP_INTEGRATION === "true";
 
@@ -85,5 +86,34 @@ test("authenticated Tenant Admin notifications and announcements HTTP lifecycle"
     await prisma.role.deleteMany({ where: { organizationId: organization.id } }).catch(() => undefined);
     await prisma.organization.delete({ where: { id: organization.id } }).catch(() => undefined);
     if (server) await new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("logout revokes only the current session and password reset revokes every remaining session", { skip: !enabled, timeout: 120_000 }, async () => {
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const organization = await prisma.organization.create({ data: { name: `Auth Sessions ${suffix}`, slug: `auth-sessions-${suffix}` } });
+  try {
+    const role = await prisma.role.create({ data: { organizationId: organization.id, name: `Owner ${suffix}` } });
+    const user = await prisma.user.create({ data: { organizationId: organization.id, roleId: role.id, email: `sessions-${suffix}@example.test`, passwordHash: "integration-test-only", firstName: "Session", lastName: "Owner" } });
+    const expiresAt = new Date(Date.now() + 86_400_000);
+    await prisma.userSession.createMany({ data: [
+      { id: `session-a-${suffix}`, organizationId: organization.id, userId: user.id, refreshTokenHash: "hash-a", isCurrent: true, expiresAt },
+      { id: `session-b-${suffix}`, organizationId: organization.id, userId: user.id, refreshTokenHash: "hash-b", expiresAt }
+    ] });
+
+    await logout(user.id, organization.id, `session-a-${suffix}`);
+    const afterLogout = await prisma.userSession.findMany({ where: { userId: user.id }, orderBy: { id: "asc" } });
+    assert.ok(afterLogout.find((session) => session.id === `session-a-${suffix}`)?.revokedAt);
+    assert.equal(afterLogout.find((session) => session.id === `session-b-${suffix}`)?.revokedAt, null);
+
+    const otp = await prisma.passwordResetOtp.create({ data: { userId: user.id, codeHash: "not-used", verifiedAt: new Date(), expiresAt } });
+    const resetToken = jwt.sign({ purpose: "password-reset", otpId: otp.id }, env.JWT_REFRESH_SECRET, { subject: user.id, expiresIn: "15m" });
+    await resetPassword({ resetToken, password: "Str0ng!Pass2026", confirmPassword: "Str0ng!Pass2026" });
+    assert.equal(await prisma.userSession.count({ where: { userId: user.id, revokedAt: null } }), 0);
+    assert.ok((await prisma.passwordResetOtp.findUniqueOrThrow({ where: { id: otp.id } })).consumedAt);
+  } finally {
+    await prisma.user.deleteMany({ where: { organizationId: organization.id } }).catch(() => undefined);
+    await prisma.role.deleteMany({ where: { organizationId: organization.id } }).catch(() => undefined);
+    await prisma.organization.delete({ where: { id: organization.id } }).catch(() => undefined);
   }
 });

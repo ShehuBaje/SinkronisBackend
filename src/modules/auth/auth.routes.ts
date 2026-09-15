@@ -13,6 +13,7 @@ import {
   enableAuthenticatorController,
   forgotPasswordController,
   loginController,
+  logoutController,
   refreshAuthenticationTokensController,
   registerOrganizationController,
   resendPasswordOtpController,
@@ -69,6 +70,8 @@ authRouter.post(
   validate({ body: refreshTokenSchema }),
   asyncHandler(refreshAuthenticationTokensController)
 );
+
+authRouter.post("/logout", authenticate, asyncHandler(logoutController));
 
 authRouter.post(
   "/login/2fa/verify",

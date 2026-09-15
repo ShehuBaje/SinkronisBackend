@@ -6,9 +6,6 @@ import { authorize } from "../../middleware/rbac.middleware";
 import * as controller from "./accounting.controller";
 import {
   clientsCrudOptions,
-  taxReportsCrudOptions,
-  walletDisbursementsCrudOptions,
-  walletsCrudOptions,
 } from "./accounting.service";
 import {
   accountingEntityParamsSchema,
@@ -372,9 +369,3 @@ accountingRouter.get("/settings/reminders", authorize("accounting:reminders:view
 accountingRouter.put("/settings/reminders", authorize("accounting:reminders:update"), validate({ body: uiReminderSettingsSchema }), asyncHandler(controller.updateUiReminderSettingsController));
 
 accountingRouter.use("/clients", createCrudRouter(clientsCrudOptions));
-accountingRouter.use("/tax-reports", createCrudRouter(taxReportsCrudOptions));
-accountingRouter.use("/wallets", createCrudRouter(walletsCrudOptions));
-accountingRouter.use(
-  "/wallet-disbursements",
-  createCrudRouter(walletDisbursementsCrudOptions),
-);
