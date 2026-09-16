@@ -2,7 +2,7 @@ import { env } from "./config/env";
 import { prisma } from "./core/prisma";
 import { app } from "./app";
 import { connectRedis, redis } from "./config/redis";
-import { closeQueues, initializeQueues, setQueueBackendAvailability } from "./queues";
+import { closeQueues, initializeQueues, reconcileQueueSchedulers, setQueueBackendAvailability } from "./queues";
 import { closeWorkers, initializeWorkers } from "./queues/workers";
 
 const server = app.listen(env.PORT, async () => {
@@ -16,6 +16,7 @@ const server = app.listen(env.PORT, async () => {
     setQueueBackendAvailability(env.BACKGROUND_JOBS_MODE === "queue");
     if (env.BACKGROUND_JOBS_MODE === "queue") {
       initializeQueues();
+      await reconcileQueueSchedulers();
       initializeWorkers();
     }
     console.log("⏩ Connected to redis successfully");

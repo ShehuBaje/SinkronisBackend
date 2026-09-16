@@ -16,7 +16,7 @@ import { getEffectivePlanCatalogue, resolveRecurringPrices } from "../billing/pr
 import { sendSubscriptionRenewalEmail, sendWorkspaceInvitationEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
 import { isIpAllowed } from "../auth/auth.service";
 import { formatLocation } from "../../core/request-metadata";
-import { companyNamesMatch, getCompanyRegistryProvider, normalizeRegistrationNumber } from "./company-registry.service";
+import { CompanyRegistryUnavailableError, companyNamesMatch, getCompanyRegistryProvider, normalizeRegistrationNumber, type CompanyVerificationResult } from "./company-registry.service";
 import { deriveSubscriptionStatus, isRenewalReminderDue } from "../billing/billing.rules";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
 import { supportedCurrencies, supportedDateFormats, supportedLanguages, type AdminAuditLogInput, type AuditLogRow, type BrandingSettingsResponse, type LocaleSettingsResponse, type NotificationChannelPreferences, type PlatformAnnouncementResponse, type QuickAction, type SystemAlertRow, type TenantNotificationChannelKey } from "./admin.interface";
@@ -3027,10 +3027,27 @@ export const verifyOrganizationCac = async (req: Request) => {
       cacRegistryStatus: null
     } });
     await logAdminActivity({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "CAC_VERIFICATION_UNAVAILABLE", resource: "ORGANIZATION", resourceId: organization.id, summary: "CAC verification requested while an approved registry provider is unavailable", metadata: { registrationNumber } });
-    return { verified: false, verificationStatus: "PROVIDER_UNAVAILABLE", available: false, reasonCode: readiness.reason, retryable: readiness.reason !== "CAC_CONTRACT_NOT_CONFIRMED", availableActions: ["RETRY_LATER"], nextAction: "CONTACT_PLATFORM_SUPPORT", registrationNumber, registeredName: null, registryStatus: null, provider: null, checkedAt, verifiedAt: null };
+    return { verified: false, verificationStatus: "PROVIDER_UNAVAILABLE", available: false, reasonCode: readiness.reason, retryable: false, availableActions: ["CONTACT_PLATFORM_SUPPORT"], nextAction: "CONTACT_PLATFORM_SUPPORT", registrationNumber, registeredName: null, registryStatus: null, provider: null, checkedAt, verifiedAt: null };
   }
 
-  const result = await provider.verifyRegistration(registrationNumber);
+  let result: CompanyVerificationResult;
+  try {
+    result = await provider.verifyRegistration(registrationNumber);
+  } catch (error) {
+    if (!(error instanceof CompanyRegistryUnavailableError)) throw error;
+    await prisma.organization.update({ where: { id: organization.id }, data: {
+      cacNumber: registrationNumber,
+      cacVerificationStatus: "PROVIDER_UNAVAILABLE",
+      cacVerificationCheckedAt: checkedAt,
+      cacVerifiedAt: null,
+      cacVerifiedName: null,
+      cacVerificationProvider: "CAC",
+      cacVerificationReference: null,
+      cacRegistryStatus: null
+    } });
+    await logAdminActivity({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "CAC_VERIFICATION_UNAVAILABLE", resource: "ORGANIZATION", resourceId: organization.id, summary: "CAC verification could not be completed by the registry provider", metadata: { registrationNumber, provider: "CAC", reasonCode: error.reasonCode, externalStatusCode: error.externalStatusCode ?? null } });
+    return { verified: false, verificationStatus: "PROVIDER_UNAVAILABLE", available: false, reasonCode: error.reasonCode, retryable: error.retryable, availableActions: error.retryable ? ["RETRY_LATER"] : ["CONTACT_PLATFORM_SUPPORT"], nextAction: error.retryable ? "RETRY_LATER" : "CONTACT_PLATFORM_SUPPORT", registrationNumber, registeredName: null, registryStatus: null, provider: "CAC", checkedAt, verifiedAt: null };
+  }
   const matches = result.verified && !!result.registeredName && companyNamesMatch(organization.name, result.registeredName);
   const verificationStatus = result.verified ? (matches ? "VERIFIED" : "MISMATCH") : "FAILED";
   const verifiedAt = matches ? checkedAt : null;
@@ -3041,7 +3058,7 @@ export const verifyOrganizationCac = async (req: Request) => {
     cacRegistryStatus: result.registryStatus ?? null
   } });
   await logAdminActivity({ organizationId: req.organizationId!, actorUserId: req.user?.id, action: "CAC_VERIFICATION_CHECKED", resource: "ORGANIZATION", resourceId: organization.id, summary: `CAC verification completed with status ${verificationStatus}`, metadata: { registrationNumber, verificationStatus, provider: result.provider } });
-  return { verified: matches, verificationStatus, available: true, reasonCode: verificationStatus, retryable: verificationStatus === "FAILED", availableActions: verificationStatus === "FAILED" ? ["RETRY"] : [], nextAction: verificationStatus === "MISMATCH" ? "REVIEW_REGISTERED_NAME" : null, registrationNumber, registeredName: result.registeredName ?? null, registryStatus: result.registryStatus ?? null, provider: result.provider, checkedAt, verifiedAt };
+  return { verified: matches, verificationStatus, available: true, reasonCode: verificationStatus, retryable: false, availableActions: verificationStatus === "FAILED" ? ["REVIEW_DETAILS"] : [], nextAction: verificationStatus === "MISMATCH" ? "REVIEW_REGISTERED_NAME" : verificationStatus === "FAILED" ? "REVIEW_DETAILS" : null, registrationNumber, registeredName: result.registeredName ?? null, registryStatus: result.registryStatus ?? null, provider: result.provider, checkedAt, verifiedAt };
 };
 
 export const getUserManagementAnalytics = async (req: Request) => {
