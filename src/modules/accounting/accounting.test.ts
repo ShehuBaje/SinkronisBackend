@@ -89,9 +89,15 @@ test("Customer, catalogue and project payload validation follows UI business bou
   assert.equal(customerCreateSchema.safeParse({ companyName: "Example Customer", email: "billing@example.com", phone: "+2348012345678" }).success, true);
   assert.equal(customerCreateSchema.safeParse({ companyName: "X", email: "bad" }).success, false);
   assert.equal(catalogueCreateSchema.safeParse({ name: "Monthly support", type: "SERVICE", unitPrice: "10000.00", unit: "Month", vatApplicable: true }).success, true);
+  assert.equal(catalogueCreateSchema.safeParse({ type: "SERVICE", unitPrice: "10000.00", unit: "Month" }).success, false);
+  assert.equal(catalogueCreateSchema.safeParse({ name: "Monthly support", type: "INVALID", unitPrice: "10000.00", unit: "Month" }).success, false);
+  assert.equal(catalogueCreateSchema.safeParse({ name: "Monthly support", type: "SERVICE", unitPrice: "10000.00", unit: "Month", organizationId: "other-tenant" }).success, false);
   assert.equal(catalogueCreateSchema.safeParse({ name: "Invalid", type: "SERVICE", unitPrice: "-1", unit: "Run" }).success, false);
   assert.equal(projectCreateSchema.safeParse({ name: "Implementation", clientId: "client", value: "0", startDate: "2026-09-01", endDate: "2026-08-31" }).success, false);
   assert.equal(projectCreateSchema.safeParse({ name: "Implementation", clientId: "client", value: "0", startDate: "2026-09-01", endDate: "2026-09-30" }).success, true);
+  assert.equal(projectCreateSchema.safeParse({ clientId: "client", value: "0", startDate: "2026-09-01" }).success, false);
+  assert.equal(projectCreateSchema.safeParse({ name: "Implementation", clientId: "client", value: "0", startDate: "2026-09-01", status: "INVALID" }).success, false);
+  assert.equal(projectCreateSchema.safeParse({ name: "Implementation", clientId: "client", value: "0", startDate: "2026-09-01", tenantId: "other-tenant" }).success, false);
 });
 
 test("Accounting status and percentage helpers handle overdue and zero-value projects", () => {

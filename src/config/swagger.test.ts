@@ -98,6 +98,28 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
   assert.equal(documented.has("PATCH /api/v1/hris/leaves/{}/reject"), true);
 });
 
+test("Accounting create contracts publish runtime-valid bodies and the invoice catalogue dependency", () => {
+  const paths = (openApiSpec as any).paths;
+  const catalogue = paths["/api/v1/accounting/items-services"].post;
+  const project = paths["/api/v1/accounting/projects"].post;
+  const invoice = paths["/api/v1/accounting/invoices"].post;
+
+  for (const operation of [catalogue, project, invoice]) {
+    assert.equal(operation.requestBody.required, true);
+    assert.ok(operation.requestBody.content["application/json"].schema);
+    assert.ok(operation.requestBody.content["application/json"].schema.example);
+  }
+
+  assert.deepEqual(catalogue.requestBody.content["application/json"].schema.required, ["name", "type", "unitPrice", "unit"]);
+  assert.match(catalogue.responses["201"].content["application/json"].example.data.id, /^cm1catalogueitem$/);
+  assert.deepEqual(project.requestBody.content["application/json"].schema.required, ["name", "clientId", "value", "startDate"]);
+
+  const invoiceLine = invoice.requestBody.content["application/json"].schema.properties.items.items;
+  assert.deepEqual(invoiceLine.required, ["quantity"]);
+  assert.deepEqual(invoiceLine.oneOf, [{ required: ["catalogueItemId"] }, { required: ["description", "unitPrice"] }]);
+  assert.match(invoiceLine.properties.catalogueItemId.description, /POST\/GET items-services/);
+});
+
 test("HRIS appraisal mutations publish their complete frontend contract", () => {
   const paths = (openApiSpec as any).paths;
   const bodyOperations = [
