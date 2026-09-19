@@ -797,7 +797,22 @@ const options: swaggerJSDoc.Options = {
           allOf: [{ $ref: "#/components/schemas/MyPlanGenericResponse" }, { type: "object", properties: { data: { type: "object", required: ["currentPlanKey", "currency", "plans"], properties: { currentPlanKey: { type: "string" }, currency: { type: "string" }, plans: { type: "array", items: { $ref: "#/components/schemas/MyPlanPlan" } } } } } }]
         },
         MyPlanPreviewResponse: {
-          allOf: [{ $ref: "#/components/schemas/MyPlanGenericResponse" }, { type: "object", properties: { data: { type: "object", properties: { confirmationRequired: { type: "boolean" }, preview: { $ref: "#/components/schemas/MyPlanChangePreview" }, scheduledChange: { type: "object", nullable: true }, billingRecord: { type: "object", nullable: true } } } } }]
+          allOf: [{ $ref: "#/components/schemas/MyPlanGenericResponse" }, { type: "object", properties: { data: { type: "object", properties: { confirmationRequired: { type: "boolean" }, preview: { $ref: "#/components/schemas/MyPlanChangePreview" }, payment: { $ref: "#/components/schemas/SubscriptionPaymentAttempt" } } } } }]
+        },
+        SubscriptionPaymentAttempt: {
+          type: "object",
+          required: ["id", "operationType", "planKey", "billingCycle", "amount", "currency", "provider", "reference", "status", "retryable"],
+          properties: {
+            id: { type: "string" }, operationType: { type: "string", enum: ["PURCHASE", "PLAN_CHANGE"] },
+            planKey: { type: "string", enum: ["hris", "payroll", "accounting", "all-in-one"] },
+            billingCycle: { type: "string", enum: ["MONTHLY", "YEARLY"] }, amount: { type: "number" },
+            currency: { type: "string", example: "NGN" }, provider: { type: "string", enum: ["PAYSTACK"] },
+            reference: { type: "string" }, status: { type: "string", enum: ["CREATED", "INITIALIZING", "INITIALIZED", "UNKNOWN", "VERIFIED", "COMPLETED", "FAILED"] },
+            authorizationUrl: { type: "string", format: "uri", nullable: true, description: "Safe Paystack-hosted checkout URL." },
+            accessCode: { type: "string", nullable: true }, failureReason: { type: "string", nullable: true },
+            verifiedAt: { type: "string", format: "date-time", nullable: true }, completedAt: { type: "string", format: "date-time", nullable: true },
+            retryable: { type: "boolean" }
+          }
         },
         MyPlanBillingAnalyticsResponse: {
           allOf: [{ $ref: "#/components/schemas/MyPlanGenericResponse" }, { type: "object", properties: { data: { type: "object", required: ["currency", "totalPaidYearly", "monthlyPaid", "annualEstimate", "activeMonthlySubscription"], properties: { currency: { type: "string", example: "NGN" }, totalPaidYearly: { type: "number" }, monthlyPaid: { type: "number" }, annualEstimate: { type: "number" }, activeMonthlySubscription: { type: "number" } } } } }]
@@ -815,8 +830,8 @@ const options: swaggerJSDoc.Options = {
           properties: {
             planKey: { type: "string", enum: ["hris", "payroll", "accounting", "all-in-one"], example: "all-in-one" },
             billingCycle: { type: "string", enum: ["MONTHLY", "YEARLY"] },
-            confirm: { type: "boolean", default: false, description: "False returns a pricing preview; true applies the change." },
-            paymentReference: { type: "string", description: "Verified provider payment reference; optional when a default tokenized card exists." },
+            confirm: { type: "boolean", default: false, description: "False returns a pricing preview; true initializes Paystack hosted checkout. Entitlements are applied only after backend verification." },
+            idempotencyKey: { type: "string", minLength: 8, maxLength: 191, description: "Optional stable client operation key used to safely reuse the same payment attempt." },
             automaticRenewal: { type: "boolean", default: true }
           }
         },
@@ -838,18 +853,7 @@ const options: swaggerJSDoc.Options = {
             paymentCardId: { type: "string", example: "clx_card_id" }
           }
         },
-        MyPlanAddCardBody: {
-          type: "object",
-          required: ["cardNumber", "cardHolderName", "expiryDate", "cvv"],
-          description: "Raw card number and CVV are validated and tokenized; they are not stored.",
-          properties: {
-            cardNumber: { type: "string", example: "4111111111111111" },
-            cardHolderName: { type: "string", example: "Acme Finance" },
-            expiryDate: { type: "string", example: "12/28" },
-            cvv: { type: "string", example: "123" },
-            makeDefault: { type: "boolean", default: true }
-          }
-        },
+        MyPlanAddCardBody: { type: "object", additionalProperties: false, description: "Deprecated. Sinkronis no longer accepts raw card data; use subscription checkout initialization." },
         MyPlanCancelCardCreationBody: {
           type: "object",
           properties: {
@@ -1390,7 +1394,7 @@ const options: swaggerJSDoc.Options = {
       [`${env.API_PREFIX}/payroll/wallet/transactions/export`]: { get: { tags: ["Payroll Wallet"], summary: "Export filtered wallet ledger", security: [{ bearerAuth: [] }], responses: { "200": { description: "CSV", content: { "text/csv": { schema: { type: "string", format: "binary" } } } } } } },
       [`${env.API_PREFIX}/payroll/wallet/transactions/{transactionId}`]: { get: { tags: ["Payroll Wallet"], summary: "View tenant wallet transaction", security: [{ bearerAuth: [] }], responses: { "200": { description: "Transaction detail" }, "404": { description: "Tenant-owned transaction not found" } } } },
       [`${env.API_PREFIX}/payroll/wallet/obligations`]: { get: { tags: ["Payroll Wallet"], summary: "List payable payroll and statutory obligations", security: [{ bearerAuth: [] }], parameters: [{ name: "page", in: "query", schema: { type: "integer", minimum: 1, default: 1 } }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } }], responses: { "200": { description: "Authoritative pending obligations with canonical pagination metadata" }, "400": { description: "Invalid page or limit" } } } },
-      [`${env.API_PREFIX}/payroll/wallet/obligations/{obligationId}/pay`]: { post: { tags: ["Payroll Wallet"], summary: "Pay an authoritative wallet obligation", description: "Amount is resolved server-side. Debit, ledger entry and source transition are atomic and source-idempotent.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Paid or existing idempotent transaction" }, "403": { description: "Write permission required" }, "409": { description: "Not payable or insufficient funds" } } } },
+      [`${env.API_PREFIX}/payroll/wallet/obligations/{obligationId}/pay`]: { post: { tags: ["Payroll Wallet"], summary: "Settle a Payroll run using per-payslip settlement identities", description: "MANUAL records an asserted off-platform batch payment and atomically debits the internal ledger once per payslip. PROVIDER prepares immutable per-payslip attempts but returns 503 while outbound transfers are disabled. Statutory obligations must use their dedicated external-remittance workflow.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["settlementMethod", "idempotencyKey"], properties: { settlementMethod: { type: "string", enum: ["MANUAL", "PROVIDER"] }, idempotencyKey: { type: "string", minLength: 8 }, externalReference: { type: "string", description: "Required for MANUAL; external batch reference." }, settledAt: { type: "string", format: "date-time", description: "Required for MANUAL." }, note: { type: "string", description: "Required for MANUAL settlement evidence." } } } } } }, responses: { "200": { description: "Per-payslip settlement results and truthful aggregate state" }, "403": { description: "Write permission required" }, "409": { description: "Already settled or insufficient spendable balance" }, "503": { description: "Provider settlement disabled/not operationally activated" } } } },
       [`${env.API_PREFIX}/payroll/tax/overview`]: { get: { tags: ["Payroll Tax (PAYE)"], summary: "Get tenant PAYE overview for a tax year", security: [{ bearerAuth: [] }], responses: { "200": { description: "State authority count, YTD deducted/remitted and next due date" } } } },
       [`${env.API_PREFIX}/payroll/tax/employees-by-state`]: { get: { tags: ["Payroll Tax (PAYE)"], summary: "List finalized employee PAYE grouped by snapshotted state", security: [{ bearerAuth: [] }], responses: { "200": { description: "Groups and paginated employee tax rows" } } } },
       [`${env.API_PREFIX}/payroll/tax/remittances`]: { get: { tags: ["Payroll Tax (PAYE)"], summary: "List generated PAYE remittance obligations", description: "Amounts are immutable aggregations of finalized PayRun Payslip snapshots by authority.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Paginated remittances" } } } },
@@ -1403,7 +1407,7 @@ const options: swaggerJSDoc.Options = {
       [`${env.API_PREFIX}/payroll/pension/pfas`]: { get: { tags: ["Payroll Pension"], summary: "List PFAs represented by tenant pension profiles", security: [{ bearerAuth: [] }], responses: { "200": { description: "Dynamic PFA lookup" } } } },
       [`${env.API_PREFIX}/payroll/pension/remittances`]: { get: { tags: ["Payroll Pension"], summary: "List immutable PFA-grouped remittance obligations", security: [{ bearerAuth: [] }], responses: { "200": { description: "Paginated remittances" } } } },
       [`${env.API_PREFIX}/payroll/pension/remittances/{id}`]: { get: { tags: ["Payroll Pension"], summary: "Get a tenant Pension remittance", security: [{ bearerAuth: [] }], responses: { "200": { description: "Remittance detail" }, "404": { description: "Not found" } } } },
-      [`${env.API_PREFIX}/payroll/pension/remittances/{id}/remit`]: { post: { tags: ["Payroll Pension"], summary: "Pay Pension remittance from Payroll Wallet", description: "Uses the authoritative amount and an atomic source-idempotent wallet debit.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Wallet transaction" }, "409": { description: "Already paid or insufficient funds" } } } },
+      [`${env.API_PREFIX}/payroll/pension/remittances/{id}/remit`]: { post: { tags: ["Payroll Pension"], summary: "Record an externally paid Pension remittance", description: "Manual/off-platform evidence only. This endpoint does not claim that Sinkronis or Paystack transferred funds and does not debit the internal wallet.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/PayrollPensionMarkRemittedRequest" } } } }, responses: { "200": { description: "External remittance evidence recorded and audited" }, "409": { description: "Already remitted or duplicate reference" } } } },
       [`${env.API_PREFIX}/payroll/pension/remittances/{id}/mark-remitted`]: { post: { tags: ["Payroll Pension"], summary: "Record externally-paid Pension remittance", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/PayrollPensionMarkRemittedRequest" } } } }, responses: { "200": { description: "Remittance marked and audited" }, "409": { description: "Already remitted" } } } },
       [`${env.API_PREFIX}/payroll/pension/avc`]: { get: { tags: ["Payroll Pension"], summary: "List tenant AVC records", security: [{ bearerAuth: [] }], responses: { "200": { description: "Paginated AVC records" } } }, post: { tags: ["Payroll Pension"], summary: "Create an effective-dated AVC", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/PayrollAvcRequest" } } } }, responses: { "201": { description: "AVC created" }, "409": { description: "Overlapping AVC" } } } },
       [`${env.API_PREFIX}/payroll/pension/avc/{id}/pause`]: { post: { tags: ["Payroll Pension"], summary: "Pause future AVC application", security: [{ bearerAuth: [] }], responses: { "200": { description: "AVC paused" }, "409": { description: "Invalid transition" } } } },
@@ -1716,7 +1720,7 @@ const options: swaggerJSDoc.Options = {
       [`${env.API_PREFIX}/accounting/payment-requests/{id}`]: { get: { tags: ["Accounting - Payment Requests"], summary: "Get disbursement details", security: [{ bearerAuth: [] }], responses: { "200": { description: "Request and bank snapshot" }, "404": { description: "Not found" } } } },
       [`${env.API_PREFIX}/accounting/payment-requests/{id}/approve`]: { post: { tags: ["Accounting - Payment Requests"], summary: "Approve pending request", security: [{ bearerAuth: [] }], responses: { "200": { description: "Approved" }, "409": { description: "Invalid transition" } } } },
       [`${env.API_PREFIX}/accounting/payment-requests/{id}/decline`]: { post: { tags: ["Accounting - Payment Requests"], summary: "Decline pending request", security: [{ bearerAuth: [] }], responses: { "200": { description: "Declined" }, "409": { description: "Invalid transition" } } } },
-      [`${env.API_PREFIX}/accounting/payment-requests/{id}/disburse`]: { post: { tags: ["Accounting - Payment Requests"], summary: "Idempotently debit wallet and complete request", description: "Requires walletAccountId and idempotencyKey. Validates approved state, persisted bank snapshot and sufficient balance.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Persisted receipt and ledger transaction" }, "404": { description: "Wallet/request not found" }, "409": { description: "Insufficient balance, incomplete bank data, duplicate or invalid state" } } } },
+      [`${env.API_PREFIX}/accounting/payment-requests/{id}/disburse`]: { post: { tags: ["Accounting - Payment Requests"], summary: "Prepare or record an explicit payment-request settlement", description: "MANUAL requires external evidence and atomically finalizes the internal ledger and PAID state. PROVIDER creates a PREPARED attempt only; no transfer occurs while PAYSTACK_TRANSFERS_ENABLED is false.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["walletAccountId", "idempotencyKey", "settlementMethod"], properties: { walletAccountId: { type: "string" }, idempotencyKey: { type: "string", minLength: 8 }, settlementMethod: { type: "string", enum: ["MANUAL", "PROVIDER"] }, externalReference: { type: "string", description: "Required for MANUAL and unique per tenant." }, settledAt: { type: "string", format: "date-time", description: "Required for MANUAL." }, note: { type: "string", description: "Required for MANUAL settlement evidence." } } } } } }, responses: { "200": { description: "Settlement and payment-request state" }, "404": { description: "Wallet/request not found" }, "409": { description: "Insufficient spendable balance, duplicate identity/reference or invalid state" }, "503": { description: "Provider settlement disabled/not operationally activated" } } } },
       [`${env.API_PREFIX}/accounting/expenses`]: { get: { tags: ["Accounting - Expenses"], summary: "List expenses and aggregate summary", description: "Top category is ranked by total active expense amount.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Summary, expenses and pagination" } } }, post: { tags: ["Accounting - Expenses"], summary: "Log expense as authenticated user", security: [{ bearerAuth: [] }], responses: { "201": { description: "Created" }, "400": { description: "Validation error" } } } },
       [`${env.API_PREFIX}/accounting/expenses/export`]: { get: { tags: ["Accounting - Expenses"], summary: "Export filtered expenses as CSV", security: [{ bearerAuth: [] }], responses: { "200": { description: "CSV export" } } } },
       [`${env.API_PREFIX}/accounting/expenses/{id}`]: { patch: { tags: ["Accounting - Expenses"], summary: "Edit active expense", security: [{ bearerAuth: [] }], responses: { "200": { description: "Updated" }, "409": { description: "Voided expense" } } }, delete: { tags: ["Accounting - Expenses"], summary: "Void expense while retaining history", security: [{ bearerAuth: [] }], responses: { "200": { description: "Voided" } } } },
@@ -1741,7 +1745,8 @@ const options: swaggerJSDoc.Options = {
       [`${env.API_PREFIX}/accounting/wallet/manual-funding`]: { post: { tags: ["Accounting - Wallet"], summary: "Credit a wallet from verified manual funding", description: "Requires wallets:update. externalReference provides idempotency and must identify money already received externally.", security: [{ bearerAuth: [] }], responses: { "201": { description: "Persisted credit transaction" }, "404": { description: "Tenant wallet not found" }, "409": { description: "Conflicting reference" } } } },
       [`${env.API_PREFIX}/accounting/wallet/paystack/initialize`]: { post: { tags: ["Accounting - Wallet"], summary: "Initialize Paystack wallet funding", description: "Creates a tenant-owned PENDING funding attempt and returns Paystack's authorization URL. Initialization never credits the wallet. Requires accounting:wallets:update.", security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["walletAccountId", "amount"], properties: { walletAccountId: { type: "string" }, amount: { oneOf: [{ type: "string" }, { type: "number" }], example: "50000.00" } } } } } }, responses: { "201": { description: "Pending attempt and Paystack authorizationUrl/accessCode" }, "404": { description: "Tenant wallet not found" }, "409": { description: "Unsupported wallet currency" }, "503": { description: "Paystack or callback configuration unavailable" } } } },
       [`${env.API_PREFIX}/accounting/wallet/paystack/verify/{reference}`]: { get: { tags: ["Accounting - Wallet"], summary: "Verify and finalize Paystack wallet funding", description: "Verifies payment directly with Paystack and credits the wallet exactly once. Safe to retry with the same reference.", security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "reference", required: true, schema: { type: "string" } }], responses: { "200": { description: "Persisted funding result and wallet transaction ID" }, "404": { description: "Tenant funding attempt not found" }, "409": { description: "Provider result does not match request" }, "503": { description: "Paystack unavailable" } } } },
-      [`${env.API_PREFIX}/accounting/paystack/webhook`]: { post: { tags: ["Accounting - Wallet"], summary: "Receive Paystack payment events", description: "Public provider callback secured with Paystack's x-paystack-signature HMAC. charge.success is independently verified with Paystack before one idempotent wallet credit.", responses: { "200": { description: "Event acknowledged" }, "401": { description: "Missing or invalid provider signature" } } } },
+      [`${env.API_PREFIX}/accounting/paystack/webhook`]: { post: { tags: ["Accounting - Wallet"], summary: "Receive Paystack financial events", description: "Provider callback secured with Paystack's x-paystack-signature HMAC. Supports verified wallet/subscription charge events and durable, idempotent transfer.success, transfer.failed and transfer.reversed settlement events.", responses: { "200": { description: "Authenticated event durably accepted or identified as duplicate" }, "401": { description: "Missing or invalid provider signature" }, "409": { description: "Authenticated event does not correlate with the expected settlement" } } } },
+      [`${env.API_PREFIX}/accounting/paystack/transfer-approval`]: { post: { tags: ["Accounting - Payments"], summary: "Paystack Transfer Approval callback", description: "Provider-facing callback for Paystack dashboard Transfer Approval. It performs local reference, amount, currency, recipient, reservation and state validation only. HTTP 200 approves processing; HTTP 400 rejects it. It never marks a settlement paid.", requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["reference", "amount", "currency"], properties: { reference: { type: "string" }, amount: { type: "integer", description: "Provider amount in minor units" }, currency: { type: "string", example: "NGN" }, recipient: { description: "Paystack recipient data when supplied" } } } } } }, responses: { "200": { description: "Known eligible transfer approved" }, "400": { description: "Unknown, mismatched or ineligible transfer rejected" } } } },
       [`${env.API_PREFIX}/accounting/wallet/transactions/{id}/receipt`]: { get: { tags: ["Accounting - Wallet"], summary: "Retrieve persisted tenant wallet receipt", security: [{ bearerAuth: [] }], responses: { "200": { description: "Transaction receipt" }, "404": { description: "Not found in tenant" } } } },
       [`${env.API_PREFIX}/accounting/settings/invoice-templates`]: { get: { tags: ["Accounting - Settings"], summary: "List invoice templates", security: [{ bearerAuth: [] }], responses: { "200": { description: "Tenant templates" } } }, post: { tags: ["Accounting - Settings"], summary: "Create invoice template", security: [{ bearerAuth: [] }], responses: { "201": { description: "Created; first template becomes default" }, "409": { description: "Duplicate name" } } } },
       [`${env.API_PREFIX}/accounting/settings/invoice-templates/{id}`]: { patch: { tags: ["Accounting - Settings"], summary: "Update invoice template", security: [{ bearerAuth: [] }], responses: { "200": { description: "Updated" }, "404": { description: "Not found in tenant" } } }, delete: { tags: ["Accounting - Settings"], summary: "Delete non-default template", security: [{ bearerAuth: [] }], responses: { "204": { description: "Deleted" }, "409": { description: "Default template must be replaced first" } } } },
@@ -2493,27 +2498,41 @@ const options: swaggerJSDoc.Options = {
       [`${adminBase}/my-plan/subscriptions`]: {
         post: {
           tags: ["My Plan"], summary: "Preview or confirm an initial modular plan purchase",
-          description: "Supports HRIS, Payroll, Accounting, or All-in-One. confirm=false returns pricing without mutation; confirm=true creates the subscription and billing record.",
+          description: "Supports HRIS, Payroll, Accounting, or All-in-One. confirm=false returns server-calculated pricing; confirm=true creates or reuses one durable payment attempt and returns a Paystack-hosted checkout URL. No subscription value is granted until backend verification completes.",
           security: [{ bearerAuth: [] }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanChangeBody" } } } },
-          responses: { "200": { description: "Purchase preview" }, "201": { description: "Subscription purchased" }, "400": { description: "Validation, duplicate purchase, or payment error", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanErrorResponse" } } } } }
+          responses: { "200": { description: "Purchase preview" }, "201": { description: "Payment attempt initialized", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanPreviewResponse" } } } }, "400": { description: "Validation or duplicate subscription" }, "409": { description: "A conflicting payment is already in progress" }, "503": { description: "Provider unavailable or outcome unknown" } }
         }
       },
       [`${adminBase}/my-plan/subscription/plan`]: {
         patch: {
           tags: ["My Plan"],
           summary: "Preview or confirm a subscription plan switch",
-          description: "Switches between HRIS, Payroll, Accounting, and All-in-One. The target plan replaces the current recurring plan; included modules are never added as separate charges.",
+          description: "Previews or initializes hosted payment for a plan switch. A scheduled plan change is created only after backend verification; included modules are never activated from a client-supplied reference.",
           security: [{ bearerAuth: [] }],
           requestBody: {
             required: true,
             content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanChangeBody" } } }
           },
           responses: {
-            "200": { description: "Plan preview or confirmed scheduled change", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanPreviewResponse" } } } },
+            "200": { description: "Plan preview or payment attempt initialized", content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanPreviewResponse" } } } },
             "400": { description: "Validation error" },
             "401": { description: "Unauthorized" },
             "403": { description: "Forbidden" }
           }
+        }
+      },
+      [`${adminBase}/my-plan/subscription-payments/{reference}`]: {
+        get: {
+          tags: ["My Plan"], summary: "Get a tenant-scoped subscription payment status", security: [{ bearerAuth: [] }],
+          parameters: [{ in: "path", name: "reference", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "Current payment status", content: { "application/json": { schema: { allOf: [{ $ref: "#/components/schemas/MyPlanGenericResponse" }, { type: "object", properties: { data: { $ref: "#/components/schemas/SubscriptionPaymentAttempt" } } }] } } } }, "404": { description: "Payment does not belong to this tenant or does not exist" } }
+        }
+      },
+      [`${adminBase}/my-plan/subscription-payments/{reference}/verify`]: {
+        post: {
+          tags: ["My Plan"], summary: "Verify and finalize a subscription payment", description: "Independently verifies Paystack status, reference, amount, currency, attempt metadata, and tenant correlation before applying subscription value exactly once.", security: [{ bearerAuth: [] }],
+          parameters: [{ in: "path", name: "reference", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "Verification result", content: { "application/json": { schema: { allOf: [{ $ref: "#/components/schemas/MyPlanGenericResponse" }, { type: "object", properties: { data: { $ref: "#/components/schemas/SubscriptionPaymentAttempt" } } }] } } } }, "404": { description: "Payment does not belong to this tenant or does not exist" }, "409": { description: "Provider data does not match the intended payment" }, "503": { description: "Verification temporarily unavailable" } }
         }
       },
       [`${adminBase}/my-plan/subscription/cancel`]: {
@@ -2569,8 +2588,7 @@ const options: swaggerJSDoc.Options = {
         patch: {
           tags: ["My Plan"],
           summary: "Update default payment method metadata",
-          description:
-            "Updates safe card metadata only and returns the full payment-method page payload, including billing address metadata. Use POST /payment-method/cards for raw card entry and tokenization.",
+          description: "Legacy metadata selection only. Legacy internally generated card tokens are not accepted as payment proof; new payments use Paystack hosted checkout.",
           security: [{ bearerAuth: [] }],
           requestBody: {
             required: true,
@@ -2604,20 +2622,16 @@ const options: swaggerJSDoc.Options = {
         },
         post: {
           tags: ["My Plan"],
-          summary: "Add a new payment card",
-          description: "Validates raw card details, tokenizes them, and stores only safe card metadata.",
+          summary: "Deprecated raw-card route",
+          deprecated: true,
+          description: "Always rejects raw card submission. Start a subscription purchase or plan change to receive a Paystack-hosted checkout URL.",
           security: [{ bearerAuth: [] }],
           requestBody: {
             required: true,
             content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanAddCardBody" } } }
           },
           responses: {
-            "201": {
-              description:
-                "Card saved. Returns safe card metadata and the current payment method payload, including billingEmail fallback when no billing address email is saved.",
-              content: { "application/json": { schema: { $ref: "#/components/schemas/MyPlanGenericResponse" } } }
-            },
-            "400": { description: "Validation error" },
+            "400": { description: "HOSTED_CHECKOUT_REQUIRED" },
             "401": { description: "Unauthorized" },
             "403": { description: "Forbidden" }
           }

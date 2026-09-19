@@ -319,8 +319,16 @@ export const paymentRequestDisbursementSchema = z
   .object({
     walletAccountId: z.string().trim().min(1),
     idempotencyKey: z.string().trim().min(8).max(191),
+    settlementMethod: z.enum(["MANUAL", "PROVIDER"]),
+    externalReference: z.string().trim().min(3).max(191).optional(),
+    settledAt: z.coerce.date().optional(),
+    note: z.string().trim().min(3).max(1000).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.settlementMethod === "MANUAL") for (const field of ["externalReference", "settledAt", "note"] as const) if (!value[field]) context.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is required for manual settlement` });
+    if (value.settledAt && value.settledAt.getTime() > Date.now() + 60_000) context.addIssue({ code: z.ZodIssueCode.custom, path: ["settledAt"], message: "Settlement time cannot be in the future" });
+  });
 
 const expenseBodySchema = z.object({
     expenseDate: z.coerce.date(),

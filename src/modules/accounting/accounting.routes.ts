@@ -47,7 +47,9 @@ import {
 
 export const accountingRouter = Router();
 export const accountingPaystackWebhookRouter = Router();
+export const accountingPaystackTransferApprovalRouter = Router();
 accountingPaystackWebhookRouter.post("/", asyncHandler(controller.paystackWebhookController));
+accountingPaystackTransferApprovalRouter.post("/", asyncHandler(controller.paystackTransferApprovalController));
 
 accountingRouter.get(
   "/dashboard",

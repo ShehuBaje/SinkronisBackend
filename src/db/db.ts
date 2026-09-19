@@ -1,22 +1,22 @@
+import "dotenv/config";
 import mysql from "mysql2/promise";
 
 async function testConnection() {
-  console.log("🚀 Starting DB connection...");
+  console.log("Starting database connection check...");
 
   try {
-    const connection = await mysql.createConnection({
-      host: "localhost",
-      user: "root",
-      password: "Shehu@4199",
-      database: "sinkronis_db",
-    });
+    if (!process.env.DATABASE_URL) {
+      throw new Error("DATABASE_URL is not configured");
+    }
 
-    console.log("✅ MySQL connected successfully!");
-
+    const connection = await mysql.createConnection(process.env.DATABASE_URL);
+    console.log("Database connected successfully");
     await connection.end();
-  } catch (err: any) {
-    console.log("❌ DB connection failed:", err.message);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.log("Database connection failed:", message);
+    process.exitCode = 1;
   }
 }
 
-testConnection();
+void testConnection();

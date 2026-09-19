@@ -18,7 +18,7 @@ import { authRouter } from "./modules/auth/auth.routes";
 import { adminRouter } from "./modules/admin";
 import { subscriptionsRouter } from "./modules/subscriptions/subscriptions.routes";
 import { hrisRouter } from "./modules/hris/hris.routes";
-import { accountingPaystackWebhookRouter, accountingRouter } from "./modules/accounting/accounting.routes";
+import { accountingPaystackTransferApprovalRouter, accountingPaystackWebhookRouter, accountingRouter } from "./modules/accounting/accounting.routes";
 import { payrollRouter } from "./modules/payroll/payroll.routes";
 import { mediaRouter } from "./modules/media/media.routes";
 import { platformAdminRouter } from "./modules/platform-admin";
@@ -159,6 +159,7 @@ app.get([swaggerPath, `${swaggerPath}/`], (_req, res) => {
 
 app.use(`${env.API_PREFIX}/media`, mediaRouter);
 app.use(`${env.API_PREFIX}/accounting/paystack/webhook`, accountingPaystackWebhookRouter);
+app.use(`${env.API_PREFIX}/accounting/paystack/transfer-approval`, accountingPaystackTransferApprovalRouter);
 app.use(`${env.API_PREFIX}/internal`, internalRouter);
 app.use(`${env.API_PREFIX}/auth`, authRouter);
 app.use(`${env.API_PREFIX}/platform-admin`, authenticate, platformAdminRouter);

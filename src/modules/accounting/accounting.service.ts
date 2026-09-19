@@ -6,6 +6,10 @@ import { conflict, notFound, serviceUnavailable, unauthorized } from "../../core
 import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
 import { createObjectKey, deleteObject, readObject, uploadObject } from "../../core/object-storage";
+import { completeManualSettlement, prepareProviderSettlement, settlementDto } from "../../core/financial-settlement";
+import { initiateProviderSettlement } from "../../core/provider-settlement";
+import { acceptAndProcessPaystackTransferWebhook } from "../../core/paystack-transfer-webhook";
+import { assertProviderTransfersEnabled } from "../../core/settlement-provider";
 import { deliverUserNotification } from "../../core/notifications";
 import { createAuditLog } from "../admin/admin.audit";
 import {
@@ -15,6 +19,15 @@ import {
 } from "../auth/auth.mailer";
 import { getPlatformConfigurationValue } from "../platform-admin/platform-admin.service";
 import { createPayslipPdf } from "../employee/employee.service";
+import {
+  initializePaystackTransaction,
+  paystackMinorUnits,
+  PaystackProviderError,
+  type PaystackVerifyData,
+  verifyPaystackTransaction,
+  verifyPaystackWebhookSignature,
+} from "../../core/paystack";
+import { processSubscriptionPaystackWebhook } from "../admin/admin.service";
 import type {
   AccountingListQuery,
   AgentBulkInviteInput,
@@ -1995,6 +2008,7 @@ export const createPaymentRequest = async (
       employee: {
         select: {
           bankName: true,
+          bankCode: true,
           bankAccountNumber: true,
           bankAccountName: true,
         },
@@ -2016,6 +2030,7 @@ export const createPaymentRequest = async (
       projectId: project?.id ?? invoice?.projectId,
       clientId,
       bankName: requester?.employee?.bankName,
+      bankCode: requester?.employee?.bankCode,
       accountNumber: requester?.employee?.bankAccountNumber,
       accountName: requester?.employee?.bankAccountName,
     },
@@ -2094,10 +2109,12 @@ export const disbursePaymentRequest = async (
   user: AuthUser,
 ) => {
   const current = await paymentRequestOwned(organizationId, id);
-  if (
-    current.status === "PAID" &&
-    current.disbursementReference === input.idempotencyKey
-  ) {
+  if (current.status === "PAID") {
+    const settlement = await prisma.financialSettlement.findFirst({
+      where: { organizationId, sourceType: "ACCOUNTING_PAYMENT_REQUEST", sourceId: id, idempotencyKey: input.idempotencyKey },
+    });
+    if (settlement) return { request: current, settlement: settlementDto(settlement), idempotentReplay: true };
+    if (current.disbursementReference !== input.idempotencyKey) throw conflict("Payment request has already been settled");
     const transaction = await prisma.walletTransaction.findFirst({
       where: {
         organizationId,
@@ -2112,66 +2129,24 @@ export const disbursePaymentRequest = async (
     throw conflict("Only approved payment requests can be disbursed");
   if (!current.bankName || !current.accountNumber || !current.accountName)
     throw conflict("Approved bank destination is incomplete");
-  const transaction = await prisma.$transaction(async (tx) => {
-    const wallet = await tx.walletAccount.findFirst({
-      where: { id: input.walletAccountId, organizationId },
-    });
-    if (!wallet) throw notFound("Wallet not found");
-    const debit = await tx.walletAccount.updateMany({
-      where: {
-        id: wallet.id,
-        organizationId,
-        balance: { gte: current.amount },
-      },
-      data: { balance: { decrement: current.amount } },
-    });
-    if (debit.count !== 1) throw conflict("Insufficient wallet balance");
-    const ledger = await tx.walletTransaction.create({
-      data: {
-        organizationId,
-        walletAccountId: wallet.id,
-        type: "ACCOUNTING_DISBURSEMENT",
-        direction: "DEBIT",
-        amount: current.amount,
-        balanceBefore: wallet.balance,
-        balanceAfter: wallet.balance.sub(current.amount),
-        reference: reference("TXN"),
-        transferReference: input.idempotencyKey,
-        description: `Payment request ${current.id} disbursement`,
-        sourceType: "ACCOUNTING_PAYMENT_REQUEST",
-        sourceId: current.id,
-        createdById: user.id,
-      },
-    });
-    await tx.paymentRequest.update({
-      where: { id },
-      data: {
-        status: "PAID",
-        disbursementReference: input.idempotencyKey,
-        disbursedAt: new Date(),
-      },
-    });
-    return ledger;
+  if (input.settlementMethod === "PROVIDER" && !current.bankCode) throw conflict("Provider settlement requires an authoritative beneficiary bank code");
+  const wallet = await prisma.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId } });
+  if (!wallet) throw notFound("Wallet not found");
+  const source = { organizationId, walletAccountId: wallet.id, sourceType: "ACCOUNTING_PAYMENT_REQUEST", sourceId: current.id, amount: current.amount, currency: current.currency, beneficiarySnapshot: { bankName: current.bankName, bankCode: current.bankCode, accountNumber: current.accountNumber, accountName: current.accountName }, createdById: user.id } satisfies import("../../core/financial-settlement").SettlementSource;
+  if (input.settlementMethod === "PROVIDER") {
+    const prepared = await prepareProviderSettlement(source, input.idempotencyKey);
+    assertProviderTransfersEnabled();
+    const processing = await initiateProviderSettlement(organizationId, prepared.id);
+    return { request: current, settlement: settlementDto(processing), idempotentReplay: processing.id !== prepared.id };
+  }
+  const manual = await completeManualSettlement(source, { idempotencyKey: input.idempotencyKey, externalReference: input.externalReference!, settledAt: input.settledAt!, note: input.note! }, async (tx, settlement) => {
+    const claimed = await tx.paymentRequest.updateMany({ where: { id, organizationId, status: "APPROVED" }, data: { status: "PAID", disbursementReference: settlement.internalReference, disbursedAt: settlement.settledAt } });
+    if (claimed.count !== 1) throw conflict("Payment request has already been settled");
+    return tx.paymentRequest.findUniqueOrThrow({ where: { id } });
   });
-  await audit(
-    organizationId,
-    user,
-    "ACCOUNTING_PAYMENT_REQUEST_DISBURSED",
-    "PAYMENT_REQUEST",
-    id,
-    `Disbursed payment request ${current.title}`,
-    { transactionId: transaction.id },
-  );
-  return {
-    request: await paymentRequestOwned(organizationId, id),
-    transaction: {
-      ...transaction,
-      amount: amount(transaction.amount),
-      balanceBefore: amount(transaction.balanceBefore),
-      balanceAfter: amount(transaction.balanceAfter),
-      accountNumber: `****${current.accountNumber.slice(-4)}`,
-    },
-  };
+  await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_MANUALLY_SETTLED", "PAYMENT_REQUEST", id, `Recorded external settlement for ${current.title}`, { settlementId: manual.settlement.id, externalReference: input.externalReference });
+  return { request: manual.result ?? await paymentRequestOwned(organizationId, id), settlement: settlementDto(manual.settlement), idempotentReplay: manual.idempotentReplay };
+
 };
 
 export const listExpenses = async (
@@ -2760,32 +2735,12 @@ export const fundWalletManually = async (organizationId: string, input: ManualWa
 };
 export const getWalletReceipt = async (organizationId: string, id: string) => { const row = await prisma.walletTransaction.findFirst({ where: { id, organizationId }, include: { wallet: { select: { name: true, currency: true } } } }); if (!row) throw notFound("Wallet transaction not found"); return { ...row, amount: amount(row.amount), balanceBefore: amount(row.balanceBefore), balanceAfter: amount(row.balanceAfter) }; };
 
-type PaystackResponse<T> = { status: boolean; message: string; data?: T };
-type PaystackInitializeData = { authorization_url: string; access_code: string; reference: string };
-type PaystackVerifyData = { status: string; reference: string; amount: number; currency: string; paid_at?: string; gateway_response?: string };
-
-const paystackSecret = () => {
-  if (!env.PAYSTACK_SECRET_KEY) throw serviceUnavailable("Paystack funding is not configured", { available: false, reasonCode: "PAYMENT_PROVIDER_NOT_CONFIGURED", retryable: false, availableActions: ["CONTACT_PLATFORM_SUPPORT"], nextAction: "CONTACT_PLATFORM_SUPPORT" });
-  return env.PAYSTACK_SECRET_KEY;
-};
-
-const paystackRequest = async <T>(path: string, init?: RequestInit): Promise<PaystackResponse<T>> => {
-  let response: globalThis.Response;
-  try {
-    response = await fetch(`https://api.paystack.co${path}`, {
-      ...init,
-      headers: { Authorization: `Bearer ${paystackSecret()}`, "Content-Type": "application/json", ...(init?.headers ?? {}) },
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    throw serviceUnavailable("Paystack is temporarily unavailable", { available: false, reasonCode: "PAYMENT_PROVIDER_UNAVAILABLE", retryable: true, availableActions: ["RETRY"], nextAction: "RETRY" });
+const walletPaystackError = (error: unknown) => {
+  if (error instanceof PaystackProviderError) {
+    throw serviceUnavailable(error.message, { available: false, reasonCode: error.ambiguous ? "PAYMENT_PROVIDER_UNAVAILABLE" : "PAYMENT_PROVIDER_REJECTED_REQUEST", retryable: error.ambiguous, availableActions: error.ambiguous ? ["RETRY"] : ["REVIEW_DETAILS"], nextAction: error.ambiguous ? "RETRY" : "REVIEW_DETAILS" });
   }
-  const payload = await response.json().catch(() => null) as PaystackResponse<T> | null;
-  if (!response.ok || !payload?.status || !payload.data) throw serviceUnavailable(payload?.message || "Paystack request failed", { available: false, reasonCode: "PAYMENT_PROVIDER_REJECTED_REQUEST", retryable: response.status >= 500, availableActions: response.status >= 500 ? ["RETRY"] : ["REVIEW_DETAILS"], nextAction: response.status >= 500 ? "RETRY" : "REVIEW_DETAILS" });
-  return payload;
+  throw error;
 };
-
-const paystackMinorUnits = (value: Prisma.Decimal.Value) => new Prisma.Decimal(value).mul(100).toDecimalPlaces(0).toNumber();
 
 export const initializePaystackWalletFunding = async (organizationId: string, input: PaystackFundingInput, user: AuthUser) => {
   if (!env.PAYSTACK_CALLBACK_URL) throw serviceUnavailable("Paystack callback URL is not configured", { available: false, reasonCode: "PAYMENT_CALLBACK_NOT_CONFIGURED", retryable: false, availableActions: ["CONTACT_PLATFORM_SUPPORT"], nextAction: "CONTACT_PLATFORM_SUPPORT" });
@@ -2796,13 +2751,13 @@ export const initializePaystackWalletFunding = async (organizationId: string, in
   const referenceValue = reference("PSK");
   const attempt = await prisma.walletFundingAttempt.create({ data: { organizationId, walletAccountId: wallet.id, reference: referenceValue, amount: fundingAmount, currency: wallet.currency, createdById: user.id } });
   try {
-    const response = await paystackRequest<PaystackInitializeData>("/transaction/initialize", { method: "POST", body: JSON.stringify({ email: user.email, amount: paystackMinorUnits(fundingAmount), currency: wallet.currency, reference: referenceValue, callback_url: env.PAYSTACK_CALLBACK_URL, metadata: { fundingAttemptId: attempt.id, organizationId, walletAccountId: wallet.id } }) });
-    const updated = await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { authorizationUrl: response.data!.authorization_url, accessCode: response.data!.access_code, providerReference: response.data!.reference, providerPayload: response.data as unknown as Prisma.InputJsonValue } });
+    const response = await initializePaystackTransaction({ email: user.email, amount: paystackMinorUnits(fundingAmount), currency: wallet.currency, reference: referenceValue, callbackUrl: env.PAYSTACK_CALLBACK_URL, metadata: { fundingAttemptId: attempt.id, organizationId, walletAccountId: wallet.id, paymentDomain: "WALLET_FUNDING" } });
+    const updated = await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { authorizationUrl: response.authorization_url, accessCode: response.access_code, providerReference: response.reference, providerPayload: response as unknown as Prisma.InputJsonValue } });
     await audit(organizationId, user, "ACCOUNTING_WALLET_FUNDING_INITIALIZED", "WALLET_FUNDING", updated.id, `Initialized Paystack wallet funding ${updated.reference}`);
     return { id: updated.id, provider: updated.provider, reference: updated.reference, amount: amount(updated.amount), currency: updated.currency, status: updated.status, authorizationUrl: updated.authorizationUrl, accessCode: updated.accessCode };
   } catch (error) {
     await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "FAILED", failureReason: error instanceof Error ? error.message.slice(0, 500) : "Initialization failed" } });
-    throw error;
+    walletPaystackError(error);
   }
 };
 
@@ -2823,14 +2778,13 @@ const finalizeVerifiedPaystackFunding = async (attemptId: string, verification: 
     const transaction = await db.walletTransaction.create({ data: { organizationId: attempt.organizationId, walletAccountId: wallet.id, type: "WALLET_FUNDING", direction: "CREDIT", amount: attempt.amount, balanceBefore: wallet.balance, balanceAfter: updatedWallet.balance, reference: reference("WLT"), transferReference: attempt.reference, description: "Paystack wallet funding", sourceType: "PAYSTACK_FUNDING", sourceId: attempt.id, createdById: attempt.createdById } });
     const completed = await db.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "COMPLETED", verifiedAt: verification.paid_at ? new Date(verification.paid_at) : new Date(), providerReference: verification.reference, failureReason: null } });
     return { attempt: completed, transaction, idempotentReplay: false };
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   if (!result.idempotentReplay) await createAuditLog({ organizationId: result.attempt.organizationId, actorUserId: result.attempt.createdById ?? undefined, action: "ACCOUNTING_WALLET_FUNDING_COMPLETED", resource: "WALLET_FUNDING", resourceId: result.attempt.id, summary: `Verified Paystack wallet funding ${result.attempt.reference}` });
   return { reference: result.attempt.reference, status: result.attempt.status, amount: amount(result.attempt.amount), currency: result.attempt.currency, transactionId: result.transaction?.id ?? null, idempotentReplay: result.idempotentReplay };
 };
 
 const verifyPaystackReference = async (referenceValue: string) => {
-  const response = await paystackRequest<PaystackVerifyData>(`/transaction/verify/${encodeURIComponent(referenceValue)}`);
-  return response.data!;
+  return verifyPaystackTransaction(referenceValue);
 };
 
 export const verifyPaystackWalletFunding = async (organizationId: string, referenceValue: string) => {
@@ -2842,15 +2796,12 @@ export const verifyPaystackWalletFunding = async (organizationId: string, refere
 };
 
 export const processPaystackWebhook = async (rawBody: Buffer | undefined, signature: string | undefined) => {
-  if (!rawBody || !signature) throw unauthorized("Invalid Paystack webhook signature");
-  const expected = crypto.createHmac("sha512", paystackSecret()).update(rawBody).digest("hex");
-  const supplied = Buffer.from(signature, "utf8");
-  const calculated = Buffer.from(expected, "utf8");
-  if (supplied.length !== calculated.length || !crypto.timingSafeEqual(supplied, calculated)) throw unauthorized("Invalid Paystack webhook signature");
-  const event = JSON.parse(rawBody.toString("utf8")) as { event?: string; data?: { reference?: string } };
+  if (!verifyPaystackWebhookSignature(rawBody, signature)) throw unauthorized("Invalid Paystack webhook signature");
+  const event = JSON.parse(rawBody!.toString("utf8")) as { event?: string; data?: { reference?: string } };
+  if (event.event?.startsWith("transfer.")) return acceptAndProcessPaystackTransferWebhook(rawBody!, event);
   if (event.event !== "charge.success" || !event.data?.reference) return { received: true, processed: false };
   const attempt = await prisma.walletFundingAttempt.findUnique({ where: { reference: event.data.reference } });
-  if (!attempt) return { received: true, processed: false };
+  if (!attempt) return processSubscriptionPaystackWebhook(event.data.reference);
   const verification = await verifyPaystackReference(attempt.reference);
   const result = await finalizeVerifiedPaystackFunding(attempt.id, verification);
   return { received: true, processed: true, ...result };

@@ -63,7 +63,9 @@ test("invoice WHT is manual, restricted to 5% or 10%, and based on subtotal befo
 test("agent, payment, expense and reminder DTOs enforce workflow boundaries", () => {
   assert.equal(agentInviteSchema.safeParse({ fullName: "Ada Agent", email: "ada@example.com", phone: "+2348012345678", roleId: "role" }).success, true);
   assert.equal(agentBulkInviteSchema.safeParse({ entries: "a@example.com,\nb@example.com", roleId: "role" }).success, true);
-  assert.equal(paymentRequestDisbursementSchema.safeParse({ walletAccountId: "wallet", idempotencyKey: "retry-key-123" }).success, true);
+  assert.equal(paymentRequestDisbursementSchema.safeParse({ walletAccountId: "wallet", idempotencyKey: "retry-key-123", settlementMethod: "MANUAL", externalReference: "BANK-123", settledAt: "2026-09-18T10:00:00.000Z", note: "Paid by authorized bank transfer" }).success, true);
+  assert.equal(paymentRequestDisbursementSchema.safeParse({ walletAccountId: "wallet", idempotencyKey: "retry-key-123", settlementMethod: "MANUAL" }).success, false);
+  assert.equal(paymentRequestDisbursementSchema.safeParse({ walletAccountId: "wallet", idempotencyKey: "retry-key-123", settlementMethod: "PROVIDER" }).success, true);
   assert.equal(paymentRequestDisbursementSchema.safeParse({ walletAccountId: "wallet", amount: 500, idempotencyKey: "short" }).success, false);
   assert.equal(paymentRequestListQuerySchema.safeParse({ status: "COMPLETED" }).success, true);
   assert.equal(expenseCreateSchema.safeParse({ expenseDate: "2026-09-08", category: "Travel", description: "Client visit", amount: "10.00", loggedBy: "other" }).success, false);

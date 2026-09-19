@@ -2,7 +2,6 @@ import { z } from "zod";
 import { isIP } from "node:net";
 import { permissions } from "../auth/permissions";
 import { platformAnnouncementTypes, supportedCurrencies, supportedDateFormats, supportedLanguages, tenantNotificationChannelKeys, tenantNotificationModuleKeys } from "./admin.interface";
-import { passesLuhn } from "../billing/billing.rules";
 import {
   branchCreateSchema,
   branchUpdateSchema,
@@ -44,10 +43,13 @@ export const myPlanChangeSchema = z.object({
   planKey: billingPlanKeySchema,
   billingCycle: z.enum(["MONTHLY", "YEARLY"]).optional(),
   confirm: z.boolean().default(false),
-  paymentReference: z.string().min(3).max(200).optional(),
+  idempotencyKey: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._:-]+$/).optional(),
   automaticRenewal: z.boolean().default(true)
-});
+}).strict();
 export const myPlanPurchaseSchema = myPlanChangeSchema;
+export const subscriptionPaymentReferenceParamsSchema = z.object({
+  reference: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._=-]+$/)
+}).strict();
 
 export const myPlanInvoiceParamsSchema = z.object({ invoiceId: z.string().min(1) });
 export const myPlanChangeParamsSchema = z.object({ changeId: z.string().min(1) });
@@ -61,13 +63,9 @@ export const myPlanPaymentMethodSchema = z.object({
   paymentCardId: z.string().min(1)
 });
 
-export const myPlanAddCardSchema = z.object({
-  cardNumber: z.string().min(12).max(19).regex(/^[0-9 ]+$/, "Card number must contain digits only"),
-  cardHolderName: z.string().min(2).max(120),
-  expiryDate: z.string().regex(/^(0[1-9]|1[0-2])\/?([0-9]{2}|[0-9]{4})$/, "Expiry date must be MM/YY or MM/YYYY"),
-  cvv: z.string().min(3).max(4).regex(/^[0-9]+$/, "CVV must contain digits only"),
-  makeDefault: z.boolean().default(true)
-}).refine((value) => passesLuhn(value.cardNumber), { path: ["cardNumber"], message: "Card number is invalid" });
+// Raw card data must never transit Sinkronis. This legacy route accepts no
+// fields and directs clients to provider-hosted subscription checkout instead.
+export const myPlanAddCardSchema = z.object({}).strict();
 
 export const myPlanCardParamsSchema = z.object({ cardId: z.string().min(1) });
 export const myPlanCardUpdateSchema = z.object({

@@ -12,7 +12,8 @@ export const SCHEDULED_JOBS = {
   subscriptionLifecycle: { schedulerId: "subscription-lifecycle-hourly", queueName: LIFECYCLE_QUEUE_NAME, jobName: "subscription-lifecycle", pattern: "0 * * * *" },
   organizationPrivacy: { schedulerId: "organization-privacy-hourly", queueName: EXPORT_QUEUE_NAME, jobName: "organization-privacy", pattern: "15 * * * *" },
   accountingExports: { schedulerId: "accounting-exports-five-minutes", queueName: EXPORT_QUEUE_NAME, jobName: "accounting-exports", pattern: "*/5 * * * *" },
-  payrollRecovery: { schedulerId: "payroll-recovery-five-minutes", queueName: PAYROLL_QUEUE_NAME, jobName: "payroll-recovery", pattern: "*/5 * * * *" }
+  payrollRecovery: { schedulerId: "payroll-recovery-five-minutes", queueName: PAYROLL_QUEUE_NAME, jobName: "payroll-recovery", pattern: "*/5 * * * *" },
+  paystackTransferReconciliation: { schedulerId: "paystack-transfer-reconciliation-five-minutes", queueName: LIFECYCLE_QUEUE_NAME, jobName: "paystack-transfer-reconciliation", pattern: "*/5 * * * *" }
 } as const;
 
 export const scheduledQueueNameForJob = (jobName: string): QueueName => {

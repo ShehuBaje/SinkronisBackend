@@ -58,6 +58,8 @@ import {
   cancelMyPlanSubscription,
   changeMyPlan,
   purchaseMyPlan,
+  getSubscriptionPaymentStatus,
+  verifySubscriptionPayment,
   cancelMyPlanChange,
   toggleIpAllowlist,
   updateBranch,
@@ -219,6 +221,14 @@ export const purchaseMyPlanController = async (req: any, res: any) => {
   sendSuccess(res, data.message, data, { status: data.confirmationRequired ? 200 : 201 });
 };
 
+export const getSubscriptionPaymentStatusController = async (req: any, res: any) => {
+  sendSuccess(res, "Subscription payment status retrieved.", await getSubscriptionPaymentStatus(req));
+};
+
+export const verifySubscriptionPaymentController = async (req: any, res: any) => {
+  sendSuccess(res, "Subscription payment verification completed.", await verifySubscriptionPayment(req));
+};
+
 export const cancelMyPlanChangeController = async (req: any, res: any) => {
   const data = await cancelMyPlanChange(req);
   sendSuccess(res, "Scheduled plan change cancelled.", data);
@@ -255,8 +265,8 @@ export const deleteMyPlanPaymentCardController = async (req: any, res: any) => {
 };
 
 export const addMyPlanPaymentCardController = async (req: any, res: any) => {
-  const data = await addMyPlanPaymentCard(req);
-  sendSuccess(res, data.message, data, { status: 201 });
+  await addMyPlanPaymentCard(req);
+  res.status(400).end();
 };
 
 export const cancelMyPlanPaymentCardCreationController = async (req: any, res: any) => {

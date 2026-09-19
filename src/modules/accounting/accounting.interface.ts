@@ -146,6 +146,10 @@ export interface PaymentRequestDecisionInput {
 export interface PaymentRequestDisbursementInput {
   walletAccountId: string;
   idempotencyKey: string;
+  settlementMethod: "MANUAL" | "PROVIDER";
+  externalReference?: string;
+  settledAt?: Date;
+  note?: string;
 }
 
 export interface ExpenseInput {

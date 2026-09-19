@@ -12,6 +12,9 @@ import { createManagedEmployee } from "../hris/hris.service";
 import { createObjectKey, deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { createPayslipPdf, payslipComponents } from "../employee/employee.service";
 import { getQueueByName, isQueueBackendAvailable, PAYROLL_QUEUE_NAME } from "../../queues";
+import { completeManualSettlement, prepareProviderSettlement, settlementDto } from "../../core/financial-settlement";
+import { initiateProviderSettlement } from "../../core/provider-settlement";
+import { assertProviderTransfersEnabled } from "../../core/settlement-provider";
 
 const payrollReportableStatuses = ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSING", "DISBURSED", "PAID"] as const;
 const payrollDisbursementPendingStatuses = ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSING"] as const;
@@ -492,3 +495,30 @@ export const getPayrollStatutoryRates = async (organizationId: string, period = 
 export const getPayrollSettingsOverview = async (organizationId: string) => { const [payPeriod, allowanceTypes, deductionTypes, statutoryRates] = await Promise.all([getPayrollPayPeriodSettings(organizationId), listPayrollAllowanceTypes(organizationId), listPayrollDeductionTypes(organizationId), getPayrollStatutoryRates(organizationId)]); return { payPeriod, allowanceTypes, deductionTypes, statutoryRates }; };
 
 export const isMutablePayrollRunStatus = (status: string) => status === "DRAFT" || status === "PROCESSING";
+
+export const settlePayrollRun = async (organizationId: string, payrollRunId: string, input: { settlementMethod: "MANUAL" | "PROVIDER"; idempotencyKey: string; externalReference?: string; settledAt?: Date; note?: string }, user: AuthUser) => {
+  const wallet = await walletForTenant(organizationId);
+  const run = await prisma.payrollRun.findFirst({ where: { id: payrollRunId, organizationId, status: { in: ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSING"] } } });
+  if (!run) throw conflict("Payroll run is not payable");
+  const payslips = await prisma.payslip.findMany({ where: { organizationId, payrollRunId }, orderBy: { id: "asc" } });
+  if (!payslips.length) throw conflict("Payroll run has no employee obligations");
+  if (input.settlementMethod === "PROVIDER") {
+    const prepared = [];
+    for (const slip of payslips) prepared.push(await prepareProviderSettlement({ organizationId, walletAccountId: wallet.id, sourceType: "PAYROLL_PAYSLIP", sourceId: slip.id, amount: slip.netPay, currency: slip.currency ?? wallet.currency, beneficiarySnapshot: slip.bankSnapshot as Prisma.InputJsonValue, createdById: user.id }, `${input.idempotencyKey}:${slip.id}`));
+    assertProviderTransfersEnabled();
+    await prisma.payrollRun.updateMany({ where: { id: payrollRunId, organizationId, status: { in: ["APPROVED", "PENDING_DISBURSEMENT"] } }, data: { status: "DISBURSING" } });
+    const settlements = [];
+    for (const settlement of prepared) settlements.push(settlementDto(await initiateProviderSettlement(organizationId, settlement.id)));
+    return { payrollRunId, status: "DISBURSING", total: payslips.length, succeeded: 0, remaining: payslips.length, settlements };
+  }
+  await prisma.payrollRun.updateMany({ where: { id: payrollRunId, organizationId, status: { in: ["APPROVED", "PENDING_DISBURSEMENT"] } }, data: { status: "DISBURSING" } });
+  const settlements = [];
+  for (const slip of payslips) {
+    const result = await completeManualSettlement({ organizationId, walletAccountId: wallet.id, sourceType: "PAYROLL_PAYSLIP", sourceId: slip.id, amount: slip.netPay, currency: slip.currency ?? wallet.currency, beneficiarySnapshot: slip.bankSnapshot as Prisma.InputJsonValue, createdById: user.id }, { idempotencyKey: `${input.idempotencyKey}:${slip.id}`, externalReference: `${input.externalReference!}:${slip.id}`, settledAt: input.settledAt!, note: input.note! }, (tx) => tx.payslip.update({ where: { id: slip.id }, data: { paymentStatus: "PAID" } }));
+    settlements.push(settlementDto(result.settlement));
+  }
+  const remaining = await prisma.payslip.count({ where: { organizationId, payrollRunId, paymentStatus: { not: "PAID" } } });
+  await prisma.payrollRun.update({ where: { id: payrollRunId }, data: remaining ? { status: "DISBURSING" } : { status: "DISBURSED", disbursedAt: input.settledAt } });
+  await createAuditLog({ organizationId, actorUserId: user.id, action: "PAYROLL_RUN_MANUALLY_SETTLED", resource: "PAYROLL_RUN", resourceId: payrollRunId, summary: `Recorded ${settlements.length} employee settlements`, metadata: { externalBatchReference: input.externalReference } });
+  return { payrollRunId, status: remaining ? "DISBURSING" : "DISBURSED", total: payslips.length, succeeded: payslips.length - remaining, remaining, settlements };
+};

@@ -17,9 +17,11 @@ test("plan DTO rejects obsolete plans and defaults confirmation safely", () => {
   assert.deepEqual(myPlanChangeSchema.parse({ planKey: "all-in-one" }), { planKey: "all-in-one", confirm: false, automaticRenewal: true });
 });
 
-test("card DTO enforces Luhn and default selection requires an owned card id", () => {
-  assert.equal(myPlanAddCardSchema.safeParse({ cardNumber: "4111111111111112", cardHolderName: "Test Owner", expiryDate: "12/30", cvv: "123" }).success, false);
-  assert.equal(myPlanAddCardSchema.safeParse({ cardNumber: "4111111111111111", cardHolderName: "Test Owner", expiryDate: "12/30", cvv: "123" }).success, true);
+test("subscription DTO rejects forged payment proof and raw card data", () => {
+  assert.equal(myPlanChangeSchema.safeParse({ planKey: "hris", confirm: true, paymentReference: "forged" }).success, false);
+  assert.equal(myPlanChangeSchema.safeParse({ planKey: "hris", confirm: true, idempotencyKey: "purchase-operation-1" }).success, true);
+  assert.equal(myPlanAddCardSchema.safeParse({ cardNumber: "4111111111111111", cardHolderName: "Test Owner", expiryDate: "12/30", cvv: "123" }).success, false);
+  assert.equal(myPlanAddCardSchema.safeParse({}).success, true);
   assert.deepEqual(myPlanPaymentMethodSchema.parse({ paymentCardId: "card_1" }), { paymentCardId: "card_1" });
 });
 

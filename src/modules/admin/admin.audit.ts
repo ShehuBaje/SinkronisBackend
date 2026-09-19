@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import crypto from "crypto";
 import { prisma } from "../../core/prisma";
 import { getRequestContext } from "../../core/request-context";
@@ -56,14 +56,14 @@ const buildAuditHash = (
 export const createAuditLog = async (input: CreateAuditLogInput) => {
   const metadata = mergeAuditMetadata(input.metadata);
 
+  try {
+    await prisma.auditLogChain.create({ data: { organizationId: input.organizationId } });
+  } catch (error) {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+  }
+
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     const txAny = tx as any;
-
-    await txAny.auditLogChain.upsert({
-      where: { organizationId: input.organizationId },
-      create: { organizationId: input.organizationId },
-      update: {}
-    });
 
     const [chain] = await tx.$queryRaw<Array<{ lastHash: string | null; sequence: number }>>`
       SELECT lastHash, sequence
@@ -97,7 +97,7 @@ export const createAuditLog = async (input: CreateAuditLogInput) => {
       where: { organizationId: input.organizationId },
       data: { lastHash: hash, sequence }
     });
-  });
+  }, { maxWait: 20_000, timeout: 60_000 });
 };
 
 export const extractEntityId = (entity: unknown): string | undefined => {

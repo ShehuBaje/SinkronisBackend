@@ -18,6 +18,42 @@ test("financial state transitions use database claims and serializable payment r
   const service = source("./modules/accounting/accounting.service.ts");
   assert.match(service, /recordInvoicePayment[\s\S]*TransactionIsolationLevel\.Serializable/);
   assert.match(service, /paymentRequest\.updateMany\([\s\S]*status: "PENDING"/);
+  assert.match(
+    service,
+    /disbursePaymentRequest[\s\S]*completeManualSettlement[\s\S]*paymentRequest\.updateMany\([\s\S]*status: "APPROVED"/,
+  );
+});
+
+test("financial settlements have durable identities, reservations and a default-off provider gate", () => {
+  const schema = source("../prisma/schema.prisma");
+  const settlement = source("./core/financial-settlement.ts");
+  const provider = source("./core/settlement-provider.ts");
+  const env = source("./config/env.ts");
+  assert.match(schema, /model FinancialSettlement[\s\S]*@@unique\(\[organizationId, sourceType, sourceId\]/);
+  assert.match(schema, /reservedBalance/);
+  assert.match(settlement, /balance - reservedBalance >=/);
+  assert.match(settlement, /status: "SUCCEEDED"/);
+  assert.match(provider, /PROVIDER_SETTLEMENT_DISABLED/);
+  assert.match(env, /PAYSTACK_TRANSFERS_ENABLED[\s\S]*default\("false"\)/);
+});
+
+test("database diagnostics do not embed credentials", () => {
+  const diagnostic = source("./db/db.ts");
+  assert.match(diagnostic, /process\.env\.DATABASE_URL/);
+  assert.doesNotMatch(diagnostic, /password\s*:/);
+});
+
+test("subscription value requires a durable verified provider payment", () => {
+  const service = source("./modules/admin/admin.service.ts");
+  const schema = source("../prisma/schema.prisma");
+  assert.doesNotMatch(service, /createProviderCardToken|Buffer\.from\(tokenSeed\)/);
+  assert.match(service, /initializeSubscriptionPayment[\s\S]*initializePaystackTransaction/);
+  assert.match(service, /finalizeSubscriptionPayment[\s\S]*verification\.amount[\s\S]*verification\.currency/);
+  assert.match(service, /subscriptionPaymentAttempt\.updateMany[\s\S]*status: "VERIFIED"/);
+  assert.match(service, /paymentAuthorized: true[\s\S]*pendingKey: `PENDING:/);
+  assert.match(service, /applyDuePlanChanges[\s\S]*paymentAuthorized: true[\s\S]*status: "COMPLETED"/);
+  assert.match(schema, /model SubscriptionPaymentAttempt[\s\S]*@@unique\(\[organizationId, idempotencyKey\]/);
+  assert.match(schema, /pendingKey\s+String\?\s+@unique/);
 });
 
 test("object storage uses a canonical origin and restricts remote reads", () => {

@@ -15,6 +15,8 @@ import {
   cancelMyPlanSubscriptionController,
   changeMyPlanController,
   purchaseMyPlanController,
+  getSubscriptionPaymentStatusController,
+  verifySubscriptionPaymentController,
   cancelMyPlanChangeController,
   cloneRoleController,
   createBranchController,
@@ -131,6 +133,7 @@ import {
   myPlanCardUpdateSchema,
   myPlanInvoiceParamsSchema,
   myPlanRenewalNotificationSchema,
+  subscriptionPaymentReferenceParamsSchema,
   securityPasswordPolicySchema,
   securityTwoFactorSchema,
   securitySessionsQuerySchema,
@@ -278,6 +281,20 @@ adminRouter.patch(
   authorize("admin:organization:update"),
   validate({ params: moduleParamsSchema, body: moduleStatusUpdateSchema }),
   asyncHandler(updateModuleStatusController)
+);
+
+adminRouter.get(
+  "/my-plan/subscription-payments/:reference",
+  authorize("admin:organization:view"),
+  validate({ params: subscriptionPaymentReferenceParamsSchema }),
+  asyncHandler(getSubscriptionPaymentStatusController)
+);
+
+adminRouter.post(
+  "/my-plan/subscription-payments/:reference/verify",
+  authorize("admin:organization:update"),
+  validate({ params: subscriptionPaymentReferenceParamsSchema }),
+  asyncHandler(verifySubscriptionPaymentController)
 );
 
 adminRouter.post(

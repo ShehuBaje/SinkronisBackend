@@ -1,9 +1,9 @@
 import type { Request } from "express";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { env } from "../../config/env";
-import { badRequest, conflict, notFound } from "../../core/http-error";
+import { badRequest, conflict, notFound, serviceUnavailable } from "../../core/http-error";
 import { deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { getPagination } from "../../core/pagination";
 import { prisma } from "../../core/prisma";
@@ -16,6 +16,13 @@ import { getEffectivePlanCatalogue, resolveRecurringPrices } from "../billing/pr
 import { sendSubscriptionRenewalEmail, sendWorkspaceInvitationEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
 import { isIpAllowed } from "../auth/auth.service";
 import { formatLocation } from "../../core/request-metadata";
+import {
+  initializePaystackTransaction,
+  paystackMinorUnits,
+  PaystackProviderError,
+  type PaystackVerifyData,
+  verifyPaystackTransaction,
+} from "../../core/paystack";
 import { CompanyRegistryUnavailableError, companyNamesMatch, getCompanyRegistryProvider, normalizeRegistrationNumber, type CompanyVerificationResult } from "./company-registry.service";
 import { deriveSubscriptionStatus, isRenewalReminderDue } from "../billing/billing.rules";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
@@ -39,7 +46,6 @@ import {
   ipAllowlistEntryCreateSchema,
   loginActivityQuerySchema,
   auditLogQuerySchema,
-  myPlanAddCardSchema,
   myPlanBillingAddressSchema,
   myPlanBillingAnalyticsQuerySchema,
   myPlanBillingHistoryQuerySchema,
@@ -701,50 +707,6 @@ const getMonthRange = (date: Date) => ({
   start: new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)),
   end: new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1))
 });
-
-const parseExpiryDate = (expiryDate: string) => {
-  const normalized = expiryDate.replace(/\s/g, "");
-  const match = normalized.match(/^(0[1-9]|1[0-2])\/?([0-9]{2}|[0-9]{4})$/);
-  if (!match) throw badRequest("Expiry date must be MM/YY or MM/YYYY");
-
-  const expMonth = Number(match[1]);
-  const yearPart = match[2];
-  const expYear = yearPart.length === 2 ? 2000 + Number(yearPart) : Number(yearPart);
-  const now = new Date();
-  const expiryEnd = new Date(Date.UTC(expYear, expMonth, 0, 23, 59, 59));
-
-  if (expiryEnd < now) {
-    throw badRequest("Card expiry date must be in the future");
-  }
-
-  return { expMonth, expYear };
-};
-
-const detectCardBrand = (cardNumber: string) => {
-  if (/^4/.test(cardNumber)) return "Visa";
-  if (/^(5[1-5]|2[2-7])/.test(cardNumber)) return "Mastercard";
-  if (/^3[47]/.test(cardNumber)) return "American Express";
-  if (/^6(?:011|5)/.test(cardNumber)) return "Discover";
-  if (/^(506|6500|5078|5079|650)/.test(cardNumber)) return "Verve";
-  return "Card";
-};
-
-const createProviderCardToken = async (payload: {
-  organizationId: string;
-  last4: string;
-  brand: string;
-  expMonth: number;
-  expYear: number;
-}) => {
-  const provider = process.env.PAYMENT_PROVIDER || "internal";
-  const tokenSeed = `${payload.organizationId}:${payload.brand}:${payload.last4}:${payload.expMonth}:${payload.expYear}:${Date.now()}`;
-  const token = `card_${Buffer.from(tokenSeed).toString("base64url").slice(0, 32)}`;
-
-  return {
-    provider,
-    token
-  };
-};
 
 type WorkScheduleInput = {
   monday: boolean;
@@ -1448,12 +1410,16 @@ const getSubscriptionState = async (organizationId: string, currency: string) =>
   };
 };
 
-const createInvoiceNumber = () => `INV-${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
-
 const applyDuePlanChanges = async (organizationId?: string) => {
   const now = new Date();
   const changes = await prismaAny.subscriptionPlanChange.findMany({
-    where: { ...(organizationId ? { organizationId } : {}), status: "PENDING", effectiveAt: { lte: now } },
+    where: {
+      ...(organizationId ? { organizationId } : {}),
+      status: "PENDING",
+      paymentAuthorized: true,
+      subscriptionPaymentAttempt: { status: "COMPLETED" },
+      effectiveAt: { lte: now },
+    },
     orderBy: { effectiveAt: "asc" }
   });
   for (const change of changes) {
@@ -1471,7 +1437,11 @@ const applyDuePlanChanges = async (organizationId?: string) => {
         await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: change.organizationId, key: `module.${moduleKey}.status` } }, create: { organizationId: change.organizationId, key: `module.${moduleKey}.status`, value: enabled ? "ACTIVE" : "INACTIVE" }, update: { value: enabled ? "ACTIVE" : "INACTIVE" } });
         await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: change.organizationId, key: `module.${moduleKey}.enabled` } }, create: { organizationId: change.organizationId, key: `module.${moduleKey}.enabled`, value: enabled }, update: { value: enabled } });
       }
-      await tx.subscriptionPlanChange.update({ where: { id: change.id }, data: { status: "APPLIED", appliedAt: now } });
+      const applied = await tx.subscriptionPlanChange.updateMany({
+        where: { id: change.id, status: "PENDING", paymentAuthorized: true },
+        data: { status: "APPLIED", appliedAt: now, pendingKey: null },
+      });
+      if (applied.count !== 1) throw conflict("Plan change is no longer pending");
     });
   }
   return { applied: changes.length };
@@ -1503,7 +1473,9 @@ const getPaymentMethodState = async (organizationId: string, fallbackEmail?: str
           expYear: defaultCard.expYear,
           cardholderName: defaultCard.cardHolderName,
           isDefault: defaultCard.isDefault,
-          label: "Default card"
+          label: "Legacy unverified card",
+          providerAuthorized: false,
+          legacy: true,
         }
       : configured && typeof configured.brand === "string" && typeof configured.last4 === "string"
       ? {
@@ -1514,35 +1486,29 @@ const getPaymentMethodState = async (organizationId: string, fallbackEmail?: str
           expYear: typeof configured.expYear === "number" ? configured.expYear : null,
           cardholderName: typeof configured.cardHolderName === "string" ? configured.cardHolderName : typeof configured.cardholderName === "string" ? configured.cardholderName : null,
           isDefault: true,
-          label: "Default card"
+          label: "Legacy unverified card",
+          providerAuthorized: false,
+          legacy: true,
         }
       : null;
 
   return {
-    selectedMethod: "CARD",
+    selectedMethod: "PAYSTACK_CHECKOUT",
     methods: [
       {
-        key: "CARD",
-        label: "Card Payment",
+        key: "PAYSTACK_CHECKOUT",
+        label: "Paystack Hosted Checkout",
         selected: true,
         isDefault: true
       }
     ],
     currentCard,
-    hasDefaultCard: Boolean(currentCard),
+    hasDefaultCard: false,
     addNewCard: {
-      label: "Add New Card",
-      presentation: "modal",
-      action: {
-        method: "POST",
-        href: "/admin/my-plan/payment-method/cards"
-      },
-      fields: [
-        { name: "cardNumber", label: "Card Number", type: "text", required: true },
-        { name: "cardHolderName", label: "Card Holder Name", type: "text", required: true },
-        { name: "expiryDate", label: "Expiry Date", type: "text", required: true },
-        { name: "cvv", label: "CVV", type: "password", required: true }
-      ]
+      label: "Card entry is handled by Paystack during checkout",
+      presentation: "provider-hosted",
+      action: null,
+      fields: []
     },
     billingEmail: fallbackEmail ?? null
   };
@@ -2085,6 +2051,168 @@ export const getMyPlanActiveModules = async (req: Request) => {
   };
 };
 
+type SubscriptionPaymentOperation = "PURCHASE" | "PLAN_CHANGE";
+type SubscriptionPaymentInput = {
+  organizationId: string;
+  operationType: SubscriptionPaymentOperation;
+  planKey: BillingPlanKey;
+  fromPlanKey?: BillingPlanKey;
+  billingCycle: BillingCycle;
+  amount: number;
+  currency: string;
+  effectiveAt: Date;
+  automaticRenewal: boolean;
+  idempotencyKey?: string;
+  userId: string;
+  email: string;
+};
+
+const subscriptionPaymentDto = (attempt: any) => ({
+  id: attempt.id,
+  operationType: attempt.operationType,
+  planKey: attempt.planKey,
+  billingCycle: attempt.billingCycle,
+  amount: Number(attempt.amount),
+  currency: attempt.currency,
+  provider: attempt.provider,
+  reference: attempt.reference,
+  status: attempt.status,
+  authorizationUrl: attempt.authorizationUrl ?? null,
+  accessCode: attempt.accessCode ?? null,
+  failureReason: attempt.failureReason ?? null,
+  verifiedAt: attempt.verifiedAt ?? null,
+  completedAt: attempt.completedAt ?? null,
+  retryable: ["CREATED", "INITIALIZING", "INITIALIZED", "UNKNOWN"].includes(attempt.status),
+});
+
+const subscriptionIdempotencyKey = (input: SubscriptionPaymentInput) =>
+  input.idempotencyKey ?? crypto.createHash("sha256").update([
+    input.organizationId, input.operationType, input.fromPlanKey ?? "NONE",
+    input.planKey, input.billingCycle, input.effectiveAt.toISOString(),
+  ].join(":"), "utf8").digest("hex");
+
+const subscriptionActiveKey = (organizationId: string, operationType: SubscriptionPaymentOperation) =>
+  `${organizationId}:${operationType}`;
+
+const findReusableSubscriptionAttempt = (organizationId: string, idempotencyKey: string, activeKey: string) =>
+  prisma.subscriptionPaymentAttempt.findFirst({
+    where: { organizationId, OR: [{ idempotencyKey }, { activeKey }] },
+    orderBy: { createdAt: "desc" },
+  });
+
+const initializeSubscriptionPayment = async (input: SubscriptionPaymentInput) => {
+  if (!env.PAYSTACK_SUBSCRIPTION_CALLBACK_URL) {
+    throw serviceUnavailable("Subscription payment callback is not configured", {
+      available: false,
+      reasonCode: "PAYMENT_CALLBACK_NOT_CONFIGURED",
+      retryable: false,
+    });
+  }
+
+  const idempotencyKey = subscriptionIdempotencyKey(input);
+  const activeKey = subscriptionActiveKey(input.organizationId, input.operationType);
+  let attempt = await findReusableSubscriptionAttempt(input.organizationId, idempotencyKey, activeKey);
+  if (attempt) {
+    const sameIntent = attempt.operationType === input.operationType
+      && attempt.planKey === input.planKey
+      && attempt.billingCycle === input.billingCycle
+      && new Prisma.Decimal(attempt.amount).equals(input.amount)
+      && attempt.currency === input.currency;
+    if (!sameIntent) throw conflict("Another subscription payment is already in progress");
+  } else {
+    try {
+      attempt = await prisma.subscriptionPaymentAttempt.create({
+        data: {
+          organizationId: input.organizationId,
+          operationType: input.operationType,
+          planKey: input.planKey,
+          fromPlanKey: input.fromPlanKey,
+          billingCycle: input.billingCycle,
+          amount: new Prisma.Decimal(input.amount),
+          currency: input.currency,
+          reference: `SUB-${crypto.randomBytes(12).toString("hex").toUpperCase()}`,
+          idempotencyKey,
+          activeKey,
+          status: "CREATED",
+          automaticRenewal: input.automaticRenewal,
+          effectiveAt: input.effectiveAt,
+          createdByUserId: input.userId,
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+      attempt = await findReusableSubscriptionAttempt(input.organizationId, idempotencyKey, activeKey);
+      if (!attempt) throw conflict("Subscription payment initialization conflicted; retry safely");
+    }
+  }
+
+  if (attempt.status !== "CREATED") return subscriptionPaymentDto(attempt);
+  const claimed = await prisma.subscriptionPaymentAttempt.updateMany({
+    where: { id: attempt.id, organizationId: input.organizationId, status: "CREATED" },
+    data: { status: "INITIALIZING", failureReason: null },
+  });
+  if (claimed.count !== 1) {
+    return subscriptionPaymentDto(await prisma.subscriptionPaymentAttempt.findUniqueOrThrow({ where: { id: attempt.id } }));
+  }
+
+  try {
+    const provider = await initializePaystackTransaction({
+      email: input.email,
+      amount: paystackMinorUnits(attempt.amount),
+      currency: attempt.currency,
+      reference: attempt.reference,
+      callbackUrl: env.PAYSTACK_SUBSCRIPTION_CALLBACK_URL,
+      metadata: {
+        paymentDomain: "SUBSCRIPTION",
+        subscriptionPaymentAttemptId: attempt.id,
+        organizationId: attempt.organizationId,
+        operationType: attempt.operationType,
+        planKey: attempt.planKey,
+      },
+    });
+    attempt = await prisma.subscriptionPaymentAttempt.update({
+      where: { id: attempt.id },
+      data: {
+        status: "INITIALIZED",
+        authorizationUrl: provider.authorization_url,
+        accessCode: provider.access_code,
+        providerReference: provider.reference,
+        providerPayload: provider as unknown as Prisma.InputJsonValue,
+      },
+    });
+  } catch (error) {
+    const providerError = error instanceof PaystackProviderError ? error : null;
+    attempt = await prisma.subscriptionPaymentAttempt.update({
+      where: { id: attempt.id },
+      data: {
+        status: providerError?.ambiguous ? "UNKNOWN" : "FAILED",
+        activeKey: providerError?.ambiguous ? activeKey : null,
+        failureReason: providerError?.message.slice(0, 500) ?? "Provider initialization failed",
+      },
+    });
+    if (providerError) {
+      throw serviceUnavailable(providerError.message, {
+        available: false,
+        reasonCode: providerError.ambiguous ? "PAYMENT_OUTCOME_UNKNOWN" : "PAYMENT_PROVIDER_REJECTED_REQUEST",
+        retryable: providerError.ambiguous,
+        reference: attempt.reference,
+      });
+    }
+    throw error;
+  }
+
+  await logAdminActivity({
+    organizationId: input.organizationId,
+    actorUserId: input.userId,
+    action: "SUBSCRIPTION_PAYMENT_INITIALIZED",
+    resource: "SUBSCRIPTION_PAYMENT",
+    resourceId: attempt.id,
+    summary: `Initialized ${input.operationType.toLowerCase()} payment for ${input.planKey}`,
+    metadata: { reference: attempt.reference, operationType: input.operationType, planKey: input.planKey },
+  });
+  return subscriptionPaymentDto(attempt);
+};
+
 export const changeMyPlan = async (req: Request) => {
   const payload = myPlanChangeSchema.parse(req.body);
   const organization = await prisma.organization.findUnique({
@@ -2105,41 +2233,15 @@ export const changeMyPlan = async (req: Request) => {
     proratedCharges: 0, currency: existing.currency, requiresConfirmation: true
   };
   if (!payload.confirm) return { message: "Review plan change before confirmation.", preview, confirmationRequired: true };
-  const pendingChange = await prismaAny.subscriptionPlanChange.findFirst({ where: { organizationId: req.organizationId!, status: "PENDING" } });
-  if (pendingChange) throw badRequest("A plan change is already scheduled", { errorCode: "PLAN_CHANGE_ALREADY_PENDING", planChangeId: pendingChange.id });
-  const paymentMethod = await getPaymentMethodState(req.organizationId!, undefined);
-  if (!paymentMethod.hasDefaultCard && !payload.paymentReference) {
-    throw badRequest("A verified payment method or payment reference is required", { errorCode: "PAYMENT_VERIFICATION_REQUIRED" });
-  }
-  const confirmedAt = new Date();
   const billingCycle = payload.billingCycle ?? existing.billingCycle;
   const billingAmount = billingCycle === "YEARLY" ? nextPlan.yearlyCost : nextPlan.monthlyCost;
-  const [scheduledChange, billingRecord] = await prismaAny.$transaction([
-    prismaAny.subscriptionPlanChange.create({ data: {
-      organizationId: req.organizationId!, fromPlanKey: currentPlan.key, toPlanKey: nextPlan.key, billingCycle,
-      currentMonthlyCost, selectedMonthlyCost: nextPlan.monthlyCost, billingImpact: nextPlan.monthlyCost - currentMonthlyCost,
-      proratedCharge: 0, currency: existing.currency, effectiveAt: existing.renewalDate, status: "PENDING",
-      paymentReference: payload.paymentReference, automaticRenewal: payload.automaticRenewal,
-      confirmedByUserId: req.user?.id, confirmedAt
-    } }),
-    prismaAny.billingHistory.create({ data: {
-      organizationId: req.organizationId!, description: `${nextPlan.name} subscription`, amount: billingAmount,
-      currency: existing.currency, status: "paid", billedAt: confirmedAt, providerRef: payload.paymentReference ?? createInvoiceNumber(),
-      metadata: { type: "PLAN_CHANGE", fromPlanKey: currentPlan.key, planKey: nextPlan.key, billingCycle, effectiveAt: existing.renewalDate.toISOString(), basePlanCost: nextPlan.baseMonthlyPrice, recurringMonthlyCost: nextPlan.monthlyCost }
-    } })
-  ]);
-
-  await logAdminActivity({
-    organizationId: req.organizationId,
-    actorUserId: req.user?.id,
-    action: "BILLING_PLAN_CHANGED",
-    resource: "BILLING_SUBSCRIPTION",
-    resourceId: nextPlan.key,
-    summary: `Changed subscription plan to ${nextPlan.name}`,
-    metadata: { ...payload, effectiveAt: existing.renewalDate, scheduledChangeId: scheduledChange.id, billingHistoryId: billingRecord.id }
+  const payment = await initializeSubscriptionPayment({
+    organizationId: req.organizationId!, operationType: "PLAN_CHANGE", planKey: nextPlan.key,
+    fromPlanKey: currentPlan.key, billingCycle, amount: billingAmount, currency: existing.currency,
+    effectiveAt: existing.renewalDate, automaticRenewal: payload.automaticRenewal,
+    idempotencyKey: payload.idempotencyKey, userId: req.user!.id, email: req.user!.email,
   });
-
-  return { message: "Plan change confirmed and scheduled for the current billing period end.", preview, scheduledChange, billingRecord };
+  return { message: "Plan change payment initialized.", preview, payment, confirmationRequired: false };
 };
 
 export const purchaseMyPlan = async (req: Request) => {
@@ -2153,29 +2255,233 @@ export const purchaseMyPlan = async (req: Request) => {
   const effectiveDate = new Date();
   const preview = { currentPlan: null, currentMonthlyCost: 0, selectedPlan: { key: plan.key, name: plan.name }, selectedMonthlyCost: plan.monthlyCost, totalMonthlyCostAfterChange: plan.monthlyCost, effectiveDate, billingImpact: plan.monthlyCost, proratedCharges: 0, currency: organization.currency };
   if (!payload.confirm) return { message: "Review subscription purchase before confirmation.", preview, confirmationRequired: true };
-  const paymentMethod = await getPaymentMethodState(req.organizationId!, undefined);
-  if (!paymentMethod.hasDefaultCard && !payload.paymentReference) throw badRequest("A verified payment method or payment reference is required", { errorCode: "PAYMENT_VERIFICATION_REQUIRED" });
-  const renewalDate = addMonths(effectiveDate, billingCycle === "YEARLY" ? 12 : 1);
   const amount = billingCycle === "YEARLY" ? plan.yearlyCost : plan.monthlyCost;
-  const purchaseOperations: any[] = [
-    prisma.systemConfig.create({ data: { organizationId: req.organizationId!, key: billingConfigKeys.subscription, value: { planKey: plan.key, status: "PENDING", billingCycle, currency: organization.currency, renewalDate: renewalDate.toISOString(), cancelAtPeriodEnd: false, automaticRenewal: payload.automaticRenewal, activatedAt: effectiveDate.toISOString(), paymentVerifiedAt: effectiveDate.toISOString() } } }),
-    prisma.billingHistory.create({ data: { organizationId: req.organizationId!, description: `${plan.name} subscription`, amount, currency: organization.currency, status: "paid", billedAt: effectiveDate, providerRef: payload.paymentReference ?? createInvoiceNumber(), metadata: { type: "PLAN_PURCHASE", planKey: plan.key, billingCycle, basePlanCost: plan.baseMonthlyPrice, recurringMonthlyCost: plan.monthlyCost } } })
-  ];
-  for (const moduleKey of managedModuleKeys) purchaseOperations.push(
-    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: req.organizationId!, key: `module.${moduleKey}.status` } }, create: { organizationId: req.organizationId!, key: `module.${moduleKey}.status`, value: plan.includedModules.includes(moduleKey) ? "ACTIVE" : "INACTIVE" }, update: { value: plan.includedModules.includes(moduleKey) ? "ACTIVE" : "INACTIVE" } }),
-    prisma.systemConfig.upsert({ where: { organizationId_key: { organizationId: req.organizationId!, key: `module.${moduleKey}.enabled` } }, create: { organizationId: req.organizationId!, key: `module.${moduleKey}.enabled`, value: plan.includedModules.includes(moduleKey) }, update: { value: plan.includedModules.includes(moduleKey) } })
-  );
-  const purchaseResults = await prisma.$transaction(purchaseOperations);
-  const billingRecord = purchaseResults[1] as any;
-  await getSubscriptionState(req.organizationId!, organization.currency);
-  await logAdminActivity({ organizationId: req.organizationId, actorUserId: req.user?.id, action: "BILLING_PLAN_PURCHASED", resource: "BILLING_SUBSCRIPTION", resourceId: plan.key, summary: `Purchased ${plan.name}`, metadata: { billingHistoryId: billingRecord.id } });
-  return { message: "Subscription purchased successfully.", preview, billingRecord };
+  const payment = await initializeSubscriptionPayment({
+    organizationId: req.organizationId!, operationType: "PURCHASE", planKey: plan.key,
+    billingCycle, amount, currency: organization.currency, effectiveAt: effectiveDate,
+    automaticRenewal: payload.automaticRenewal, idempotencyKey: payload.idempotencyKey,
+    userId: req.user!.id, email: req.user!.email,
+  });
+  return { message: "Subscription payment initialized.", preview, payment, confirmationRequired: false };
+};
+
+const finalizeSubscriptionPayment = async (attemptId: string, verification: PaystackVerifyData) => {
+  const before = await prisma.subscriptionPaymentAttempt.findUnique({ where: { id: attemptId } });
+  if (!before) throw notFound("Subscription payment attempt not found");
+  if (before.status === "COMPLETED") return subscriptionPaymentDto(before);
+
+  const metadata = verification.metadata ?? {};
+  const safeProviderPayload = {
+    status: verification.status,
+    reference: verification.reference,
+    amount: verification.amount,
+    currency: verification.currency,
+    paidAt: verification.paid_at ?? null,
+    gatewayResponse: verification.gateway_response ?? null,
+    paymentDomain: metadata.paymentDomain ?? null,
+    subscriptionPaymentAttemptId: metadata.subscriptionPaymentAttemptId ?? null,
+  };
+  const matches = verification.status === "success"
+    && verification.reference === before.reference
+    && verification.amount === paystackMinorUnits(before.amount)
+    && verification.currency.toUpperCase() === before.currency.toUpperCase()
+    && metadata.paymentDomain === "SUBSCRIPTION"
+    && metadata.subscriptionPaymentAttemptId === before.id
+    && metadata.organizationId === before.organizationId;
+  if (!matches) {
+    const definitive = ["failed", "abandoned", "reversed"].includes(verification.status);
+    await prisma.subscriptionPaymentAttempt.updateMany({
+      where: { id: before.id, status: { not: "COMPLETED" } },
+      data: {
+        status: definitive ? "FAILED" : "UNKNOWN",
+        activeKey: definitive ? null : before.activeKey,
+        failureReason: "Provider verification did not match the intended subscription payment",
+        providerPayload: safeProviderPayload as Prisma.InputJsonValue,
+      },
+    });
+    throw conflict("Paystack verification does not match the subscription payment");
+  }
+
+  const verifiedPlan = await getBillingPlan(before.planKey as BillingPlanKey, before.organizationId);
+  const verifiedCurrentPlan = before.fromPlanKey
+    ? await getBillingPlan(before.fromPlanKey as BillingPlanKey, before.organizationId)
+    : null;
+
+  const result = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.subscriptionPaymentAttempt.updateMany({
+      where: {
+        id: before.id,
+        status: { in: ["INITIALIZING", "INITIALIZED", "UNKNOWN", "VERIFIED"] },
+      },
+      data: {
+        status: "VERIFIED",
+        verifiedAt: verification.paid_at ? new Date(verification.paid_at) : new Date(),
+        providerReference: verification.reference,
+        providerPayload: safeProviderPayload as Prisma.InputJsonValue,
+        failureReason: null,
+      },
+    });
+    if (claimed.count !== 1) {
+      const current = await tx.subscriptionPaymentAttempt.findUniqueOrThrow({ where: { id: before.id } });
+      if (current.status === "COMPLETED") return current;
+      throw conflict("Subscription payment is already being processed");
+    }
+
+    const attempt = await tx.subscriptionPaymentAttempt.findUniqueOrThrow({ where: { id: before.id } });
+    const plan = verifiedPlan;
+    const completedAt = new Date();
+    if (attempt.operationType === "PURCHASE") {
+      const existing = await tx.systemConfig.findUnique({
+        where: { organizationId_key: { organizationId: attempt.organizationId, key: billingConfigKeys.subscription } },
+      });
+      if (existing) throw conflict("Organization already has a subscription");
+      const renewalDate = addMonths(attempt.effectiveAt ?? completedAt, attempt.billingCycle === "YEARLY" ? 12 : 1);
+      await tx.systemConfig.create({
+        data: {
+          organizationId: attempt.organizationId,
+          key: billingConfigKeys.subscription,
+          value: {
+            planKey: plan.key,
+            status: "ACTIVE",
+            billingCycle: attempt.billingCycle,
+            currency: attempt.currency,
+            renewalDate: renewalDate.toISOString(),
+            cancelAtPeriodEnd: false,
+            automaticRenewal: attempt.automaticRenewal,
+            activatedAt: completedAt.toISOString(),
+            paymentVerifiedAt: completedAt.toISOString(),
+          },
+        },
+      });
+      for (const moduleKey of managedModuleKeys) {
+        const enabled = plan.includedModules.includes(moduleKey);
+        await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: attempt.organizationId, key: `module.${moduleKey}.status` } }, create: { organizationId: attempt.organizationId, key: `module.${moduleKey}.status`, value: enabled ? "ACTIVE" : "INACTIVE" }, update: { value: enabled ? "ACTIVE" : "INACTIVE" } });
+        await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: attempt.organizationId, key: `module.${moduleKey}.enabled` } }, create: { organizationId: attempt.organizationId, key: `module.${moduleKey}.enabled`, value: enabled }, update: { value: enabled } });
+      }
+    } else if (attempt.operationType === "PLAN_CHANGE") {
+      if (!attempt.fromPlanKey || !attempt.effectiveAt) throw conflict("Plan change payment metadata is incomplete");
+      const currentPlan = verifiedCurrentPlan;
+      if (!currentPlan) throw conflict("Plan change source plan is unavailable");
+      await tx.subscriptionPlanChange.create({
+        data: {
+          organizationId: attempt.organizationId,
+          fromPlanKey: currentPlan.key,
+          toPlanKey: plan.key,
+          billingCycle: attempt.billingCycle,
+          currentMonthlyCost: currentPlan.monthlyCost,
+          selectedMonthlyCost: plan.monthlyCost,
+          billingImpact: plan.monthlyCost - currentPlan.monthlyCost,
+          proratedCharge: 0,
+          currency: attempt.currency,
+          effectiveAt: attempt.effectiveAt,
+          status: "PENDING",
+          paymentReference: attempt.reference,
+          subscriptionPaymentAttemptId: attempt.id,
+          paymentAuthorized: true,
+          pendingKey: `PENDING:${attempt.organizationId}`,
+          automaticRenewal: attempt.automaticRenewal,
+          confirmedByUserId: attempt.createdByUserId,
+          confirmedAt: completedAt,
+        },
+      });
+    } else {
+      throw conflict("Unsupported subscription payment operation");
+    }
+
+    await tx.billingHistory.create({
+      data: {
+        organizationId: attempt.organizationId,
+        description: `${plan.name} subscription`,
+        amount: attempt.amount,
+        currency: attempt.currency,
+        status: "paid",
+        billedAt: completedAt,
+        providerRef: attempt.reference,
+        subscriptionPaymentAttemptId: attempt.id,
+        metadata: {
+          type: attempt.operationType === "PURCHASE" ? "PLAN_PURCHASE" : "PLAN_CHANGE",
+          planKey: plan.key,
+          fromPlanKey: attempt.fromPlanKey,
+          billingCycle: attempt.billingCycle,
+          provider: attempt.provider,
+        },
+      },
+    });
+    return tx.subscriptionPaymentAttempt.update({
+      where: { id: attempt.id },
+      data: { status: "COMPLETED", completedAt, activeKey: null },
+    });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
+
+  if (result.status === "COMPLETED" && before.status !== "COMPLETED") {
+    await logAdminActivity({
+      organizationId: result.organizationId,
+      actorUserId: result.createdByUserId ?? undefined,
+      action: result.operationType === "PURCHASE" ? "BILLING_PLAN_PURCHASED" : "BILLING_PLAN_CHANGE_PAID",
+      resource: "SUBSCRIPTION_PAYMENT",
+      resourceId: result.id,
+      summary: `Verified subscription payment ${result.reference}`,
+      metadata: { reference: result.reference, planKey: result.planKey, operationType: result.operationType },
+    });
+  }
+  return subscriptionPaymentDto(result);
+};
+
+export const financialSubscriptionTestHooks = {
+  initializeSubscriptionPayment,
+  finalizeSubscriptionPayment,
+};
+
+const verifyAndFinalizeSubscriptionPayment = async (attemptId: string) => {
+  const attempt = await prisma.subscriptionPaymentAttempt.findUnique({ where: { id: attemptId } });
+  if (!attempt) throw notFound("Subscription payment attempt not found");
+  if (attempt.status === "COMPLETED") return subscriptionPaymentDto(attempt);
+  try {
+    return finalizeSubscriptionPayment(attempt.id, await verifyPaystackTransaction(attempt.reference));
+  } catch (error) {
+    if (error instanceof PaystackProviderError) {
+      await prisma.subscriptionPaymentAttempt.updateMany({
+        where: { id: attempt.id, status: { notIn: ["COMPLETED", "FAILED"] } },
+        data: { status: "UNKNOWN", failureReason: error.message.slice(0, 500) },
+      });
+      throw serviceUnavailable("Subscription payment verification is temporarily unavailable", {
+        available: false,
+        reasonCode: "PAYMENT_VERIFICATION_UNAVAILABLE",
+        retryable: true,
+        reference: attempt.reference,
+      });
+    }
+    throw error;
+  }
+};
+
+export const getSubscriptionPaymentStatus = async (req: Request) => {
+  const attempt = await prisma.subscriptionPaymentAttempt.findFirst({
+    where: { organizationId: req.organizationId!, reference: String(req.params.reference) },
+  });
+  if (!attempt) throw notFound("Subscription payment attempt not found");
+  return subscriptionPaymentDto(attempt);
+};
+
+export const verifySubscriptionPayment = async (req: Request) => {
+  const attempt = await prisma.subscriptionPaymentAttempt.findFirst({
+    where: { organizationId: req.organizationId!, reference: String(req.params.reference) },
+  });
+  if (!attempt) throw notFound("Subscription payment attempt not found");
+  return verifyAndFinalizeSubscriptionPayment(attempt.id);
+};
+
+export const processSubscriptionPaystackWebhook = async (reference: string) => {
+  const attempt = await prisma.subscriptionPaymentAttempt.findUnique({ where: { reference } });
+  if (!attempt) return { received: true, processed: false };
+  const payment = await verifyAndFinalizeSubscriptionPayment(attempt.id);
+  return { received: true, processed: true, payment };
 };
 
 export const cancelMyPlanChange = async (req: Request) => {
   const change = await prismaAny.subscriptionPlanChange.findFirst({ where: { id: String(req.params.changeId), organizationId: req.organizationId!, status: "PENDING" } });
   if (!change) throw notFound("Pending plan change not found");
-  const cancelled = await prismaAny.subscriptionPlanChange.update({ where: { id: change.id }, data: { status: "CANCELLED", cancelledAt: new Date() } });
+  const cancelled = await prismaAny.subscriptionPlanChange.update({ where: { id: change.id }, data: { status: "CANCELLED", cancelledAt: new Date(), pendingKey: null } });
   await logAdminActivity({ organizationId: req.organizationId, actorUserId: req.user?.id, action: "BILLING_PLAN_CHANGE_CANCELLED", resource: "BILLING_SUBSCRIPTION", resourceId: change.id, summary: `Cancelled scheduled change to ${change.toPlanKey}` });
   return cancelled;
 };
@@ -2237,7 +2543,7 @@ export const updateMyPlanPaymentMethod = async (req: Request) => {
 
 export const listMyPlanPaymentCards = async (req: Request) => {
   const cards = await prisma.paymentCard.findMany({ where: { organizationId: req.organizationId! }, orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }] });
-  return cards.map(({ providerCardToken: _token, ...card }) => card);
+  return cards.map(({ providerCardToken: _token, ...card }) => ({ ...card, providerAuthorized: false, legacy: true }));
 };
 
 export const updateMyPlanPaymentCard = async (req: Request) => {
@@ -2267,92 +2573,10 @@ export const deleteMyPlanPaymentCard = async (req: Request) => {
 };
 
 export const addMyPlanPaymentCard = async (req: Request) => {
-  const payload = myPlanAddCardSchema.parse(req.body);
-  const organization = await prisma.organization.findUnique({
-    where: { id: req.organizationId! },
-    select: { email: true }
+  void req;
+  throw badRequest("Raw card details are not accepted. Start a subscription payment to use Paystack hosted checkout.", {
+    errorCode: "HOSTED_CHECKOUT_REQUIRED",
   });
-  const cardNumber = payload.cardNumber.replace(/\s/g, "");
-  const { expMonth, expYear } = parseExpiryDate(payload.expiryDate);
-  const brand = detectCardBrand(cardNumber);
-  const last4 = cardNumber.slice(-4);
-  const providerCard = await createProviderCardToken({
-    organizationId: req.organizationId!,
-    brand,
-    last4,
-    expMonth,
-    expYear
-  });
-
-  const card = await prismaAny.$transaction(async (tx: any) => {
-    if (payload.makeDefault) {
-      await tx.paymentCard.updateMany({
-        where: { organizationId: req.organizationId!, isDefault: true },
-        data: { isDefault: false }
-      });
-    }
-
-    const existingCardCount = await tx.paymentCard.count({ where: { organizationId: req.organizationId! } });
-
-    return tx.paymentCard.create({
-      data: {
-        organizationId: req.organizationId!,
-        cardHolderName: payload.cardHolderName,
-        brand,
-        last4,
-        expMonth,
-        expYear,
-        provider: providerCard.provider,
-        providerCardToken: providerCard.token,
-        createdByUserId: req.user?.id,
-        isDefault: payload.makeDefault || existingCardCount === 0
-      }
-    });
-  });
-
-  await upsertBillingConfig(req.organizationId!, billingConfigKeys.paymentMethod, {
-    brand: card.brand,
-    last4: card.last4,
-    expMonth: card.expMonth,
-    expYear: card.expYear,
-    cardHolderName: card.cardHolderName,
-    provider: card.provider,
-    providerCardToken: card.providerCardToken,
-    paymentCardId: card.id,
-    updatedAt: new Date().toISOString()
-  });
-
-  await logAdminActivity({
-    organizationId: req.organizationId,
-    actorUserId: req.user?.id,
-    action: "BILLING_PAYMENT_CARD_ADDED",
-    resource: "PAYMENT_CARD",
-    resourceId: card.id,
-    summary: `Added ${card.brand} card ending in ${card.last4}`,
-    metadata: {
-      brand: card.brand,
-      last4: card.last4,
-      expMonth: card.expMonth,
-      expYear: card.expYear,
-      isDefault: card.isDefault,
-      provider: card.provider
-    }
-  });
-
-  return {
-    message: "Payment card saved successfully.",
-    card: {
-      id: card.id,
-      cardHolderName: card.cardHolderName,
-      brand: card.brand,
-      last4: card.last4,
-      expMonth: card.expMonth,
-      expYear: card.expYear,
-      isDefault: card.isDefault,
-      provider: card.provider
-    },
-    paymentMethod: await getPaymentMethodState(req.organizationId!, organization?.email)
-  };
 };
 
 export const cancelMyPlanPaymentCardCreation = async (req: Request) => {

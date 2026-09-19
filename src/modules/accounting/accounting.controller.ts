@@ -583,6 +583,10 @@ export const getWalletReceiptController = async (req: Request,res: Response) => 
 export const initializePaystackWalletFundingController = async (req: Request,res: Response) => sendSuccess(res,"Paystack wallet funding initialized",await initializePaystackWalletFunding(req.organizationId!,req.body as PaystackFundingInput,req.user!),{ status: 201 });
 export const verifyPaystackWalletFundingController = async (req: Request,res: Response) => sendSuccess(res,"Paystack wallet funding verified",await verifyPaystackWalletFunding(req.organizationId!,req.params.reference));
 export const paystackWebhookController = async (req: Request,res: Response) => sendSuccess(res,"Paystack webhook received",await processPaystackWebhook(req.rawBody,req.header("x-paystack-signature") ?? undefined));
+export const paystackTransferApprovalController = async (req: Request, res: Response) => {
+  const { validatePaystackTransferApproval } = await import("../../core/provider-settlement.js");
+  return res.status(await validatePaystackTransferApproval(req.body as Record<string, unknown>) ? 200 : 400).send();
+};
 export const listInvoiceTemplatesController = async (req: Request,res: Response) => sendSuccess(res,"Invoice templates retrieved",await listInvoiceTemplates(req.organizationId!));
 export const createInvoiceTemplateController = async (req: Request,res: Response) => sendSuccess(res,"Invoice template created",await createInvoiceTemplate(req.organizationId!,req.body as InvoiceTemplateInput,req.user!),{ status: 201 });
 export const updateInvoiceTemplateController = async (req: Request,res: Response) => sendSuccess(res,"Invoice template updated",await updateInvoiceTemplate(req.organizationId!,req.params.id,req.body as Partial<InvoiceTemplateInput>,req.user!));
