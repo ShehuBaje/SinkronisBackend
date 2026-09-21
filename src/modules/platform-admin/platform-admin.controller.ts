@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { sendSuccess } from "../../core/api-response";
-import { classifyTestTenant, creditTestTenantWallet, setTestTenantEntitlement } from "./test-e2e.service";
+import { classifyTestTenant, creditTestTenantWallet, resolveTemporaryPaystackTestAccount, setTestTenantEntitlement } from "./test-e2e.service";
 import {
   activatePlatformTenant,
   activatePlatformTenantSubscription,
@@ -94,6 +94,7 @@ export const disablePlatformTenantModuleController = async (req: Request, res: R
 export const classifyTestTenantController = async (req: Request, res: Response) => sendSuccess(res, "Tenant classification updated", await classifyTestTenant(String(req.params.tenantId), req.body, req.user!));
 export const setTestTenantEntitlementController = async (req: Request, res: Response) => sendSuccess(res, "Test entitlement updated", await setTestTenantEntitlement(String(req.params.tenantId), String(req.params.module) as "hris" | "payroll" | "accounting", req.body, req.user!));
 export const creditTestTenantWalletController = async (req: Request, res: Response) => sendSuccess(res, "Non-real TEST_E2E wallet value credited", await creditTestTenantWallet(String(req.params.tenantId), req.body, req.user!), { status: 201 });
+export const resolveTemporaryPaystackTestAccountController = async (req: Request, res: Response) => sendSuccess(res, "Paystack TEST account resolved", await resolveTemporaryPaystackTestAccount(req.user!));
 
 export const getPlatformUsersController = async (req: Request, res: Response) => sendSuccess(res, "Users retrieved successfully", await getPlatformUsers(req.query, req.user!));
 export const getPlatformUserAnalyticsController = async (req: Request, res: Response) => sendSuccess(res, "User analytics retrieved", await getPlatformUserAnalytics(req.user!));

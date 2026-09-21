@@ -17,7 +17,7 @@ import { restrictImpersonatedSensitiveActions } from "../../middleware/impersona
 import { annualRecurringRevenue, churnRatePercentage, createPlatformInvoiceNumber, invoiceReminderEligible, sanitizeCsvCell, effectivePlatformUserModules, platformUserRowStatus, moduleUsageTotal, activityScore, calculateDaysInactive, monthKeys, monthlyRecurringEquivalent, isSupportStatusTransitionAllowed } from "./platform-admin.service";
 import { requireEffectiveModuleAccess } from "../../middleware/module-access.middleware";
 import { platformEmailTemplateParamsSchema, platformFeatureFlagParamsSchema, updateMaintenanceModeSchema, updatePlatformConfigurationSchema, updatePlatformEmailTemplateSchema, updatePlatformPasswordPolicySchema } from "./platform-admin.validation";
-import { testTenantClassificationSchema, testTenantCreditSchema, testTenantEntitlementSchema } from "./platform-admin.validation";
+import { temporaryPaystackTestResolutionSchema, testTenantClassificationSchema, testTenantCreditSchema, testTenantEntitlementSchema } from "./platform-admin.validation";
 import { extractTemplateVariables } from "./platform-admin.service";
 import { enforcePlatformMaintenance } from "../../middleware/maintenance.middleware";
 import type { PlatformSubscriptionSnapshot } from "./platform-admin.interface";
@@ -31,6 +31,13 @@ test("TEST_E2E infrastructure inputs are explicit, reasoned and closed", () => {
   assert.equal(testTenantEntitlementSchema.safeParse({ active: true, reason: "Controlled Accounting E2E entitlement" }).success, true);
   assert.equal(testTenantCreditSchema.safeParse({ walletAccountId: "wallet", amount: "100.00", reference: "PHASE2B-E2E-001", reason: "Non-real controlled test value" }).success, true);
   assert.equal(testTenantCreditSchema.safeParse({ walletAccountId: "wallet", amount: "100.00", reference: "PHASE2B-E2E-001", reason: "Non-real controlled test value", organizationId: "other" }).success, false);
+});
+
+test("temporary Paystack resolution diagnostic is bodyless and non-generic", () => {
+  assert.deepEqual(temporaryPaystackTestResolutionSchema.parse({}), {});
+  assert.throws(() => temporaryPaystackTestResolutionSchema.parse({ bankCode: "058" }));
+  const paths = (platformAdminRouter as any).stack.filter((layer: any) => layer.route).map((layer: any) => layer.route.path);
+  assert.equal(paths.includes("/test-infrastructure/paystack/resolve-test-account"), true);
 });
 
 test("revenue trend always returns six chronological calendar months", () => {
@@ -74,7 +81,7 @@ test("only the consolidated dashboard plus Platform Tenant management routes are
     "/billing", "/billing/analytics", "/billing/revenue-by-plan", "/billing/invoices/export", "/billing/export", "/billing/invoices", "/billing/invoices", "/billing/invoices/:invoiceId/reminder", "/billing/invoices/:invoiceId/download",
     "/users", "/users/analytics", "/users/filter-options", "/users/:userId/deactivate", "/users/:userId/reset-password", "/users/:userId/impersonate",
     "/modules", "/modules/analytics", "/modules/tenants", "/modules/tenants/:tenantId", "/modules/tenants/:tenantId", "/modules/tenants/:tenantId/:module/enable", "/modules/tenants/:tenantId/:module/disable",
-    "/test-infrastructure/tenants/:tenantId/classification", "/test-infrastructure/tenants/:tenantId/entitlements/:module", "/test-infrastructure/tenants/:tenantId/wallet-credits",
+    "/test-infrastructure/tenants/:tenantId/classification", "/test-infrastructure/tenants/:tenantId/entitlements/:module", "/test-infrastructure/tenants/:tenantId/wallet-credits", "/test-infrastructure/paystack/resolve-test-account",
     "/analytics", "/analytics/at-risk/:tenantId/check-in",
     "/support/tickets", "/support/tickets", "/support/tickets/:ticketId",
     "/support/tickets/:ticketId/assign", "/support/tickets/:ticketId/resolution-notes",
