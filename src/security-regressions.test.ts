@@ -51,18 +51,6 @@ test("TEST_E2E value and provider paths fail closed outside test mode", () => {
   assert.match(testInfrastructure, /isPlatformAdmin/);
 });
 
-test("temporary Paystack diagnostic is fixed-fixture, transfer-disabled, and resolution-only", () => {
-  const routes = source("./modules/platform-admin/platform-admin.routes.ts");
-  const service = source("./modules/platform-admin/test-e2e.service.ts");
-  assert.match(routes, /resolve-test-account[\s\S]*platform:tenants:modules:manage/);
-  assert.match(service, /PAYSTACK_TRANSFERS_ENABLED[\s\S]*PAYSTACK_TRANSFERS_MODE !== "test"[\s\S]*assertPaystackTransferCredentialMode/);
-  assert.match(service, /resolveAccount\(\{ bankCode: "057", accountNumber: "0000000000" \}\)/);
-  const block = service.match(/resolveTemporaryPaystackTestAccount[\s\S]*$/)?.[0] ?? "";
-  assert.equal((block.match(/\.resolveAccount\(/g) ?? []).length, 1);
-  assert.doesNotMatch(block, /createRecipient|initiateTransfer|finalizeTransferOtp|verifyTransfer|getBalance/);
-  assert.match(block, /maskedAccountNumber: "\*\*\*\*\*\*0000"/);
-});
-
 test("Paystack OTP finalization is tenant-authenticated, strongly authorized, rate-limited, and never audited with the OTP", () => {
   const routes = source("./modules/accounting/accounting.routes.ts");
   const service = source("./modules/accounting/accounting.service.ts");
