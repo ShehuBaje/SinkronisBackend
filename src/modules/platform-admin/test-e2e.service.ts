@@ -5,6 +5,9 @@ import { conflict, forbidden, notFound } from "../../core/http-error";
 import type { AuthUser } from "../../types";
 import { createAuditLog } from "../admin/admin.audit";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
+import { env } from "../../config/env";
+import { PaystackTransferProvider } from "../../core/paystack-transfer-provider";
+import { assertPaystackTransferCredentialMode } from "../../core/settlement-provider";
 
 const assertPlatformAdmin = (user: AuthUser) => {
   if (!user.isPlatformAdmin) throw forbidden("Platform Admin access is required");
@@ -70,4 +73,34 @@ export const creditTestTenantWallet = async (tenantId: string, input: { walletAc
   }
   await createAuditLog({ organizationId: tenantId, actorUserId: user.id, action: "PLATFORM_TEST_WALLET_CREDITED", resource: "WALLET_TRANSACTION", resourceId: transaction.id, summary: "Credited non-real TEST_E2E wallet value", metadata: { walletAccountId: input.walletAccountId, amount: input.amount, reference: input.reference, reason: input.reason, valueClassification: "NON_REAL_TEST_VALUE" } });
   return { transaction, idempotentReplay: false };
+};
+
+const diagnosticTenantId = "cmt3z13pp00013qmx28aeatfx";
+const diagnosticWalletId = "cmubf9qr6000ac7sl3bcgaft8";
+
+export const resolveTemporaryPaystackTestAccount = async (user: AuthUser) => {
+  assertPlatformAdmin(user);
+  if (env.PAYSTACK_TRANSFERS_ENABLED) throw conflict("Diagnostic requires outbound transfers to remain disabled", { errorCode: "TRANSFERS_MUST_REMAIN_DISABLED" });
+  if (env.PAYSTACK_TRANSFERS_MODE !== "test") throw conflict("Diagnostic requires explicit Paystack test mode", { errorCode: "PAYSTACK_TEST_MODE_REQUIRED" });
+  assertPaystackTransferCredentialMode(env.PAYSTACK_TRANSFERS_MODE, env.PAYSTACK_SECRET_KEY);
+  const [tenant, wallet, paymentRequests, settlements, recipients, transactions] = await Promise.all([
+    prisma.organization.findUnique({ where: { id: diagnosticTenantId }, select: { classification: true } }),
+    prisma.walletAccount.findFirst({ where: { id: diagnosticWalletId, organizationId: diagnosticTenantId }, select: { balance: true, reservedBalance: true } }),
+    prisma.paymentRequest.count({ where: { organizationId: diagnosticTenantId } }),
+    prisma.financialSettlement.count({ where: { organizationId: diagnosticTenantId } }),
+    prisma.providerTransferRecipient.count({ where: { organizationId: diagnosticTenantId } }),
+    prisma.walletTransaction.count({ where: { organizationId: diagnosticTenantId } }),
+  ]);
+  if (tenant?.classification !== "TEST_E2E" || !wallet?.balance.isZero() || !wallet.reservedBalance.isZero() || paymentRequests || settlements || recipients || transactions) {
+    throw conflict("Controlled TEST_E2E financial baseline is not pristine", { errorCode: "TEST_E2E_BASELINE_MISMATCH" });
+  }
+  try {
+    const resolved = await new PaystackTransferProvider().resolveAccount({ bankCode: "057", accountNumber: "0000000000" });
+    if (resolved.accountNumber !== "0000000000") throw conflict("Paystack returned an unexpected test destination", { errorCode: "TEST_DESTINATION_MISMATCH" });
+    await createAuditLog({ organizationId: diagnosticTenantId, actorUserId: user.id, action: "PLATFORM_PAYSTACK_TEST_ACCOUNT_RESOLVED", resource: "PROVIDER_DIAGNOSTIC", resourceId: diagnosticTenantId, summary: "Resolved the documented Paystack TEST transfer account", metadata: { provider: "PAYSTACK", mode: "test", bankCode: "057", bankName: "Zenith Bank", maskedAccountNumber: "******0000", outcome: "SUCCESS" } });
+    return { provider: "PAYSTACK", mode: "test", bankCode: "057", bankName: "Zenith Bank", accountNumber: "******0000", accountName: resolved.accountName, ...(resolved.bankId !== undefined ? { bankId: resolved.bankId } : {}) };
+  } catch (error) {
+    await createAuditLog({ organizationId: diagnosticTenantId, actorUserId: user.id, action: "PLATFORM_PAYSTACK_TEST_ACCOUNT_RESOLUTION_FAILED", resource: "PROVIDER_DIAGNOSTIC", resourceId: diagnosticTenantId, summary: "Paystack TEST account-resolution diagnostic failed", metadata: { provider: "PAYSTACK", mode: "test", bankCode: "057", bankName: "Zenith Bank", maskedAccountNumber: "******0000", outcome: "FAILED" } });
+    throw error;
+  }
 };
