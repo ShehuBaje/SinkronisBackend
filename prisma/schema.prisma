@@ -1292,6 +1292,7 @@ model Organization {
   currency                     String                           @default("NGN")
   taxId                        String?
   status                       organization_status              @default(ACTIVE)
+  classification               organization_classification      @default(CUSTOMER)
   createdAt                    DateTime                         @default(now())
   updatedAt                    DateTime                         @updatedAt
   profileImageUrl              String?
@@ -1355,6 +1356,7 @@ model Organization {
   securitypolicy               SecurityPolicy?
   subscriptionplanchange       SubscriptionPlanChange[]
   subscriptionPaymentAttempts  SubscriptionPaymentAttempt[]
+  testModuleEntitlements       TestModuleEntitlement[]
   financialSettlements         FinancialSettlement[]
   providerTransferRecipients   ProviderTransferRecipient[]
   subscriptionpriceagreement   SubscriptionPriceAgreement[]
@@ -1379,6 +1381,27 @@ model Organization {
 
   @@index([status, createdAt], map: "Organization_status_createdAt_idx")
   @@map("Organization")
+}
+
+model TestModuleEntitlement {
+  id               String       @id @default(cuid())
+  organizationId   String
+  moduleKey        String       @db.VarChar(32)
+  active           Boolean      @default(true)
+  reason           String       @db.Text
+  grantedByUserId  String
+  grantedAt        DateTime     @default(now())
+  expiresAt        DateTime?
+  revokedByUserId  String?
+  revokedAt        DateTime?
+  revocationReason String?      @db.Text
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "TestModuleEntitlement_org_fkey")
+
+  @@unique([organizationId, moduleKey], map: "TestModuleEntitlement_org_module_key")
+  @@index([organizationId, active, expiresAt], map: "TestModuleEntitlement_org_active_expiry_idx")
+  @@map("TestModuleEntitlement")
 }
 
 model TenantUsageDaily {
@@ -2761,6 +2784,12 @@ enum organization_status {
   ACTIVE
   SUSPENDED
   ARCHIVED
+}
+
+enum organization_classification {
+  CUSTOMER
+  TEST_E2E
+  DEMO
 }
 
 enum employee_status {

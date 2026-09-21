@@ -174,6 +174,11 @@ export interface ManualWalletFundingInput {
   description: string;
   externalReference: string;
 }
+export interface AccountingWalletCreateInput {
+  name: string;
+  purpose: string;
+  currency: "NGN";
+}
 export interface InvoiceTemplateInput {
   name: string;
   paymentTerms?: string;

@@ -44,6 +44,7 @@ import {
   invoiceTemplateCreateSchema, invoiceTemplateUpdateSchema, expenseCategoryCreateSchema,
   uiReminderSettingsSchema,
   paystackFundingSchema, paystackReferenceParamsSchema, settlementOtpFinalizeSchema,
+  accountingWalletCreateSchema,
 } from "./accounting.validation";
 
 export const accountingRouter = Router();
@@ -362,6 +363,7 @@ accountingRouter.get("/reports/export.pdf", authorize("accounting:invoices:view"
 accountingRouter.get("/reports/vat", authorize("accounting:tax:view"), validate({ query: accountingReportQuerySchema }), asyncHandler(controller.getVatReportController));
 accountingRouter.get("/reports/wht", authorize("accounting:tax:view"), validate({ query: accountingReportQuerySchema }), asyncHandler(controller.getWhtReportController));
 accountingRouter.get("/wallet/summary", authorize("accounting:wallets:view"), asyncHandler(controller.getWalletSummaryController));
+accountingRouter.post("/wallet/accounts", authorize("accounting:wallets:update"), validate({ body: accountingWalletCreateSchema }), asyncHandler(controller.createAccountingWalletController));
 accountingRouter.get("/wallet/transactions", authorize("accounting:wallets:view"), validate({ query: walletTransactionQuerySchema }), asyncHandler(controller.listWalletTransactionsController));
 accountingRouter.post("/wallet/manual-funding", authorize("accounting:wallets:update"), validate({ body: manualWalletFundingSchema }), asyncHandler(controller.fundWalletManuallyController));
 accountingRouter.post("/wallet/paystack/initialize", authorize("accounting:wallets:update"), validate({ body: paystackFundingSchema }), asyncHandler(controller.initializePaystackWalletFundingController));

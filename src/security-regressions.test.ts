@@ -40,6 +40,17 @@ test("financial settlements have durable identities, reservations and a default-
   assert.doesNotMatch(source("./core/provider-settlement.ts"), /otp[\s\S]*walletTransaction\.create/);
 });
 
+test("TEST_E2E value and provider paths fail closed outside test mode", () => {
+  const schema = source("../prisma/schema.prisma");
+  const providerSettlement = source("./core/provider-settlement.ts");
+  const testInfrastructure = source("./modules/platform-admin/test-e2e.service.ts");
+  assert.match(schema, /classification\s+organization_classification\s+@default\(CUSTOMER\)/);
+  assert.match(providerSettlement, /classification === "TEST_E2E" && env\.PAYSTACK_TRANSFERS_MODE !== "test"/);
+  assert.match(testInfrastructure, /classification: "TEST_E2E"/);
+  assert.match(testInfrastructure, /type: "TEST_E2E_CREDIT"/);
+  assert.match(testInfrastructure, /isPlatformAdmin/);
+});
+
 test("Paystack OTP finalization is tenant-authenticated, strongly authorized, rate-limited, and never audited with the OTP", () => {
   const routes = source("./modules/accounting/accounting.routes.ts");
   const service = source("./modules/accounting/accounting.service.ts");

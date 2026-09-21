@@ -50,6 +50,7 @@ import type {
   AccountingReportQuery,
   WalletTransactionQuery,
   ManualWalletFundingInput,
+  AccountingWalletCreateInput,
   InvoiceTemplateInput,
   ExpenseCategoryInput,
   UiReminderSettingsInput,
@@ -2733,6 +2734,17 @@ export const getWalletSummary = async (organizationId: string) => {
   const [wallets, totals, count] = await Promise.all([prisma.walletAccount.findMany({ where: { organizationId }, select: { id: true, name: true, currency: true, balance: true } }), prisma.walletTransaction.groupBy({ by: ["direction"], where: { organizationId }, _sum: { amount: true } }), prisma.walletTransaction.count({ where: { organizationId } })]);
   const directionalTotal = (directions: string[]) => totals.filter(t => directions.includes(t.direction)).reduce((sum,t) => sum.add(t._sum.amount ?? zero()),zero());
   return { availableBalance: wallets.reduce((s, w) => s + amount(w.balance), 0), totalInflow: amount(directionalTotal(["CREDIT","INFLOW"])), totalOutflow: amount(directionalTotal(["DEBIT","OUTFLOW"])), transactionCount: count, wallets: wallets.map(w => ({ ...w, balance: amount(w.balance) })) };
+};
+export const createAccountingWallet = async (organizationId: string, input: AccountingWalletCreateInput, user: AuthUser) => {
+  let wallet;
+  try {
+    wallet = await prisma.walletAccount.create({ data: { organizationId, name: input.name, purpose: input.purpose, currency: input.currency, balance: new Prisma.Decimal(0), reservedBalance: new Prisma.Decimal(0) } });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw conflict("A wallet with this purpose already exists for the tenant");
+    throw error;
+  }
+  await audit(organizationId, user, "ACCOUNTING_WALLET_CREATED", "WALLET_ACCOUNT", wallet.id, `Created zero-balance Accounting wallet ${wallet.name}`, { purpose: wallet.purpose, currency: wallet.currency, openingBalance: "0.00", reservedBalance: "0.00" });
+  return { ...wallet, balance: amount(wallet.balance), reservedBalance: amount(wallet.reservedBalance), spendableBalance: 0 };
 };
 export const listWalletTransactions = async (organizationId: string, query: WalletTransactionQuery) => { const where = { organizationId, ...(query.direction === "ALL" ? {} : { direction: query.direction === "INFLOW" ? { in: ["CREDIT", "INFLOW"] } : { in: ["DEBIT", "OUTFLOW"] } }) }; const [rows,total] = await Promise.all([prisma.walletTransaction.findMany({ where, orderBy: { createdAt: "desc" }, skip: (query.page-1)*query.limit, take: query.limit }), prisma.walletTransaction.count({ where })]); return { transactions: rows.map(r => ({ ...r, amount: amount(r.amount), balanceBefore: amount(r.balanceBefore), balanceAfter: amount(r.balanceAfter) })), pagination: pagination(query.page,query.limit,total) }; };
 export const fundWalletManually = async (organizationId: string, input: ManualWalletFundingInput, user: AuthUser) => {

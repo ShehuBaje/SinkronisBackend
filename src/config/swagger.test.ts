@@ -121,6 +121,40 @@ test("Accounting create contracts publish runtime-valid bodies and the invoice c
   assert.match(invoiceLine.properties.catalogueItemId.description, /POST\/GET items-services/);
 });
 
+test("Payment Request creation and approval publish the exact runtime bodies", () => {
+  const paths = (openApiSpec as any).paths;
+  const create = paths["/api/v1/accounting/payment-requests"].post;
+  const approve = paths["/api/v1/accounting/payment-requests/{id}/approve"].post;
+  const createJson = create.requestBody.content["application/json"];
+  const approveJson = approve.requestBody.content["application/json"];
+
+  assert.equal(create.requestBody.required, true);
+  assert.equal(createJson.schema.additionalProperties, false);
+  assert.deepEqual(createJson.schema.required, ["title", "amount"]);
+  assert.deepEqual(Object.keys(createJson.example).sort(), ["amount", "description", "title"]);
+  assert.equal(createJson.schema.properties.amount.oneOf[0].pattern, "^\\d+(\\.\\d{1,2})?$");
+  for (const serverOwned of ["organizationId", "bankName", "bankCode", "accountNumber", "accountName", "status"])
+    assert.equal(createJson.schema.properties[serverOwned], undefined);
+
+  assert.equal(approve.requestBody.required, true);
+  assert.equal(approveJson.schema.additionalProperties, false);
+  assert.equal(approveJson.schema.maxProperties, 0);
+  assert.deepEqual(approveJson.example, {});
+});
+
+test("TEST_E2E and zero-balance wallet operations publish guarded contracts", () => {
+  const paths = (openApiSpec as any).paths;
+  const classification = paths["/api/v1/platform-admin/test-infrastructure/tenants/{tenantId}/classification"].patch;
+  const entitlement = paths["/api/v1/platform-admin/test-infrastructure/tenants/{tenantId}/entitlements/{module}"].put;
+  const credit = paths["/api/v1/platform-admin/test-infrastructure/tenants/{tenantId}/wallet-credits"].post;
+  const wallet = paths["/api/v1/accounting/wallet/accounts"].post;
+  for (const operation of [classification, entitlement, credit, wallet]) assert.equal(operation.requestBody.required, true);
+  assert.match(entitlement.description, /without creating an ACTIVE subscription/);
+  assert.match(credit.description, /neither manual external funding nor Paystack funding/);
+  assert.equal(wallet.requestBody.content["application/json"].schema.properties.balance, undefined);
+  assert.equal(wallet.requestBody.content["application/json"].schema.properties.reservedBalance, undefined);
+});
+
 test("HRIS appraisal mutations publish their complete frontend contract", () => {
   const paths = (openApiSpec as any).paths;
   const bodyOperations = [

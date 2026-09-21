@@ -73,6 +73,26 @@ export const updatePlatformPasswordPolicySchema = z.object({
 
 export const platformFeatureFlagParamsSchema = z.object({ key: z.enum(platformFeatureFlagKeys) }).strict();
 export const updatePlatformFeatureFlagSchema = z.object({ enabled: z.boolean() }).strict();
+
+export const testTenantClassificationSchema = z.object({
+  classification: z.enum(["CUSTOMER", "TEST_E2E", "DEMO"]),
+  reason: z.string().trim().min(10).max(1000)
+}).strict();
+
+export const testTenantEntitlementSchema = z.object({
+  active: z.boolean(),
+  reason: z.string().trim().min(10).max(1000),
+  expiresAt: z.string().datetime({ offset: true }).transform((value) => new Date(value)).optional()
+}).strict().superRefine((value, context) => {
+  if (value.active && value.expiresAt && value.expiresAt <= new Date()) context.addIssue({ code: z.ZodIssueCode.custom, path: ["expiresAt"], message: "expiresAt must be in the future" });
+});
+
+export const testTenantCreditSchema = z.object({
+  walletAccountId: z.string().trim().min(1).max(191),
+  amount: z.union([z.string().regex(/^\d+(\.\d{1,2})?$/), z.number().positive().finite()]).transform(String).refine((value) => Number(value) > 0, "Amount must be greater than zero"),
+  reference: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._-]+$/),
+  reason: z.string().trim().min(10).max(1000)
+}).strict();
 export const platformEmailTemplateParamsSchema = z.object({ key: z.enum(platformEmailTemplateKeys) }).strict();
 
 const containsDangerousHtml = (value: string) =>

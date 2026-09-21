@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { sendSuccess } from "../../core/api-response";
+import { classifyTestTenant, creditTestTenantWallet, setTestTenantEntitlement } from "./test-e2e.service";
 import {
   activatePlatformTenant,
   activatePlatformTenantSubscription,
@@ -89,6 +90,10 @@ export const getPlatformModuleTenantController = async (req: Request, res: Respo
 export const updatePlatformTenantModulesController = async (req: Request, res: Response) => sendSuccess(res, "Tenant modules updated", await updatePlatformTenantModules(String(req.params.tenantId), req.body, req.user!));
 export const enablePlatformTenantModuleController = async (req: Request, res: Response) => sendSuccess(res, "Tenant module enabled", await setPlatformTenantModule(String(req.params.tenantId), req.params.module as never, true, String(req.body.reason), req.user!));
 export const disablePlatformTenantModuleController = async (req: Request, res: Response) => sendSuccess(res, "Tenant module disabled", await setPlatformTenantModule(String(req.params.tenantId), req.params.module as never, false, String(req.body.reason), req.user!));
+
+export const classifyTestTenantController = async (req: Request, res: Response) => sendSuccess(res, "Tenant classification updated", await classifyTestTenant(String(req.params.tenantId), req.body, req.user!));
+export const setTestTenantEntitlementController = async (req: Request, res: Response) => sendSuccess(res, "Test entitlement updated", await setTestTenantEntitlement(String(req.params.tenantId), String(req.params.module) as "hris" | "payroll" | "accounting", req.body, req.user!));
+export const creditTestTenantWalletController = async (req: Request, res: Response) => sendSuccess(res, "Non-real TEST_E2E wallet value credited", await creditTestTenantWallet(String(req.params.tenantId), req.body, req.user!), { status: 201 });
 
 export const getPlatformUsersController = async (req: Request, res: Response) => sendSuccess(res, "Users retrieved successfully", await getPlatformUsers(req.query, req.user!));
 export const getPlatformUserAnalyticsController = async (req: Request, res: Response) => sendSuccess(res, "User analytics retrieved", await getPlatformUserAnalytics(req.user!));

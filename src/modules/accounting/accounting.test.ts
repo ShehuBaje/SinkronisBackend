@@ -3,7 +3,7 @@ import test from "node:test";
 import { accountingRouter } from "./accounting.routes";
 import { accountingInvoiceDisplayStatus, billedVsValuePercentage, calculateInvoiceWht } from "./accounting.service";
 import { createPayslipPdf } from "../employee/employee.service";
-import { accountingListQuerySchema, agentBulkInviteSchema, agentInviteSchema, catalogueCreateSchema, catalogueListQuerySchema, customerCreateSchema, expenseCreateSchema, expenseListQuerySchema, invoiceCreateSchema, invoiceListQuerySchema, invoicePaymentSchema, paymentRequestDisbursementSchema, paymentRequestListQuerySchema, projectCreateSchema, projectListQuerySchema, reminderConfigurationSchema, reminderListQuerySchema, accountingReportQuerySchema, walletTransactionQuerySchema, manualWalletFundingSchema, invoiceTemplateCreateSchema, expenseCategoryCreateSchema, uiReminderSettingsSchema, paystackFundingSchema, paystackReferenceParamsSchema, settlementOtpFinalizeSchema } from "./accounting.validation";
+import { accountingListQuerySchema, agentBulkInviteSchema, agentInviteSchema, catalogueCreateSchema, catalogueListQuerySchema, customerCreateSchema, expenseCreateSchema, expenseListQuerySchema, invoiceCreateSchema, invoiceListQuerySchema, invoicePaymentSchema, paymentRequestDisbursementSchema, paymentRequestListQuerySchema, projectCreateSchema, projectListQuerySchema, reminderConfigurationSchema, reminderListQuerySchema, accountingReportQuerySchema, walletTransactionQuerySchema, manualWalletFundingSchema, invoiceTemplateCreateSchema, expenseCategoryCreateSchema, uiReminderSettingsSchema, paystackFundingSchema, paystackReferenceParamsSchema, settlementOtpFinalizeSchema, accountingWalletCreateSchema } from "./accounting.validation";
 
 const routes = (accountingRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
 
@@ -16,7 +16,7 @@ test("continued Accounting workflows remain in the same router", () => {
 });
 
 test("reports, wallet and Accounting settings routes remain in the existing router", () => {
-  for (const route of ["GET /reports", "GET /reports/export.csv", "GET /reports/export.pdf", "GET /reports/vat", "GET /reports/wht", "GET /invoices/:id/download", "GET /wallet/summary", "GET /wallet/transactions", "POST /wallet/manual-funding", "POST /wallet/paystack/initialize", "GET /wallet/paystack/verify/:reference", "GET /wallet/transactions/:id/receipt", "GET /settings/invoice-templates", "POST /settings/invoice-templates", "PATCH /settings/invoice-templates/:id", "POST /settings/invoice-templates/:id/default", "DELETE /settings/invoice-templates/:id", "GET /settings/expense-categories", "POST /settings/expense-categories", "DELETE /settings/expense-categories/:id", "GET /settings/reminders", "PUT /settings/reminders"]) assert.ok(routes.includes(route), route);
+  for (const route of ["GET /reports", "GET /reports/export.csv", "GET /reports/export.pdf", "GET /reports/vat", "GET /reports/wht", "GET /invoices/:id/download", "GET /wallet/summary", "POST /wallet/accounts", "GET /wallet/transactions", "POST /wallet/manual-funding", "POST /wallet/paystack/initialize", "GET /wallet/paystack/verify/:reference", "GET /wallet/transactions/:id/receipt", "GET /settings/invoice-templates", "POST /settings/invoice-templates", "PATCH /settings/invoice-templates/:id", "POST /settings/invoice-templates/:id/default", "DELETE /settings/invoice-templates/:id", "GET /settings/expense-categories", "POST /settings/expense-categories", "DELETE /settings/expense-categories/:id", "GET /settings/reminders", "PUT /settings/reminders"]) assert.ok(routes.includes(route), route);
 });
 
 test("new Accounting DTOs reject tenant injection and unsafe financial/settings input", () => {
@@ -26,6 +26,10 @@ test("new Accounting DTOs reject tenant injection and unsafe financial/settings 
   assert.equal(walletTransactionQuerySchema.safeParse({ direction: "INFLOW" }).success, true);
   assert.equal(manualWalletFundingSchema.safeParse({ walletAccountId: "w", amount: "100.00", description: "Bank deposit", externalReference: "TELLER-1" }).success, true);
   assert.equal(manualWalletFundingSchema.safeParse({ walletAccountId: "w", amount: 0, description: "Bank deposit", externalReference: "TELLER-1" }).success, false);
+  assert.equal(accountingWalletCreateSchema.safeParse({ name: "E2E Wallet", purpose: "PHASE2B_E2E", currency: "NGN" }).success, true);
+  assert.equal(accountingWalletCreateSchema.safeParse({ name: "E2E Wallet", balance: 100, currency: "NGN" }).success, false);
+  assert.equal(accountingWalletCreateSchema.safeParse({ name: "E2E Wallet", organizationId: "other", currency: "NGN" }).success, false);
+  assert.equal(accountingWalletCreateSchema.safeParse({ name: "E2E Wallet", reservedBalance: 1, currency: "NGN" }).success, false);
   assert.equal(paystackFundingSchema.safeParse({ walletAccountId: "w", amount: "100.00" }).success, true);
   assert.equal(paystackFundingSchema.safeParse({ walletAccountId: "w", amount: 0 }).success, false);
   assert.equal(paystackFundingSchema.safeParse({ walletAccountId: "w", amount: 100, callbackUrl: "https://attacker.example" }).success, false);

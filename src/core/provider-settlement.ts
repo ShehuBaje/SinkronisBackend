@@ -20,6 +20,11 @@ const beneficiary = (value: Prisma.JsonValue | null): Beneficiary => {
 };
 const normalizeName = (value: string) => value.normalize("NFKD").replace(/[^a-z0-9]/gi, "").toLowerCase();
 const fingerprint = (organizationId: string, bankCode: string, accountNumber: string) => crypto.createHmac("sha256", env.JWT_ACCESS_SECRET).update(`${organizationId}:${bankCode}:${accountNumber}`).digest("hex");
+const assertTenantProviderMode = async (organizationId: string) => {
+  const tenant = await prisma.organization.findUnique({ where: { id: organizationId }, select: { classification: true } });
+  if (!tenant) throw notFound("Organization not found");
+  if (tenant.classification === "TEST_E2E" && env.PAYSTACK_TRANSFERS_MODE !== "test") throw conflict("TEST_E2E tenants can only use Paystack Test-mode transfers", { errorCode: "TEST_TENANT_LIVE_PROVIDER_BLOCKED" });
+};
 
 export const reserveAndClaimProviderSettlement = async (organizationId: string, settlementId: string) => prisma.$transaction(async (tx) => {
   let settlement = await tx.financialSettlement.findFirst({ where: { id: settlementId, organizationId } });
@@ -126,6 +131,7 @@ export const reverseProviderSettlement = async (settlement: FinancialSettlement,
 
 export const initiateProviderSettlement = async (organizationId: string, settlementId: string, provider: SettlementProvider = new PaystackTransferProvider()) => {
   assertProviderTransfersEnabled();
+  await assertTenantProviderMode(organizationId);
   const claimed = await reserveAndClaimProviderSettlement(organizationId, settlementId);
   if (!claimed.shouldInitiate) return claimed.settlement;
   try {
@@ -144,6 +150,7 @@ export const verifyAndReconcileProviderSettlement = async (settlementId: string,
   assertProviderTransfersEnabled();
   const settlement = await prisma.financialSettlement.findUnique({ where: { id: settlementId } });
   if (!settlement || settlement.provider !== "PAYSTACK" || !settlement.providerTransferReference) throw notFound("Provider settlement not found");
+  await assertTenantProviderMode(settlement.organizationId);
   if (["SUCCEEDED", "FAILED", "REVERSED"].includes(settlement.status)) return settlement;
   try {
     const result = await provider.verifyTransfer(settlement.providerTransferReference);
@@ -166,6 +173,7 @@ export const finalizeProviderSettlementOtp = async (
 ) => {
   const provider = dependencies.provider ?? new PaystackTransferProvider();
   (dependencies.assertTransfersEnabled ?? assertProviderTransfersEnabled)();
+  await assertTenantProviderMode(organizationId);
   const settlement = await prisma.financialSettlement.findFirst({ where: { id: settlementId, organizationId } });
   if (!settlement) throw notFound("Settlement not found");
   if (settlement.method !== "PROVIDER" || settlement.provider !== "PAYSTACK") throw conflict("Settlement is not a Paystack provider settlement");

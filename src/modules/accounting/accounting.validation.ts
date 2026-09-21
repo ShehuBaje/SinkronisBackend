@@ -406,6 +406,11 @@ export const manualWalletFundingSchema = z.object({
   description: z.string().trim().min(2).max(500),
   externalReference: z.string().trim().min(2).max(191),
 }).strict();
+export const accountingWalletCreateSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  purpose: z.string().trim().min(2).max(64).regex(/^[A-Z0-9_]+$/).default("PRIMARY"),
+  currency: z.literal("NGN").default("NGN")
+}).strict();
 export const paystackFundingSchema = z.object({
   walletAccountId: z.string().trim().min(1), amount: positiveMoney,
 }).strict();

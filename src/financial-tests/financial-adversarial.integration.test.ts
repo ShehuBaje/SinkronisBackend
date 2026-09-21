@@ -30,14 +30,19 @@ const money = (value: number | string) => new Prisma.Decimal(value);
 const clean = async () => {
   await prisma.providerWebhookEvent.deleteMany();
   const organizations = await prisma.organization.findMany({ where: { slug: { startsWith: PREFIX } }, select: { id: true } });
-  for (const organization of organizations) {
-    await prisma.payslip.deleteMany({ where: { organizationId: organization.id } });
-    await prisma.employee.deleteMany({ where: { organizationId: organization.id } });
-    await prisma.auditLog.deleteMany({ where: { organizationId: organization.id } });
-    await prisma.auditLogChain.deleteMany({ where: { organizationId: organization.id } });
-    await prisma.user.deleteMany({ where: { organizationId: organization.id } });
-    await prisma.role.deleteMany({ where: { organizationId: organization.id } });
-    await prisma.organization.delete({ where: { id: organization.id } });
+  // Remote TiDB made stale-fixture cleanup exceed the suite timeout when old
+  // organizations were removed strictly one at a time. Keep concurrency bounded
+  // to avoid lock pressure while ensuring interrupted runs recover promptly.
+  for (let index = 0; index < organizations.length; index += 4) {
+    await Promise.all(organizations.slice(index, index + 4).map(async (organization) => {
+      await prisma.payslip.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.employee.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.auditLog.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.auditLogChain.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.user.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.role.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.organization.delete({ where: { id: organization.id } });
+    }));
   }
 };
 

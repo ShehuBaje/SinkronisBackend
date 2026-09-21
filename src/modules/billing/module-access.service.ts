@@ -6,6 +6,20 @@ import { prisma } from "../../core/prisma";
 const objectValue = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const activeValue = (value: unknown) => typeof value === "string" ? value.toUpperCase() === "ACTIVE" : String(objectValue(value).status ?? "").toUpperCase() === "ACTIVE";
 
+const hasActiveTestEntitlement = async (organizationId: string, module: BillingModuleKey) => {
+  const now = new Date();
+  return Boolean(await prisma.testModuleEntitlement.findFirst({
+    where: {
+      organizationId,
+      moduleKey: module,
+      active: true,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      organization: { classification: "TEST_E2E", status: "ACTIVE" }
+    },
+    select: { id: true }
+  }));
+};
+
 export const evaluateEffectiveModuleAccess = async (input: { organizationId: string; userIsActive: boolean; permissions: readonly PermissionKey[]; moduleAccess?: readonly string[] | null; module: BillingModuleKey }) => {
   if (!input.userIsActive || !input.permissions.some((key) => key.startsWith(`${input.module}:`))) return false;
   if (input.moduleAccess && !input.moduleAccess.some((module) => module.toLowerCase() === input.module)) return false;
@@ -14,6 +28,7 @@ export const evaluateEffectiveModuleAccess = async (input: { organizationId: str
     prisma.systemConfig.findMany({ where: { organizationId: input.organizationId, key: { in: ["billing.subscription", `module.${input.module}.status`] } }, select: { key: true, value: true } })
   ]);
   if (!organization) return false;
+  if (await hasActiveTestEntitlement(input.organizationId, input.module)) return true;
   const subscription = objectValue(configs.find((row) => row.key === "billing.subscription")?.value);
   if (String(subscription.status ?? "").toUpperCase() !== "ACTIVE") return false;
   const explicit = configs.find((row) => row.key === `module.${input.module}.status`);
@@ -29,6 +44,7 @@ export const isOrganizationModuleEnabled = async (organizationId: string, module
     prisma.systemConfig.findMany({ where: { organizationId, key: { in: ["billing.subscription", `module.${module}.status`] } }, select: { key: true, value: true } })
   ]);
   if (!organization) return false;
+  if (await hasActiveTestEntitlement(organizationId, module)) return true;
   const subscription = objectValue(configs.find((row) => row.key === "billing.subscription")?.value);
   if (String(subscription.status ?? "").toUpperCase() !== "ACTIVE") return false;
   const explicit = configs.find((row) => row.key === `module.${module}.status`);

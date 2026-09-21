@@ -56,6 +56,7 @@ import {
   getUiReminderSettings, updateUiReminderSettings,
   exportAccountingReportCsv, exportAccountingReportPdf, downloadAccountingInvoicePdf,
   initializePaystackWalletFunding, verifyPaystackWalletFunding, processPaystackWebhook, finalizeAccountingSettlementOtp,
+  createAccountingWallet,
 } from "./accounting.service";
 import type {
   AccountingListQuery,
@@ -82,6 +83,7 @@ import type {
   ReminderConfigurationInput,
   AccountingReportQuery, WalletTransactionQuery, ManualWalletFundingInput,
   InvoiceTemplateInput, ExpenseCategoryInput, UiReminderSettingsInput, PaystackFundingInput,
+  AccountingWalletCreateInput,
 } from "./accounting.interface";
 
 type Request = ExpressRequest<any>;
@@ -579,6 +581,7 @@ export const getWhtReportController = async (req: Request,res: Response) => send
 export const getWalletSummaryController = async (req: Request,res: Response) => sendSuccess(res,"Wallet summary retrieved",await getWalletSummary(req.organizationId!));
 export const listWalletTransactionsController = async (req: Request,res: Response) => sendSuccess(res,"Wallet transactions retrieved",await listWalletTransactions(req.organizationId!,req.query as unknown as WalletTransactionQuery));
 export const fundWalletManuallyController = async (req: Request,res: Response) => sendSuccess(res,"Wallet funded",await fundWalletManually(req.organizationId!,req.body as ManualWalletFundingInput,req.user!),{ status: 201 });
+export const createAccountingWalletController = async (req: Request,res: Response) => sendSuccess(res,"Accounting wallet created",await createAccountingWallet(req.organizationId!,req.body as AccountingWalletCreateInput,req.user!),{ status: 201 });
 export const getWalletReceiptController = async (req: Request,res: Response) => sendSuccess(res,"Wallet receipt retrieved",await getWalletReceipt(req.organizationId!,req.params.id));
 export const initializePaystackWalletFundingController = async (req: Request,res: Response) => sendSuccess(res,"Paystack wallet funding initialized",await initializePaystackWalletFunding(req.organizationId!,req.body as PaystackFundingInput,req.user!),{ status: 201 });
 export const verifyPaystackWalletFundingController = async (req: Request,res: Response) => sendSuccess(res,"Paystack wallet funding verified",await verifyPaystackWalletFunding(req.organizationId!,req.params.reference));
