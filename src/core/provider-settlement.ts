@@ -158,6 +158,57 @@ export const verifyAndReconcileProviderSettlement = async (settlementId: string,
   }
 };
 
+export const finalizeProviderSettlementOtp = async (
+  organizationId: string,
+  settlementId: string,
+  otp: string,
+  dependencies: { provider?: SettlementProvider; assertTransfersEnabled?: () => void } = {},
+) => {
+  const provider = dependencies.provider ?? new PaystackTransferProvider();
+  (dependencies.assertTransfersEnabled ?? assertProviderTransfersEnabled)();
+  const settlement = await prisma.financialSettlement.findFirst({ where: { id: settlementId, organizationId } });
+  if (!settlement) throw notFound("Settlement not found");
+  if (settlement.method !== "PROVIDER" || settlement.provider !== "PAYSTACK") throw conflict("Settlement is not a Paystack provider settlement");
+  if (settlement.status !== "PROVIDER_PROCESSING" || settlement.providerStatus !== "otp") throw conflict("Settlement is not awaiting OTP finalization");
+  if (!settlement.reservedAt || settlement.reservationReleasedAt) throw conflict("Settlement does not have an active wallet reservation");
+  if (!settlement.providerTransferCode || !settlement.providerTransferReference) throw conflict("Settlement provider transfer identity is incomplete");
+
+  const claim = await prisma.financialSettlement.updateMany({
+    where: { id: settlement.id, organizationId, status: "PROVIDER_PROCESSING", providerStatus: "otp", reservationReleasedAt: null },
+    data: { providerStatus: "otp_finalizing", failureReason: null },
+  });
+  if (claim.count !== 1) throw conflict("OTP finalization is already in progress or no longer eligible");
+
+  try {
+    const result = await provider.finalizeTransferOtp({ transferCode: settlement.providerTransferCode, otp });
+    assertResult(settlement, result);
+    // Even if Paystack labels this response successful, the adapter downgrades it
+    // to non-conclusive. Only webhook/verification is allowed to finalize money.
+    if (result.state === "FAILURE") {
+      await prisma.financialSettlement.update({ where: { id: settlement.id }, data: { providerStatus: "otp", failureReason: "OTP finalization was rejected" } });
+      throw conflict("OTP finalization was rejected");
+    }
+    if (result.state !== "NON_CONCLUSIVE") {
+      await prisma.financialSettlement.update({ where: { id: settlement.id }, data: { providerStatus: "otp", failureReason: "OTP finalization returned an unexpected terminal state" } });
+      throw conflict("OTP finalization requires provider verification");
+    }
+    return prisma.financialSettlement.update({
+      where: { id: settlement.id },
+      data: { status: "PROVIDER_PROCESSING", providerStatus: result.providerStatus, providerTransferCode: settlement.providerTransferCode, lastVerifiedAt: new Date(), failureReason: null },
+    });
+  } catch (error) {
+    if (error instanceof PaystackProviderError && error.ambiguous) {
+      return prisma.financialSettlement.update({ where: { id: settlement.id }, data: { status: "UNKNOWN", providerStatus: "unknown", failureReason: "OTP finalization outcome requires verification", lastVerifiedAt: new Date() } });
+    }
+    await prisma.financialSettlement.updateMany({
+      where: { id: settlement.id, organizationId, providerStatus: "otp_finalizing" },
+      data: { providerStatus: "otp", failureReason: "OTP finalization was rejected" },
+    });
+    if (error instanceof PaystackProviderError) throw conflict("OTP finalization was rejected");
+    throw error;
+  }
+};
+
 export const validatePaystackTransferApproval = async (payload: Record<string, unknown>) => {
   const reference = typeof payload.reference === "string" ? payload.reference : undefined;
   const amount = typeof payload.amount === "number" ? payload.amount : undefined;

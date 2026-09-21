@@ -412,6 +412,9 @@ export const paystackFundingSchema = z.object({
 export const paystackReferenceParamsSchema = z.object({
   reference: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._-]+$/),
 }).strict();
+export const settlementOtpFinalizeSchema = z.object({
+  otp: z.string().trim().regex(/^\d{4,10}$/, "OTP must contain 4 to 10 digits"),
+}).strict();
 export const invoiceTemplateCreateSchema = z.object({
   name: z.string().trim().min(2).max(191), paymentTerms: optionalText,
   headerNote: optionalText, footerNote: optionalText,

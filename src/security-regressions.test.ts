@@ -35,6 +35,24 @@ test("financial settlements have durable identities, reservations and a default-
   assert.match(settlement, /status: "SUCCEEDED"/);
   assert.match(provider, /PROVIDER_SETTLEMENT_DISABLED/);
   assert.match(env, /PAYSTACK_TRANSFERS_ENABLED[\s\S]*default\("false"\)/);
+  assert.match(env, /PAYSTACK_TRANSFERS_MODE: z\.enum\(\["test", "live"\]\)\.optional\(\)/);
+  assert.match(provider, /assertPaystackTransferCredentialMode/);
+  assert.doesNotMatch(source("./core/provider-settlement.ts"), /otp[\s\S]*walletTransaction\.create/);
+});
+
+test("Paystack OTP finalization is tenant-authenticated, strongly authorized, rate-limited, and never audited with the OTP", () => {
+  const routes = source("./modules/accounting/accounting.routes.ts");
+  const service = source("./modules/accounting/accounting.service.ts");
+  const provider = source("./core/provider-settlement.ts");
+  assert.match(routes, /financial-settlements\/:id\/finalize-otp[\s\S]*limit: 5[\s\S]*accounting:payments:approve[\s\S]*accounting:wallets:update/);
+  assert.match(provider, /findFirst\(\{ where: \{ id: settlementId, organizationId \} \}\)/);
+  assert.match(provider, /providerStatus: "otp_finalizing"/);
+  const auditBlock = service.match(/finalizeAccountingSettlementOtp[\s\S]*?return settlementDto\(settlement\);[\s\S]*?throw error;/)?.[0] ?? "";
+  assert.ok(auditBlock);
+  const auditCalls = auditBlock.split("\n").filter((line) => line.includes("await audit("));
+  assert.equal(auditCalls.length, 2);
+  assert.doesNotMatch(auditCalls.join("\n"), /\{[^}]*\botp\s*:/i);
+  assert.doesNotMatch(source("./app.ts"), /morgan\([^)]*:body/);
 });
 
 test("database diagnostics do not embed credentials", () => {

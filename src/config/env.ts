@@ -54,6 +54,7 @@ const envSchema = z.object({
   PAYSTACK_CALLBACK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   PAYSTACK_SUBSCRIPTION_CALLBACK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   PAYSTACK_TRANSFERS_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  PAYSTACK_TRANSFERS_MODE: z.enum(["test", "live"]).optional(),
   PAYSTACK_TRANSFER_STALE_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(900_000),
   PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
   STORAGE_PROVIDER: z.enum(["local", "vercel-blob"]).default("local"),

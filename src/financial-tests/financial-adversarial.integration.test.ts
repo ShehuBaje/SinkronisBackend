@@ -4,9 +4,10 @@ import { after, before, test } from 'node:test';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../core/prisma.js';
 import { completeManualSettlement, prepareProviderSettlement, releaseSettlementReservation, reverseSucceededSettlement } from '../core/financial-settlement.js';
-import { reserveAndClaimProviderSettlement, validatePaystackTransferApproval } from '../core/provider-settlement.js';
+import { applyProviderTransferResult, finalizeProviderSettlementOtp, reserveAndClaimProviderSettlement, validatePaystackTransferApproval } from '../core/provider-settlement.js';
 import { retryPendingPaystackTransferWebhooks } from '../core/paystack-transfer-webhook.js';
 import { assertProviderTransfersEnabled } from '../core/settlement-provider.js';
+import type { SettlementProvider } from '../core/settlement-provider.js';
 import { financialSubscriptionTestHooks } from '../modules/admin/admin.service.js';
 import { settlePayrollRun } from '../modules/payroll/payroll.service.js';
 import { disbursePaymentRequest, processPaystackWebhook } from '../modules/accounting/accounting.service.js';
@@ -221,6 +222,84 @@ financialTest('concurrent provider pre-initiation claims reserve once and yield 
   assert.equal(wallet.balance.toNumber(), 100_000);
   assert.equal(wallet.reservedBalance.toNumber(), 20_000);
   assert.equal((await prisma.financialSettlement.findUniqueOrThrow({ where: { id: prepared.id } })).status, 'PROVIDER_PROCESSING');
+});
+
+financialTest('Paystack OTP remains non-conclusive and cannot mark the Accounting obligation paid', async () => {
+  const fx = await fixture();
+  const request = await prisma.paymentRequest.create({ data: { organizationId: fx.organization.id, title: 'OTP payment request', amount: money(8_000), currency: 'NGN', status: 'APPROVED', bankName: 'Test Bank', bankCode: '057', accountNumber: '0000000000', accountName: 'Test Beneficiary' } });
+  const prepared = await prepareProviderSettlement({ ...source(fx, request.id, 8_000), sourceType: 'ACCOUNTING_PAYMENT_REQUEST' }, uid('otp-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const settlement = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_OTP_TEST' } });
+  await applyProviderTransferResult(settlement, { reference: settlement.providerTransferReference!, transferCode: 'TRF_OTP_TEST', recipientReference: 'RCP_OTP_TEST', providerStatus: 'otp', state: 'NON_CONCLUSIVE', amountMinor: 800_000, currency: 'NGN' });
+  const current = await prisma.financialSettlement.findUniqueOrThrow({ where: { id: settlement.id } });
+  const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(current.status, 'PROVIDER_PROCESSING');
+  assert.equal(current.providerStatus, 'otp');
+  assert.equal(current.providerTransferReference, settlement.providerTransferReference);
+  assert.equal(wallet.balance.toNumber(), 100_000);
+  assert.equal(wallet.reservedBalance.toNumber(), 8_000);
+  assert.equal(await prisma.walletTransaction.count({ where: { sourceId: request.id } }), 0);
+  assert.equal((await prisma.paymentRequest.findUniqueOrThrow({ where: { id: request.id } })).status, 'APPROVED');
+});
+
+financialTest('OTP finalization is tenant-scoped, concurrency-claimed, non-conclusive and preserves financial state', async () => {
+  const fx = await fixture();
+  const other = await fixture();
+  const request = await prisma.paymentRequest.create({ data: { organizationId: fx.organization.id, title: 'OTP controlled finalization', amount: money(8_000), currency: 'NGN', status: 'APPROVED', bankName: 'Test Bank', bankCode: '057', accountNumber: '0000000000', accountName: 'Test Beneficiary' } });
+  const prepared = await prepareProviderSettlement({ ...source(fx, request.id, 8_000), sourceType: 'ACCOUNTING_PAYMENT_REQUEST' }, uid('otp-finalize-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const awaitingOtp = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_OTP_FINALIZE', providerTransferCode: 'TRF_OTP_FINALIZE', providerStatus: 'otp' } });
+  let calls = 0;
+  let supplied: { transferCode: string; otp: string } | undefined;
+  const provider: SettlementProvider = {
+    resolveAccount: async () => { throw new Error('not expected'); },
+    createRecipient: async () => { throw new Error('not expected'); },
+    initiateTransfer: async () => { throw new Error('not expected'); },
+    verifyTransfer: async () => { throw new Error('not expected'); },
+    getBalance: async () => { throw new Error('not expected'); },
+    finalizeTransferOtp: async (input) => {
+      calls += 1;
+      supplied = input;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { reference: awaitingOtp.providerTransferReference!, transferCode: awaitingOtp.providerTransferCode!, recipientReference: awaitingOtp.providerRecipientReference!, providerStatus: 'pending', state: 'NON_CONCLUSIVE', amountMinor: 800_000, currency: 'NGN' };
+    },
+  };
+  const dependencies = { provider, assertTransfersEnabled: () => undefined };
+  await assert.rejects(finalizeProviderSettlementOtp(other.organization.id, awaitingOtp.id, '123456', dependencies));
+  assert.equal(calls, 0);
+  const attempts = await Promise.allSettled(Array.from({ length: 5 }, () => finalizeProviderSettlementOtp(fx.organization.id, awaitingOtp.id, '123456', dependencies)));
+  assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1);
+  assert.equal(calls, 1);
+  assert.deepEqual(supplied, { transferCode: 'TRF_OTP_FINALIZE', otp: '123456' });
+  const current = await prisma.financialSettlement.findUniqueOrThrow({ where: { id: awaitingOtp.id } });
+  const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(current.status, 'PROVIDER_PROCESSING');
+  assert.equal(current.providerStatus, 'pending');
+  assert.equal(current.providerTransferReference, awaitingOtp.providerTransferReference);
+  assert.equal(current.providerTransferCode, 'TRF_OTP_FINALIZE');
+  assert.doesNotMatch(JSON.stringify(current), /123456/);
+  assert.equal(wallet.balance.toNumber(), 100_000);
+  assert.equal(wallet.reservedBalance.toNumber(), 8_000);
+  assert.equal(await prisma.walletTransaction.count({ where: { sourceId: request.id } }), 0);
+  assert.equal((await prisma.paymentRequest.findUniqueOrThrow({ where: { id: request.id } })).status, 'APPROVED');
+});
+
+financialTest('rejected OTP restores the same retryable settlement without releasing reservation or changing reference', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('otp-rejected'), 4_000), uid('otp-rejected-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const awaitingOtp = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerTransferCode: 'TRF_REJECTED_OTP', providerStatus: 'otp' } });
+  const provider = {
+    resolveAccount: async () => { throw new Error('not expected'); }, createRecipient: async () => { throw new Error('not expected'); }, initiateTransfer: async () => { throw new Error('not expected'); }, verifyTransfer: async () => { throw new Error('not expected'); }, getBalance: async () => [],
+    finalizeTransferOtp: async () => { throw new (await import('../core/paystack.js')).PaystackProviderError('OTP rejected', 400, false); },
+  } satisfies SettlementProvider;
+  await assert.rejects(finalizeProviderSettlementOtp(fx.organization.id, awaitingOtp.id, '999999', { provider, assertTransfersEnabled: () => undefined }));
+  const current = await prisma.financialSettlement.findUniqueOrThrow({ where: { id: awaitingOtp.id } });
+  assert.equal(current.providerStatus, 'otp');
+  assert.equal(current.providerTransferReference, awaitingOtp.providerTransferReference);
+  assert.equal(current.providerTransferCode, 'TRF_REJECTED_OTP');
+  assert.equal(current.reservationReleasedAt, null);
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).reservedBalance.toNumber(), 4_000);
 });
 
 const signedTransferWebhook = async (event: string, settlement: Awaited<ReturnType<typeof prepareProviderSettlement>>, status: string) => {

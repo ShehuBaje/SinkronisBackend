@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PaystackTransferProvider, mapPaystackTransferStatus } from "./paystack-transfer-provider";
 import { PaystackProviderError } from "./paystack";
+import { assertPaystackTransferCredentialMode } from "./settlement-provider";
+import { env } from "../config/env";
+
+// Unit tests use a mocked transport, but the outbound adapter still exercises
+// the real fail-closed credential-mode boundary.
+env.PAYSTACK_TRANSFERS_MODE = env.PAYSTACK_SECRET_KEY?.startsWith("sk_live_") ? "live" : "test";
 
 test("Paystack transfer statuses map explicitly and unknown values fail closed", () => {
   for (const status of ["pending", "otp", "received"]) assert.equal(mapPaystackTransferStatus(status), "NON_CONCLUSIVE");
@@ -55,10 +61,63 @@ test("Paystack initiation status success remains non-conclusive until webhook or
   } finally { globalThis.fetch = original; }
 });
 
+test("Paystack OTP finalization sends only stored transfer code and OTP and remains non-conclusive", async () => {
+  const original = globalThis.fetch;
+  let requestBody: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ status: true, message: "Transfer queued", data: { reference: "stl_1234567890123456", transfer_code: "TRF_safe", status: "success", amount: 10000, currency: "NGN", recipient: { recipient_code: "RCP_safe" } } }), { status: 200 });
+  };
+  try {
+    const result = await new PaystackTransferProvider().finalizeTransferOtp({ transferCode: "TRF_safe", otp: "123456" });
+    assert.deepEqual(requestBody, { transfer_code: "TRF_safe", otp: "123456" });
+    assert.equal(result.state, "NON_CONCLUSIVE");
+    assert.equal(result.providerStatus, "success");
+  } finally { globalThis.fetch = original; }
+});
+
 test("Paystack network failure is classified as ambiguous", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error("response lost"); };
   try {
     await assert.rejects(new PaystackTransferProvider().verifyTransfer("stl_1234567890123456"), (error: unknown) => error instanceof PaystackProviderError && error.ambiguous);
   } finally { globalThis.fetch = original; }
+});
+
+test("Paystack outbound transfer credentials fail closed across test and live modes", () => {
+  const testKey = ["sk", "test", "fixture"].join("_");
+  const liveKey = ["sk", "live", "fixture"].join("_");
+  assert.doesNotThrow(() => assertPaystackTransferCredentialMode("test", testKey));
+  assert.doesNotThrow(() => assertPaystackTransferCredentialMode("live", liveKey));
+  assert.throws(() => assertPaystackTransferCredentialMode("test", liveKey), (error: any) => error?.statusCode === 503 && error?.details?.reasonCode === "PAYSTACK_TRANSFER_MODE_MISMATCH");
+  assert.throws(() => assertPaystackTransferCredentialMode("live", testKey), (error: any) => error?.statusCode === 503 && error?.details?.reasonCode === "PAYSTACK_TRANSFER_MODE_MISMATCH");
+  assert.throws(() => assertPaystackTransferCredentialMode("test", undefined), (error: any) => error?.statusCode === 503);
+  assert.throws(() => assertPaystackTransferCredentialMode(undefined, testKey), (error: any) => error?.statusCode === 503 && error?.details?.reasonCode === "PAYSTACK_TRANSFER_MODE_MISSING");
+});
+
+test("credential mismatch blocks every outbound adapter operation before network access", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalMode = env.PAYSTACK_TRANSFERS_MODE;
+  const originalSecret = env.PAYSTACK_SECRET_KEY;
+  let networkCalls = 0;
+  globalThis.fetch = async () => { networkCalls += 1; throw new Error("network must not be reached"); };
+  env.PAYSTACK_TRANSFERS_MODE = "test";
+  env.PAYSTACK_SECRET_KEY = ["sk", "live", "fixture"].join("_");
+  const provider = new PaystackTransferProvider();
+  try {
+    const operations = [
+      () => provider.resolveAccount({ accountNumber: "0000000000", bankCode: "057" }),
+      () => provider.createRecipient({ accountNumber: "0000000000", bankCode: "057", accountName: "Fixture", currency: "NGN" }),
+      () => provider.initiateTransfer({ recipientReference: "RCP_fixture", amountMinor: 100, currency: "NGN", reference: "stl_fixture", reason: "Fixture" }),
+      () => provider.finalizeTransferOtp({ transferCode: "TRF_fixture", otp: "000000" }),
+      () => provider.verifyTransfer("stl_fixture"),
+      () => provider.getBalance(),
+    ];
+    for (const operation of operations) await assert.rejects(operation(), (error: any) => error?.details?.reasonCode === "PAYSTACK_TRANSFER_MODE_MISMATCH");
+    assert.equal(networkCalls, 0);
+  } finally {
+    env.PAYSTACK_TRANSFERS_MODE = originalMode;
+    env.PAYSTACK_SECRET_KEY = originalSecret;
+    globalThis.fetch = originalFetch;
+  }
 });

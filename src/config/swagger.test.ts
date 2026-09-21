@@ -65,6 +65,7 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
     || operation.includes(" /api/v1/accounting/invoices")
     || operation.includes(" /api/v1/accounting/agents")
     || operation.includes(" /api/v1/accounting/payment-requests")
+    || operation.includes(" /api/v1/accounting/financial-settlements")
     || operation.includes(" /api/v1/accounting/expenses")
     || operation.includes(" /api/v1/accounting/reminders")
     || operation.includes(" /api/v1/accounting/exports")
@@ -188,6 +189,17 @@ test("appraisal UI routes publish role, filter, detail, and employee action cont
   assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/self-assessment/draft"].put.requestBody.content["application/json"].example.sections[0].objectives[0].keyResults[0].achieved, undefined);
   assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/self-assessment/submit"].post.responses["200"].content["application/json"].example.data.status, "SUBMITTED");
   assert.equal(paths["/api/v1/employee/appraisal/{appraisalId}/acknowledge"].post.responses["200"].content["application/json"].example.data.stage, "COMPLETED");
+});
+
+test("Paystack settlement OTP finalization is documented as a sensitive non-conclusive operation", () => {
+  const operation = (openApiSpec as any).paths["/api/v1/accounting/financial-settlements/{id}/finalize-otp"].post;
+  assert.deepEqual(operation.security, [{ bearerAuth: [] }]);
+  const schema = operation.requestBody.content["application/json"].schema;
+  assert.deepEqual(schema.required, ["otp"]);
+  assert.deepEqual(Object.keys(schema.properties), ["otp"]);
+  assert.equal(schema.properties.otp.writeOnly, true);
+  assert.match(operation.description, /never persisted or logged/i);
+  assert.match(operation.responses["200"].description, /does not mean.*paid/i);
 });
 
 test("Notifications and Alerts examples match their runtime field types", () => {

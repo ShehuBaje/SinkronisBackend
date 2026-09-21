@@ -55,7 +55,7 @@ import {
   listExpenseCategories, createExpenseCategory, deleteExpenseCategory,
   getUiReminderSettings, updateUiReminderSettings,
   exportAccountingReportCsv, exportAccountingReportPdf, downloadAccountingInvoicePdf,
-  initializePaystackWalletFunding, verifyPaystackWalletFunding, processPaystackWebhook,
+  initializePaystackWalletFunding, verifyPaystackWalletFunding, processPaystackWebhook, finalizeAccountingSettlementOtp,
 } from "./accounting.service";
 import type {
   AccountingListQuery,
@@ -587,6 +587,8 @@ export const paystackTransferApprovalController = async (req: Request, res: Resp
   const { validatePaystackTransferApproval } = await import("../../core/provider-settlement.js");
   return res.status(await validatePaystackTransferApproval(req.body as Record<string, unknown>) ? 200 : 400).send();
 };
+export const finalizeSettlementOtpController = async (req: Request, res: Response) =>
+  sendSuccess(res, "Paystack OTP accepted for processing", await finalizeAccountingSettlementOtp(req.organizationId!, req.params.id, req.body.otp as string, req.user!));
 export const listInvoiceTemplatesController = async (req: Request,res: Response) => sendSuccess(res,"Invoice templates retrieved",await listInvoiceTemplates(req.organizationId!));
 export const createInvoiceTemplateController = async (req: Request,res: Response) => sendSuccess(res,"Invoice template created",await createInvoiceTemplate(req.organizationId!,req.body as InvoiceTemplateInput,req.user!),{ status: 201 });
 export const updateInvoiceTemplateController = async (req: Request,res: Response) => sendSuccess(res,"Invoice template updated",await updateInvoiceTemplate(req.organizationId!,req.params.id,req.body as Partial<InvoiceTemplateInput>,req.user!));

@@ -7,7 +7,7 @@ import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
 import { createObjectKey, deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { completeManualSettlement, prepareProviderSettlement, settlementDto } from "../../core/financial-settlement";
-import { initiateProviderSettlement } from "../../core/provider-settlement";
+import { finalizeProviderSettlementOtp, initiateProviderSettlement } from "../../core/provider-settlement";
 import { acceptAndProcessPaystackTransferWebhook } from "../../core/paystack-transfer-webhook";
 import { assertProviderTransfersEnabled } from "../../core/settlement-provider";
 import { deliverUserNotification } from "../../core/notifications";
@@ -2147,6 +2147,17 @@ export const disbursePaymentRequest = async (
   await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_MANUALLY_SETTLED", "PAYMENT_REQUEST", id, `Recorded external settlement for ${current.title}`, { settlementId: manual.settlement.id, externalReference: input.externalReference });
   return { request: manual.result ?? await paymentRequestOwned(organizationId, id), settlement: settlementDto(manual.settlement), idempotentReplay: manual.idempotentReplay };
 
+};
+
+export const finalizeAccountingSettlementOtp = async (organizationId: string, settlementId: string, otp: string, user: AuthUser) => {
+  try {
+    const settlement = await finalizeProviderSettlementOtp(organizationId, settlementId, otp);
+    await audit(organizationId, user, "ACCOUNTING_PROVIDER_TRANSFER_OTP_FINALIZATION_ATTEMPTED", "FINANCIAL_SETTLEMENT", settlement.id, "Submitted provider transfer OTP for finalization", { provider: "PAYSTACK", outcome: "ACCEPTED_FOR_PROCESSING", providerStatus: settlement.providerStatus });
+    return settlementDto(settlement);
+  } catch (error) {
+    await audit(organizationId, user, "ACCOUNTING_PROVIDER_TRANSFER_OTP_FINALIZATION_ATTEMPTED", "FINANCIAL_SETTLEMENT", settlementId, "Provider transfer OTP finalization attempt was rejected", { provider: "PAYSTACK", outcome: "REJECTED" });
+    throw error;
+  }
 };
 
 export const listExpenses = async (

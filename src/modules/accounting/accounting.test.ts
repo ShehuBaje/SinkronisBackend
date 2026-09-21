@@ -3,7 +3,7 @@ import test from "node:test";
 import { accountingRouter } from "./accounting.routes";
 import { accountingInvoiceDisplayStatus, billedVsValuePercentage, calculateInvoiceWht } from "./accounting.service";
 import { createPayslipPdf } from "../employee/employee.service";
-import { accountingListQuerySchema, agentBulkInviteSchema, agentInviteSchema, catalogueCreateSchema, catalogueListQuerySchema, customerCreateSchema, expenseCreateSchema, expenseListQuerySchema, invoiceCreateSchema, invoiceListQuerySchema, invoicePaymentSchema, paymentRequestDisbursementSchema, paymentRequestListQuerySchema, projectCreateSchema, projectListQuerySchema, reminderConfigurationSchema, reminderListQuerySchema, accountingReportQuerySchema, walletTransactionQuerySchema, manualWalletFundingSchema, invoiceTemplateCreateSchema, expenseCategoryCreateSchema, uiReminderSettingsSchema, paystackFundingSchema, paystackReferenceParamsSchema } from "./accounting.validation";
+import { accountingListQuerySchema, agentBulkInviteSchema, agentInviteSchema, catalogueCreateSchema, catalogueListQuerySchema, customerCreateSchema, expenseCreateSchema, expenseListQuerySchema, invoiceCreateSchema, invoiceListQuerySchema, invoicePaymentSchema, paymentRequestDisbursementSchema, paymentRequestListQuerySchema, projectCreateSchema, projectListQuerySchema, reminderConfigurationSchema, reminderListQuerySchema, accountingReportQuerySchema, walletTransactionQuerySchema, manualWalletFundingSchema, invoiceTemplateCreateSchema, expenseCategoryCreateSchema, uiReminderSettingsSchema, paystackFundingSchema, paystackReferenceParamsSchema, settlementOtpFinalizeSchema } from "./accounting.validation";
 
 const routes = (accountingRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
 
@@ -12,7 +12,7 @@ test("Accounting UI endpoints remain in the existing Accounting router", () => {
 });
 
 test("continued Accounting workflows remain in the same router", () => {
-  for (const route of ["GET /invoices", "POST /invoices", "POST /invoices/:id/send", "POST /invoices/:id/payment", "DELETE /invoices/:id", "GET /agents", "POST /agents/invite", "POST /agents/invite-bulk", "GET /payment-requests", "POST /payment-requests/:id/approve", "POST /payment-requests/:id/decline", "POST /payment-requests/:id/disburse", "GET /expenses", "GET /expenses/export", "GET /reminders", "GET /reminders/configuration", "PUT /reminders/configuration", "POST /reminders/mark-all-read", "POST /reminders/:id/read", "POST /exports/invoices", "POST /exports/expenses", "GET /exports/:id", "GET /exports/:id/download"]) assert.ok(routes.includes(route), route);
+  for (const route of ["GET /invoices", "POST /invoices", "POST /invoices/:id/send", "POST /invoices/:id/payment", "DELETE /invoices/:id", "GET /agents", "POST /agents/invite", "POST /agents/invite-bulk", "GET /payment-requests", "POST /payment-requests/:id/approve", "POST /payment-requests/:id/decline", "POST /payment-requests/:id/disburse", "POST /financial-settlements/:id/finalize-otp", "GET /expenses", "GET /expenses/export", "GET /reminders", "GET /reminders/configuration", "PUT /reminders/configuration", "POST /reminders/mark-all-read", "POST /reminders/:id/read", "POST /exports/invoices", "POST /exports/expenses", "GET /exports/:id", "GET /exports/:id/download"]) assert.ok(routes.includes(route), route);
 });
 
 test("reports, wallet and Accounting settings routes remain in the existing router", () => {
@@ -31,6 +31,9 @@ test("new Accounting DTOs reject tenant injection and unsafe financial/settings 
   assert.equal(paystackFundingSchema.safeParse({ walletAccountId: "w", amount: 100, callbackUrl: "https://attacker.example" }).success, false);
   assert.equal(paystackReferenceParamsSchema.safeParse({ reference: "PSK-12345678" }).success, true);
   assert.equal(paystackReferenceParamsSchema.safeParse({ reference: "../unsafe" }).success, false);
+  assert.equal(settlementOtpFinalizeSchema.safeParse({ otp: "123456" }).success, true);
+  assert.equal(settlementOtpFinalizeSchema.safeParse({ otp: "123456", amount: 1 }).success, false);
+  assert.equal(settlementOtpFinalizeSchema.safeParse({ otp: "12ab56" }).success, false);
   assert.equal(invoiceTemplateCreateSchema.safeParse({ name: "Standard", paymentTerms: "Net 30" }).success, true);
   assert.equal(expenseCategoryCreateSchema.safeParse({ name: "Travel" }).success, true);
   assert.equal(uiReminderSettingsSchema.safeParse({ automaticRemindersEnabled: true, firstReminderDaysBeforeDue: 7, overdueReminderFrequency: "EVERY_3_DAYS", inAppEnabled: true, emailEnabled: false }).success, true);

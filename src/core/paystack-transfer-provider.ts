@@ -1,5 +1,6 @@
 import { PaystackProviderError, paystackRequest } from "./paystack";
-import type { ProviderTransferResult, SettlementProvider } from "./settlement-provider";
+import { assertPaystackTransferCredentialMode, type ProviderTransferResult, type SettlementProvider } from "./settlement-provider";
+import { env } from "../config/env";
 
 type TransferData = { reference?: unknown; transfer_code?: unknown; status?: unknown; amount?: unknown; currency?: unknown; recipient?: unknown };
 const text = (value: unknown) => typeof value === "string" ? value : undefined;
@@ -25,7 +26,12 @@ const transferResult = (data: TransferData): ProviderTransferResult => {
 };
 
 export class PaystackTransferProvider implements SettlementProvider {
+  private assertCredentialMode() {
+    assertPaystackTransferCredentialMode(env.PAYSTACK_TRANSFERS_MODE, env.PAYSTACK_SECRET_KEY);
+  }
+
   async resolveAccount(input: { accountNumber: string; bankCode: string }) {
+    this.assertCredentialMode();
     const data = await paystackRequest<Record<string, unknown>>(`/bank/resolve?account_number=${encodeURIComponent(input.accountNumber)}&bank_code=${encodeURIComponent(input.bankCode)}`);
     const accountName = text(data.account_name);
     const accountNumber = text(data.account_number);
@@ -34,6 +40,7 @@ export class PaystackTransferProvider implements SettlementProvider {
   }
 
   async createRecipient(input: { accountNumber: string; bankCode: string; accountName: string; currency: string }) {
+    this.assertCredentialMode();
     const data = await paystackRequest<Record<string, unknown>>("/transferrecipient", { method: "POST", body: JSON.stringify({ type: "nuban", name: input.accountName, account_number: input.accountNumber, bank_code: input.bankCode, currency: input.currency }) });
     const recipientReference = text(data.recipient_code);
     if (!recipientReference) throw new PaystackProviderError("Paystack returned malformed recipient data");
@@ -42,17 +49,31 @@ export class PaystackTransferProvider implements SettlementProvider {
   }
 
   async initiateTransfer(input: { recipientReference: string; amountMinor: number; currency: string; reference: string; reason: string }) {
+    this.assertCredentialMode();
     const result = transferResult(await paystackRequest<TransferData>("/transfer", { method: "POST", body: JSON.stringify({ source: "balance", amount: input.amountMinor, recipient: input.recipientReference, reference: input.reference, reason: input.reason, currency: input.currency }) }));
     // Paystack's initiation response may say `success` while its message says the
     // transfer was queued. Initiation acceptance is never settlement evidence.
     return result.state === "SUCCESS" ? { ...result, state: "NON_CONCLUSIVE" as const } : result;
   }
 
+  async finalizeTransferOtp(input: { transferCode: string; otp: string }) {
+    this.assertCredentialMode();
+    const result = transferResult(await paystackRequest<TransferData>("/transfer/finalize_transfer", {
+      method: "POST",
+      body: JSON.stringify({ transfer_code: input.transferCode, otp: input.otp }),
+    }));
+    // OTP acceptance is not recipient-payment evidence. Webhook or verification
+    // remains the only path that can turn a settlement into financial success.
+    return result.state === "SUCCESS" ? { ...result, state: "NON_CONCLUSIVE" as const } : result;
+  }
+
   async verifyTransfer(reference: string) {
+    this.assertCredentialMode();
     return transferResult(await paystackRequest<TransferData>(`/transfer/verify/${encodeURIComponent(reference)}`));
   }
 
   async getBalance() {
+    this.assertCredentialMode();
     const rows = await paystackRequest<Array<Record<string, unknown>>>("/balance");
     return rows.map((row) => ({ currency: text(row.currency)?.toUpperCase() ?? "", balanceMinor: integer(row.balance) ?? 0 })).filter((row) => row.currency);
   }

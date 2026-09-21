@@ -1,4 +1,5 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { asyncHandler } from "../../core/async-handler";
 import { createCrudRouter } from "../../core/crud-router";
 import { validate } from "../../core/validate";
@@ -42,7 +43,7 @@ import {
   accountingReportQuerySchema, walletTransactionQuerySchema, manualWalletFundingSchema,
   invoiceTemplateCreateSchema, invoiceTemplateUpdateSchema, expenseCategoryCreateSchema,
   uiReminderSettingsSchema,
-  paystackFundingSchema, paystackReferenceParamsSchema,
+  paystackFundingSchema, paystackReferenceParamsSchema, settlementOtpFinalizeSchema,
 } from "./accounting.validation";
 
 export const accountingRouter = Router();
@@ -281,6 +282,13 @@ accountingRouter.post(
     body: paymentRequestDisbursementSchema,
   }),
   asyncHandler(controller.disbursePaymentRequestController),
+);
+accountingRouter.post(
+  "/financial-settlements/:id/finalize-otp",
+  rateLimit({ windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: true, legacyHeaders: false }),
+  authorize("accounting:payments:approve", "accounting:wallets:update"),
+  validate({ params: accountingEntityParamsSchema, body: settlementOtpFinalizeSchema }),
+  asyncHandler(controller.finalizeSettlementOtpController),
 );
 
 accountingRouter.get(
