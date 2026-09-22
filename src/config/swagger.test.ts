@@ -155,13 +155,6 @@ test("TEST_E2E and zero-balance wallet operations publish guarded contracts", ()
   assert.equal(wallet.requestBody.content["application/json"].schema.properties.reservedBalance, undefined);
 });
 
-test("temporary Paystack resolution diagnostic is documented as fixed and bodyless", () => {
-  const operation = ((openApiSpec as any).paths?.["/api/v1/platform-admin/test-infrastructure/paystack/resolve-test-account"]?.post);
-  assert.ok(operation);
-  assert.equal(operation.requestBody.content["application/json"].schema.maxProperties, 0);
-  assert.match(operation.description, /only one fixed account-resolution request/);
-});
-
 test("HRIS appraisal mutations publish their complete frontend contract", () => {
   const paths = (openApiSpec as any).paths;
   const bodyOperations = [

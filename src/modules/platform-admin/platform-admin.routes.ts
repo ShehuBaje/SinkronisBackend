@@ -33,7 +33,7 @@ import {
   ,listPlatformSupportTicketsController, getPlatformSupportTicketController, createPlatformSupportTicketController, assignPlatformSupportTicketController, updatePlatformSupportResolutionNotesController, updatePlatformSupportTicketStatusController, resolvePlatformSupportTicketController
   ,getPlatformSettingsController, getPlatformConfigurationController, updatePlatformConfigurationController, getPlatformPasswordPolicyController, updatePlatformPasswordPolicyController, getPlatformFeatureFlagsController, updatePlatformFeatureFlagController, getPlatformEmailTemplatesController, getPlatformEmailTemplateController, updatePlatformEmailTemplateController, getPlatformMaintenanceModeController, updatePlatformMaintenanceModeController
   ,listOrganizationDeletionRequestsController, getOrganizationDeletionRequestController, decideOrganizationDeletionRequestController, completeOrganizationDeletionRequestController
-  ,classifyTestTenantController, setTestTenantEntitlementController, creditTestTenantWalletController, resolveTemporaryPaystackTestAccountController
+  ,classifyTestTenantController, setTestTenantEntitlementController, creditTestTenantWalletController
 } from "./platform-admin.controller";
 import {
   createPlatformTenantSchema,
@@ -60,7 +60,7 @@ import {
   analyticsTenantParamsSchema, platformAnalyticsQuerySchema,
   assignSupportTicketSchema, createSupportTicketSchema, supportTicketListQuerySchema, supportTicketParamsSchema, updateResolutionNotesSchema, updateSupportTicketStatusSchema,
   organizationDeletionListSchema, organizationDeletionParamsSchema, organizationDeletionDecisionSchema, organizationDeletionCompletionSchema
-  ,testTenantClassificationSchema, testTenantEntitlementSchema, testTenantCreditSchema, temporaryPaystackTestResolutionSchema
+  ,testTenantClassificationSchema, testTenantEntitlementSchema, testTenantCreditSchema
 } from "./platform-admin.validation";
 
 export const platformAdminRouter = Router();
@@ -105,7 +105,6 @@ platformAdminRouter.patch("/modules/tenants/:tenantId/:module/disable", authoriz
 platformAdminRouter.patch("/test-infrastructure/tenants/:tenantId/classification", authorize("platform:tenants:modules:manage"), validate({ params: platformTenantParamsSchema, body: testTenantClassificationSchema }), asyncHandler(classifyTestTenantController));
 platformAdminRouter.put("/test-infrastructure/tenants/:tenantId/entitlements/:module", authorize("platform:tenants:modules:manage"), validate({ params: platformModuleActionParamsSchema, body: testTenantEntitlementSchema }), asyncHandler(setTestTenantEntitlementController));
 platformAdminRouter.post("/test-infrastructure/tenants/:tenantId/wallet-credits", authorize("platform:tenants:billing:manage"), validate({ params: platformTenantParamsSchema, body: testTenantCreditSchema }), asyncHandler(creditTestTenantWalletController));
-platformAdminRouter.post("/test-infrastructure/paystack/resolve-test-account", authorize("platform:tenants:modules:manage"), validate({ body: temporaryPaystackTestResolutionSchema }), asyncHandler(resolveTemporaryPaystackTestAccountController));
 const analyticsCheckInLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false });
 platformAdminRouter.get("/analytics", authorize("platform:analytics:read"), validate({ query: platformAnalyticsQuerySchema }), asyncHandler(getPlatformAnalyticsController));
 platformAdminRouter.post("/analytics/at-risk/:tenantId/check-in", authorize("platform:analytics:check-in"), analyticsCheckInLimit, validate({ params: analyticsTenantParamsSchema }), asyncHandler(sendAtRiskTenantCheckInController));

@@ -93,7 +93,6 @@ export const testTenantCreditSchema = z.object({
   reference: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._-]+$/),
   reason: z.string().trim().min(10).max(1000)
 }).strict();
-export const temporaryPaystackTestResolutionSchema = z.object({}).strict();
 export const platformEmailTemplateParamsSchema = z.object({ key: z.enum(platformEmailTemplateKeys) }).strict();
 
 const containsDangerousHtml = (value: string) =>
