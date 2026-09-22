@@ -27,11 +27,13 @@ test("financial state transitions use database claims and serializable payment r
 test("financial settlements have durable identities, reservations and a default-off provider gate", () => {
   const schema = source("../prisma/schema.prisma");
   const settlement = source("./core/financial-settlement.ts");
+  const walletIntegrity = source("./core/wallet-integrity.ts");
   const provider = source("./core/settlement-provider.ts");
   const env = source("./config/env.ts");
   assert.match(schema, /model FinancialSettlement[\s\S]*@@unique\(\[organizationId, sourceType, sourceId\]/);
   assert.match(schema, /reservedBalance/);
-  assert.match(settlement, /balance - reservedBalance >=/);
+  assert.match(walletIntegrity, /balance - reservedBalance >=/);
+  assert.match(settlement, /reserveWalletBalance/);
   assert.match(settlement, /status: "SUCCEEDED"/);
   assert.match(provider, /PROVIDER_SETTLEMENT_DISABLED/);
   assert.match(env, /PAYSTACK_TRANSFERS_ENABLED[\s\S]*default\("false"\)/);

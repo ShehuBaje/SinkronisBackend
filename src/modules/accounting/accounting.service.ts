@@ -28,6 +28,7 @@ import {
   verifyPaystackWebhookSignature,
 } from "../../core/paystack";
 import { processSubscriptionPaystackWebhook } from "../admin/admin.service";
+import { assertFinancialCurrency } from "../../core/wallet-integrity";
 import type {
   AccountingListQuery,
   AgentBulkInviteInput,
@@ -2797,6 +2798,7 @@ const finalizeVerifiedPaystackFunding = async (attemptId: string, verification: 
     if (claimed.count !== 1) throw conflict("Wallet funding is already being processed");
     const wallet = await db.walletAccount.findFirst({ where: { id: attempt.walletAccountId, organizationId: attempt.organizationId } });
     if (!wallet) throw notFound("Wallet not found");
+    assertFinancialCurrency(attempt.currency, wallet.currency);
     const updatedWallet = await db.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: attempt.amount } } });
     const transaction = await db.walletTransaction.create({ data: { organizationId: attempt.organizationId, walletAccountId: wallet.id, type: "WALLET_FUNDING", direction: "CREDIT", amount: attempt.amount, balanceBefore: wallet.balance, balanceAfter: updatedWallet.balance, reference: reference("WLT"), transferReference: attempt.reference, description: "Paystack wallet funding", sourceType: "PAYSTACK_FUNDING", sourceId: attempt.id, createdById: attempt.createdById } });
     const completed = await db.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "COMPLETED", verifiedAt: verification.paid_at ? new Date(verification.paid_at) : new Date(), providerReference: verification.reference, failureReason: null } });

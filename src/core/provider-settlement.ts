@@ -7,6 +7,7 @@ import { PaystackProviderError, paystackMinorUnits } from "./paystack";
 import { PaystackTransferProvider } from "./paystack-transfer-provider";
 import { assertProviderTransfersEnabled, type ProviderTransferResult, type SettlementProvider } from "./settlement-provider";
 import { releaseSettlementReservation, reverseSucceededSettlement } from "./financial-settlement";
+import { consumeWalletReservation, financialWallet, reserveWalletBalance } from "./wallet-integrity";
 
 const txOptions = { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 } as const;
 const activeStatuses = ["RESERVED", "PROVIDER_PROCESSING", "UNKNOWN"] as const;
@@ -34,8 +35,7 @@ export const reserveAndClaimProviderSettlement = async (organizationId: string, 
   if (settlement.status === "PREPARED") {
     const preparedClaim = await tx.financialSettlement.updateMany({ where: { id: settlement.id, organizationId, status: "PREPARED" }, data: { status: "RESERVED", reservedAt: new Date(), providerTransferReference: settlement.internalReference } });
     if (preparedClaim.count !== 1) return { settlement, shouldInitiate: false };
-    const reserved = await tx.$executeRaw`UPDATE WalletAccount SET reservedBalance = reservedBalance + ${settlement.amount} WHERE id = ${settlement.walletAccountId} AND organizationId = ${organizationId} AND balance - reservedBalance >= ${settlement.amount}`;
-    if (reserved !== 1) throw conflict("Insufficient spendable wallet balance");
+    await reserveWalletBalance(tx, { organizationId, walletAccountId: settlement.walletAccountId, amount: settlement.amount, currency: settlement.currency });
     settlement = await tx.financialSettlement.findUniqueOrThrow({ where: { id: settlement.id } });
   }
   if (settlement.status !== "RESERVED" || settlement.initiationClaimedAt) return { settlement, shouldInitiate: false };
@@ -87,11 +87,9 @@ export const finalizeProviderSettlementSuccess = async (settlementId: string, re
   if (settlement.status === "SUCCEEDED") return settlement;
   if (!activeStatuses.includes(settlement.status as typeof activeStatuses[number]) || !settlement.reservedAt || settlement.reservationReleasedAt) throw conflict("Settlement is not eligible for provider success");
   assertResult(settlement, result);
-  const wallet = await tx.walletAccount.findFirst({ where: { id: settlement.walletAccountId, organizationId: settlement.organizationId } });
-  if (!wallet) throw notFound("Wallet not found");
-  const debited = await tx.$executeRaw`UPDATE WalletAccount SET balance = balance - ${settlement.amount}, reservedBalance = reservedBalance - ${settlement.amount} WHERE id = ${wallet.id} AND organizationId = ${settlement.organizationId} AND balance >= ${settlement.amount} AND reservedBalance >= ${settlement.amount}`;
-  if (debited !== 1) throw conflict("Wallet reservation could not be finalized");
-  await tx.walletTransaction.create({ data: { organizationId: settlement.organizationId, walletAccountId: wallet.id, type: `PROVIDER_${settlement.sourceType}`, direction: "DEBIT", amount: settlement.amount, balanceBefore: wallet.balance, balanceAfter: wallet.balance.sub(settlement.amount), reference: settlement.internalReference, transferReference: settlement.providerTransferReference, description: `Paystack settlement ${settlement.internalReference}`, sourceType: settlement.sourceType, sourceId: settlement.sourceId, createdById: settlement.createdById } });
+  await financialWallet(tx, settlement.organizationId, settlement.walletAccountId, settlement.currency);
+  const debit = await consumeWalletReservation(tx, { organizationId: settlement.organizationId, walletAccountId: settlement.walletAccountId, amount: settlement.amount, currency: settlement.currency });
+  await tx.walletTransaction.create({ data: { organizationId: settlement.organizationId, walletAccountId: settlement.walletAccountId, type: `PROVIDER_${settlement.sourceType}`, direction: "DEBIT", amount: settlement.amount, balanceBefore: debit.balanceBefore, balanceAfter: debit.balanceAfter, reference: settlement.internalReference, transferReference: settlement.providerTransferReference, description: `Paystack settlement ${settlement.internalReference}`, sourceType: settlement.sourceType, sourceId: settlement.sourceId, createdById: settlement.createdById } });
   if (settlement.sourceType === "ACCOUNTING_PAYMENT_REQUEST") {
     const businessClaim = await tx.paymentRequest.updateMany({ where: { id: settlement.sourceId, organizationId: settlement.organizationId, status: "APPROVED" }, data: { status: "PAID", disbursementReference: settlement.internalReference, disbursedAt: new Date() } });
     if (businessClaim.count !== 1) throw conflict("Accounting obligation is not eligible for settlement finalization");

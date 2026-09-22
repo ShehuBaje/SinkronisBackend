@@ -4,14 +4,14 @@ import { after, before, test } from 'node:test';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../core/prisma.js';
 import { completeManualSettlement, prepareProviderSettlement, releaseSettlementReservation, reverseSucceededSettlement } from '../core/financial-settlement.js';
-import { applyProviderTransferResult, claimProviderSettlementReconciliation, finalizeProviderSettlementOtp, reserveAndClaimProviderSettlement, validatePaystackTransferApproval, verifyAndReconcileProviderSettlement } from '../core/provider-settlement.js';
+import { applyProviderTransferResult, claimProviderSettlementReconciliation, finalizeProviderSettlementOtp, finalizeProviderSettlementSuccess, reserveAndClaimProviderSettlement, validatePaystackTransferApproval, verifyAndReconcileProviderSettlement } from '../core/provider-settlement.js';
 import { claimPaystackTransferWebhook, retryPendingPaystackTransferWebhooks } from '../core/paystack-transfer-webhook.js';
 import { PaystackProviderError } from '../core/paystack.js';
 import { runFinancialRecovery } from '../core/financial-recovery.js';
 import { assertProviderTransfersEnabled } from '../core/settlement-provider.js';
 import type { SettlementProvider } from '../core/settlement-provider.js';
 import { financialSubscriptionTestHooks } from '../modules/admin/admin.service.js';
-import { settlePayrollRun } from '../modules/payroll/payroll.service.js';
+import { payPayrollWalletObligation, settlePayrollRun } from '../modules/payroll/payroll.service.js';
 import { disbursePaymentRequest, processPaystackWebhook } from '../modules/accounting/accounting.service.js';
 import { assertSafeTestDatabase } from '../test-infrastructure/test-database.js';
 import { authorize } from '../middleware/rbac.middleware.js';
@@ -97,6 +97,47 @@ financialTest('wallet reservation race never overspends 100k with two concurrent
     assert.equal(await prisma.financialSettlement.count({ where: { walletAccountId: fx.wallet.id, status: 'SUCCEEDED' } }), 1);
     assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, direction: 'DEBIT' } }), 1);
   }
+});
+
+financialTest('Payroll unreserved debit cannot consume Accounting reservation and reservation owner still finalizes', async () => {
+  const fx = await fixture(100);
+  const prepared = await prepareProviderSettlement(source(fx, uid('reserved-owner'), 80), uid('reserved-owner-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  assert.equal(claimed.shouldInitiate, true);
+
+  const tooLarge = await prisma.payrollRun.create({ data: { organizationId: fx.organization.id, name: uid('payroll-50'), periodStart: new Date('2026-09-01'), periodEnd: new Date('2026-09-30'), status: 'APPROVED', totalNetPay: money(50) } });
+  await assert.rejects(() => payPayrollWalletObligation(fx.organization.id, `PAYROLL_RUN:${tooLarge.id}`, fx.authUser), /spendable/i);
+
+  const exactSpendable = await prisma.payrollRun.create({ data: { organizationId: fx.organization.id, name: uid('payroll-20'), periodStart: new Date('2026-10-01'), periodEnd: new Date('2026-10-31'), status: 'APPROVED', totalNetPay: money(20) } });
+  await payPayrollWalletObligation(fx.organization.id, `PAYROLL_RUN:${exactSpendable.id}`, fx.authUser);
+  const pending = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(pending.balance.toString(), '80');
+  assert.equal(pending.reservedBalance.toString(), '80');
+
+  await finalizeProviderSettlementSuccess(claimed.settlement.id, { reference: claimed.settlement.providerTransferReference!, amountMinor: 8_000, currency: 'NGN', providerStatus: 'success', state: 'SUCCESS' });
+  await finalizeProviderSettlementSuccess(claimed.settlement.id, { reference: claimed.settlement.providerTransferReference!, amountMinor: 8_000, currency: 'NGN', providerStatus: 'success', state: 'SUCCESS' });
+  const final = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(final.balance.toString(), '0');
+  assert.equal(final.reservedBalance.toString(), '0');
+  assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, direction: 'DEBIT' } }), 2);
+});
+
+financialTest('concurrent Payroll unreserved debits cannot overspend spendable balance', async () => {
+  const fx = await fixture(100);
+  const runs = await Promise.all([1, 2].map((index) => prisma.payrollRun.create({ data: { organizationId: fx.organization.id, name: uid(`payroll-race-${index}`), periodStart: new Date(`2026-0${index}-01`), periodEnd: new Date(`2026-0${index}-28`), status: 'APPROVED', totalNetPay: money(60) } })));
+  const results = await Promise.allSettled(runs.map((run) => payPayrollWalletObligation(fx.organization.id, `PAYROLL_RUN:${run.id}`, fx.authUser)));
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(wallet.balance.toString(), '40');
+  assert.equal(wallet.reservedBalance.toString(), '0');
+});
+
+financialTest('currency mismatch is rejected before settlement creation or provider access', async () => {
+  const fx = await fixture(100);
+  await prisma.walletAccount.update({ where: { id: fx.wallet.id }, data: { currency: 'USD' } });
+  await assert.rejects(() => prepareProviderSettlement(source(fx, uid('currency-mismatch'), 10), uid('currency-idem')), /currency does not match/i);
+  assert.equal(await prisma.financialSettlement.count({ where: { walletAccountId: fx.wallet.id } }), 0);
+  assert.equal(await prisma.providerTransferRecipient.count({ where: { organizationId: fx.organization.id } }), 0);
 });
 
 financialTest('high contention permits at most ten 10k debits from a 100k wallet and reconciles', async () => {
