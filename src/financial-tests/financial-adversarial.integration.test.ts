@@ -4,8 +4,10 @@ import { after, before, test } from 'node:test';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../core/prisma.js';
 import { completeManualSettlement, prepareProviderSettlement, releaseSettlementReservation, reverseSucceededSettlement } from '../core/financial-settlement.js';
-import { applyProviderTransferResult, finalizeProviderSettlementOtp, reserveAndClaimProviderSettlement, validatePaystackTransferApproval } from '../core/provider-settlement.js';
-import { retryPendingPaystackTransferWebhooks } from '../core/paystack-transfer-webhook.js';
+import { applyProviderTransferResult, claimProviderSettlementReconciliation, finalizeProviderSettlementOtp, reserveAndClaimProviderSettlement, validatePaystackTransferApproval, verifyAndReconcileProviderSettlement } from '../core/provider-settlement.js';
+import { claimPaystackTransferWebhook, retryPendingPaystackTransferWebhooks } from '../core/paystack-transfer-webhook.js';
+import { PaystackProviderError } from '../core/paystack.js';
+import { runFinancialRecovery } from '../core/financial-recovery.js';
 import { assertProviderTransfersEnabled } from '../core/settlement-provider.js';
 import type { SettlementProvider } from '../core/settlement-provider.js';
 import { financialSubscriptionTestHooks } from '../modules/admin/admin.service.js';
@@ -13,6 +15,10 @@ import { settlePayrollRun } from '../modules/payroll/payroll.service.js';
 import { disbursePaymentRequest, processPaystackWebhook } from '../modules/accounting/accounting.service.js';
 import { assertSafeTestDatabase } from '../test-infrastructure/test-database.js';
 import { authorize } from '../middleware/rbac.middleware.js';
+import express from 'express';
+import { internalRouter } from '../modules/internal/internal.routes.js';
+import { errorMiddleware } from '../middleware/error.middleware.js';
+import { env } from '../config/env.js';
 
 const enabled = Boolean(process.env.TEST_DATABASE_GUARD);
 if (enabled) {
@@ -28,6 +34,7 @@ const uid = (label: string) => `${PREFIX}${label}-${Date.now()}-${sequence++}`;
 const money = (value: number | string) => new Prisma.Decimal(value);
 
 const clean = async () => {
+  await prisma.financialReconciliationRun.deleteMany();
   await prisma.providerWebhookEvent.deleteMany();
   const organizations = await prisma.organization.findMany({ where: { slug: { startsWith: PREFIX } }, select: { id: true } });
   // Remote TiDB made stale-fixture cleanup exceed the suite timeout when old
@@ -367,6 +374,141 @@ financialTest('durably accepted transfer webhook resumes after a processing cras
   assert.equal(recovered.processed, 1);
   assert.equal((await prisma.financialSettlement.findUniqueOrThrow({ where: { id: settlement.id } })).status, 'SUCCEEDED');
   assert.equal(await prisma.walletTransaction.count({ where: { sourceId: settlement.sourceId, direction: 'DEBIT' } }), 1);
+});
+
+financialTest('settlement reconciliation lease is single-claim and an expired lease is reclaimable', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('lease'), 4_000), uid('lease-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const settlement = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_LEASE', providerInitiationAttemptedAt: new Date() } });
+  const now = new Date();
+  const [a, b] = await Promise.all([claimProviderSettlementReconciliation(settlement.id, now), claimProviderSettlementReconciliation(settlement.id, now)]);
+  assert.equal([a, b].filter(Boolean).length, 1);
+  assert.equal(await claimProviderSettlementReconciliation(settlement.id, new Date(now.getTime() + 1_000)), null);
+  const reclaimed = await claimProviderSettlementReconciliation(settlement.id, new Date(now.getTime() + 10 * 60_000));
+  assert.ok(reclaimed);
+});
+
+financialTest('ambiguous prior initiation plus provider 404 never initiates another transfer or changes reference', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('ambiguous-404'), 5_000), uid('ambiguous-404-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const originalReference = claimed.settlement.providerTransferReference!;
+  await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_404', providerInitiationAttemptedAt: new Date(), status: 'UNKNOWN' } });
+  let initiated = 0;
+  const provider = {
+    resolveAccount: async () => { throw new Error('not expected'); }, createRecipient: async () => { throw new Error('not expected'); },
+    initiateTransfer: async () => { initiated += 1; throw new Error('must not initiate'); },
+    verifyTransfer: async (reference: string) => { assert.equal(reference, originalReference); throw new PaystackProviderError('not found', 404, false); },
+    finalizeTransferOtp: async () => { throw new Error('not expected'); }, getBalance: async () => [],
+  } satisfies SettlementProvider;
+  await verifyAndReconcileProviderSettlement(claimed.settlement.id, provider);
+  const current = await prisma.financialSettlement.findUniqueOrThrow({ where: { id: claimed.settlement.id } });
+  assert.equal(initiated, 0);
+  assert.equal(current.status, 'UNKNOWN');
+  assert.equal(current.providerTransferReference, originalReference);
+});
+
+financialTest('definitely never-attempted provider 404 permits one initial call under the durable lease', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('initial-404'), 6_000), uid('initial-404-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const originalReference = claimed.settlement.providerTransferReference!;
+  await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_INITIAL', providerInitiationAttemptedAt: null } });
+  let initiated = 0;
+  const provider = {
+    resolveAccount: async () => { throw new Error('not expected'); }, createRecipient: async () => { throw new Error('not expected'); },
+    initiateTransfer: async (input: { reference: string; recipientReference: string; amountMinor: number; currency: string; reason: string }) => { initiated += 1; assert.equal(input.reference, originalReference); return { reference: originalReference, amountMinor: 600_000, currency: 'NGN', providerStatus: 'pending', state: 'NON_CONCLUSIVE' as const, recipientReference: 'RCP_INITIAL' }; },
+    verifyTransfer: async () => { throw new PaystackProviderError('not found', 404, false); },
+    finalizeTransferOtp: async () => { throw new Error('not expected'); }, getBalance: async () => [],
+  } satisfies SettlementProvider;
+  const results = await Promise.allSettled([
+    verifyAndReconcileProviderSettlement(claimed.settlement.id, provider, undefined, () => undefined),
+    verifyAndReconcileProviderSettlement(claimed.settlement.id, provider, undefined, () => undefined),
+  ]);
+  assert.equal(initiated, 1);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  const current = await prisma.financialSettlement.findUniqueOrThrow({ where: { id: claimed.settlement.id } });
+  assert.ok(current.providerInitiationAttemptedAt);
+  assert.equal(current.providerTransferReference, originalReference);
+});
+
+financialTest('stale webhook PROCESSING lease is reclaimed but an active lease is not stolen', async () => {
+  const stale = await prisma.providerWebhookEvent.create({ data: { provider: 'PAYSTACK', eventFingerprint: uid('stale-hook'), eventType: 'transfer.success', providerReference: uid('hook-ref'), payload: {}, status: 'PROCESSING', processingClaimToken: uid('dead-worker'), processingClaimedAt: new Date(Date.now() - 300_000), processingLeaseExpiresAt: new Date(Date.now() - 60_000) } });
+  const now = new Date();
+  const first = await claimPaystackTransferWebhook(stale.id, now);
+  assert.ok(first);
+  assert.equal(await claimPaystackTransferWebhook(stale.id, now), null);
+  const state = await prisma.providerWebhookEvent.findUniqueOrThrow({ where: { id: stale.id } });
+  assert.equal(state.status, 'PROCESSING');
+  assert.equal(state.attempts, 1);
+});
+
+financialTest('out-of-order reversal is deferred without consuming the failure budget', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('reversal-order'), 3_000), uid('reversal-order-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const settlement = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_ORDER', providerInitiationAttemptedAt: new Date() } });
+  const event = await prisma.providerWebhookEvent.create({ data: { provider: 'PAYSTACK', eventFingerprint: uid('order-hook'), eventType: 'transfer.reversed', providerReference: settlement.providerTransferReference, payload: { reference: settlement.providerTransferReference!, amount: 300_000, currency: 'NGN', status: 'reversed', transferCode: 'TRF_ORDER', recipientReference: 'RCP_ORDER' }, status: 'RECEIVED' } });
+  const recovered = await retryPendingPaystackTransferWebhooks();
+  assert.equal(recovered.claimed, 1);
+  const deferred = await prisma.providerWebhookEvent.findUniqueOrThrow({ where: { id: event.id } });
+  assert.equal(deferred.status, 'FAILED');
+  assert.equal(deferred.attempts, 0);
+  assert.equal(deferred.deferredAttempts, 1);
+  assert.ok(deferred.nextAttemptAt);
+});
+
+financialTest('webhook retry exhaustion is retained as durable dead-letter evidence', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('dead-letter'), 2_000), uid('dead-letter-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const settlement = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_DEAD', providerInitiationAttemptedAt: new Date() } });
+  const event = await prisma.providerWebhookEvent.create({ data: { provider: 'PAYSTACK', eventFingerprint: uid('dead-hook'), eventType: 'transfer.success', providerReference: settlement.providerTransferReference, payload: { reference: settlement.providerTransferReference!, amount: 999, currency: 'NGN', status: 'success', transferCode: 'TRF_DEAD', recipientReference: 'RCP_DEAD' }, status: 'FAILED', attempts: 4, nextAttemptAt: new Date(0) } });
+  const recovered = await retryPendingPaystackTransferWebhooks();
+  assert.equal(recovered.errors, 1);
+  const dead = await prisma.providerWebhookEvent.findUniqueOrThrow({ where: { id: event.id } });
+  assert.equal(dead.status, 'DEAD_LETTER');
+  assert.equal(dead.attempts, 5);
+  assert.ok(dead.deadLetteredAt);
+});
+
+financialTest('bounded recovery records durable completion evidence without Redis or provider calls for an empty batch', async () => {
+  await prisma.financialSettlement.updateMany({ where: { status: { in: ['PROVIDER_PROCESSING', 'UNKNOWN'] } }, data: { providerProcessingAt: new Date() } });
+  let providerCalls = 0;
+  const provider = {
+    resolveAccount: async () => { providerCalls += 1; throw new Error('not expected'); }, createRecipient: async () => { providerCalls += 1; throw new Error('not expected'); }, initiateTransfer: async () => { providerCalls += 1; throw new Error('not expected'); }, verifyTransfer: async () => { providerCalls += 1; throw new Error('not expected'); }, finalizeTransferOtp: async () => { providerCalls += 1; throw new Error('not expected'); }, getBalance: async () => { providerCalls += 1; return []; },
+  } satisfies SettlementProvider;
+  const run = await runFinancialRecovery({ trigger: 'TEST', provider });
+  assert.equal(run.status, 'COMPLETED');
+  assert.ok(run.completedAt);
+  assert.equal(providerCalls, 0);
+});
+
+financialTest('financial recovery Cron fails closed without its server secret and accepts the configured bearer only', async () => {
+  await prisma.financialSettlement.updateMany({ where: { status: { in: ['PROVIDER_PROCESSING', 'UNKNOWN'] } }, data: { providerProcessingAt: new Date() } });
+  const previous = env.CRON_SECRET;
+  env.CRON_SECRET = uid('cron-secret');
+  const cronApp = express();
+  cronApp.use('/api/v1/internal', internalRouter);
+  cronApp.use(errorMiddleware);
+  const server = cronApp.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const url = `http://127.0.0.1:${address.port}/api/v1/internal/cron/financial-recovery?settlementId=caller-controlled`;
+  try {
+    assert.equal((await fetch(url)).status, 401);
+    assert.equal((await fetch(url, { headers: { authorization: 'Bearer invalid' } })).status, 401);
+    const valid = await fetch(url, { headers: { authorization: `Bearer ${env.CRON_SECRET}` } });
+    assert.equal(valid.status, 200);
+    const payload = await valid.json() as { data?: { status?: string; settlements?: { scanned?: number } } };
+    assert.equal(payload.data?.status, 'COMPLETED');
+    assert.equal(payload.data?.settlements?.scanned, 0);
+  } finally {
+    env.CRON_SECRET = previous;
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 financialTest('transfer failure releases once and reversal compensates once under duplicate delivery', async () => {

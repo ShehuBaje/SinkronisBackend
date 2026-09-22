@@ -2399,7 +2399,13 @@ model FinancialSettlement {
   providerTransferCode       String?                    @db.VarChar(191)
   providerStatus             String?                    @db.VarChar(32)
   initiationClaimedAt        DateTime?
+  providerInitiationAttemptedAt DateTime?
   lastVerifiedAt             DateTime?
+  reconciliationClaimToken   String?                    @db.VarChar(64)
+  reconciliationClaimedAt    DateTime?
+  reconciliationLeaseExpiresAt DateTime?
+  reconciliationAttempts     Int                        @default(0)
+  lastReconciliationError    String?                    @db.Text
   externalReference          String?                    @db.VarChar(191)
   evidence                   Json?
   failureReason              String?                    @db.Text
@@ -2426,6 +2432,7 @@ model FinancialSettlement {
   @@index([organizationId, status, createdAt], map: "FinancialSettlement_org_status_created_idx")
   @@index([walletAccountId, status], map: "FinancialSettlement_wallet_status_idx")
   @@index([providerRecipientId], map: "FinancialSettlement_provider_recipient_idx")
+  @@index([provider, status, providerProcessingAt, reconciliationLeaseExpiresAt], map: "FinancialSettlement_reconciliation_idx")
   @@map("FinancialSettlement")
 }
 
@@ -2463,7 +2470,13 @@ model ProviderWebhookEvent {
   payload           Json
   status            String   @default("RECEIVED") @db.VarChar(32)
   attempts          Int      @default(0)
+  deferredAttempts  Int      @default(0)
   failureReason     String?  @db.Text
+  processingClaimToken String? @db.VarChar(64)
+  processingClaimedAt DateTime?
+  processingLeaseExpiresAt DateTime?
+  nextAttemptAt     DateTime?
+  deadLetteredAt    DateTime?
   receivedAt        DateTime @default(now())
   processedAt       DateTime?
   updatedAt         DateTime @updatedAt
@@ -2471,7 +2484,34 @@ model ProviderWebhookEvent {
   @@unique([provider, eventFingerprint], map: "ProviderWebhookEvent_provider_fingerprint_key")
   @@index([provider, status, receivedAt], map: "ProviderWebhookEvent_provider_status_idx")
   @@index([provider, providerReference], map: "ProviderWebhookEvent_provider_reference_idx")
+  @@index([provider, status, nextAttemptAt, processingLeaseExpiresAt], map: "ProviderWebhookEvent_recovery_idx")
   @@map("ProviderWebhookEvent")
+}
+
+model FinancialReconciliationRun {
+  id                         String   @id @default(cuid())
+  trigger                    String   @db.VarChar(32)
+  status                     String   @default("RUNNING") @db.VarChar(24)
+  startedAt                  DateTime @default(now())
+  heartbeatAt                DateTime @default(now())
+  completedAt                DateTime?
+  settlementsScanned         Int      @default(0)
+  settlementsClaimed         Int      @default(0)
+  settlementsReconciled      Int      @default(0)
+  settlementsUnresolved      Int      @default(0)
+  webhookEventsScanned       Int      @default(0)
+  webhookEventsClaimed       Int      @default(0)
+  webhookEventsProcessed     Int      @default(0)
+  webhookEventsDeadLettered  Int      @default(0)
+  errors                     Int      @default(0)
+  applicationVersion         String?  @db.VarChar(191)
+  failureReason              String?  @db.Text
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  @@index([status, startedAt], map: "FinancialReconciliationRun_status_started_idx")
+  @@index([completedAt], map: "FinancialReconciliationRun_completed_idx")
+  @@map("FinancialReconciliationRun")
 }
 
 model WalletTransaction {

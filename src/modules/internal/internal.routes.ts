@@ -6,6 +6,7 @@ import { unauthorized } from "../../core/http-error";
 import { processMyPlanLifecycle, processMyPlanRenewalNotifications } from "../admin/admin.service";
 import { snapshotTenantModuleUsage } from "../telemetry/telemetry.service";
 import { expireOrganizationExports, processPendingOrganizationExports } from "../admin/organization-privacy.service";
+import { runFinancialRecovery } from "../../core/financial-recovery";
 
 export const internalRouter = Router();
 
@@ -34,4 +35,24 @@ internalRouter.post(
       data: { lifecycle, notifications, moduleUsageSnapshot, organizationExports, expiredOrganizationExports, processedAt: new Date().toISOString() }
     });
   })
+);
+
+internalRouter.get(
+  "/cron/financial-recovery",
+  asyncHandler(async (_req, res) => {
+    const run = await runFinancialRecovery({ trigger: "VERCEL_CRON" });
+    res.json({
+      success: true,
+      message: "Bounded financial recovery completed",
+      data: {
+        runId: run.id,
+        status: run.status,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+        settlements: { scanned: run.settlementsScanned, claimed: run.settlementsClaimed, reconciled: run.settlementsReconciled, unresolved: run.settlementsUnresolved },
+        webhooks: { scanned: run.webhookEventsScanned, claimed: run.webhookEventsClaimed, processed: run.webhookEventsProcessed, deadLettered: run.webhookEventsDeadLettered },
+        errors: run.errors,
+      },
+    });
+  }),
 );
