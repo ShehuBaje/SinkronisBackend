@@ -413,6 +413,7 @@ export const accountingWalletCreateSchema = z.object({
 }).strict();
 export const paystackFundingSchema = z.object({
   walletAccountId: z.string().trim().min(1), amount: positiveMoney,
+  idempotencyKey: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._:-]+$/).optional(),
 }).strict();
 export const paystackReferenceParamsSchema = z.object({
   reference: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._-]+$/),

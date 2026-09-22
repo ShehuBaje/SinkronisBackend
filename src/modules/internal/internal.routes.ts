@@ -21,9 +21,7 @@ internalRouter.use((req, _res, next) => {
   return next();
 });
 
-internalRouter.post(
-  "/cron/subscriptions",
-  asyncHandler(async (_req, res) => {
+const runSubscriptionMaintenance = asyncHandler(async (_req, res) => {
     const lifecycle = await processMyPlanLifecycle();
     const notifications = await processMyPlanRenewalNotifications(new Date(), ["EMAIL", "IN_APP"]);
     const moduleUsageSnapshot = await snapshotTenantModuleUsage();
@@ -34,8 +32,11 @@ internalRouter.post(
       message: "Subscription lifecycle and renewal notifications processed",
       data: { lifecycle, notifications, moduleUsageSnapshot, organizationExports, expiredOrganizationExports, processedAt: new Date().toISOString() }
     });
-  })
-);
+  });
+
+// Keep POST for existing operators while supporting Vercel Cron's GET invocation.
+internalRouter.get("/cron/subscriptions", runSubscriptionMaintenance);
+internalRouter.post("/cron/subscriptions", runSubscriptionMaintenance);
 
 internalRouter.get(
   "/cron/financial-recovery",
@@ -51,6 +52,9 @@ internalRouter.get(
         completedAt: run.completedAt,
         settlements: { scanned: run.settlementsScanned, claimed: run.settlementsClaimed, reconciled: run.settlementsReconciled, unresolved: run.settlementsUnresolved },
         webhooks: { scanned: run.webhookEventsScanned, claimed: run.webhookEventsClaimed, processed: run.webhookEventsProcessed, deadLettered: run.webhookEventsDeadLettered },
+        subscriptions: { scanned: run.subscriptionAttemptsScanned, claimed: run.subscriptionAttemptsClaimed, reconciled: run.subscriptionAttemptsReconciled, unresolved: run.subscriptionAttemptsUnresolved },
+        walletFunding: { scanned: run.walletFundingAttemptsScanned, claimed: run.walletFundingAttemptsClaimed, reconciled: run.walletFundingAttemptsReconciled, unresolved: run.walletFundingAttemptsUnresolved },
+        inboundWebhooks: { processed: run.inboundWebhookEventsProcessed, deadLettered: run.inboundWebhookEventsDeadLettered },
         errors: run.errors,
       },
     });

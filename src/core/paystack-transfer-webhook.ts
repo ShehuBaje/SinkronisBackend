@@ -11,22 +11,21 @@ const string = (value: unknown) => typeof value === "string" ? value : undefined
 const number = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
 const retryDelayMs = (attempt: number) => Math.min(15 * 60_000, 30_000 * (2 ** Math.max(0, attempt - 1)));
 
-export const claimPaystackTransferWebhook = async (inboxId: string, now = new Date(), claimToken = crypto.randomUUID()) => {
+export const claimPaystackTransferWebhook = async (inboxId: string, now = new Date(), claimToken: string = crypto.randomUUID()) => {
   const leaseExpiresAt = new Date(now.getTime() + env.FINANCIAL_WEBHOOK_PROCESSING_LEASE_MS);
-  const claimed = await prisma.providerWebhookEvent.updateMany({
-    where: {
-      id: inboxId,
-      provider: "PAYSTACK",
-      OR: [
-        { status: "RECEIVED", attempts: { lt: env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS } },
-        { status: "FAILED", attempts: { lt: env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
-        // A worker may die on its final configured attempt after the financial
-        // effect commits but before the inbox row is completed. Exactly-once
-        // settlement finalizers make this mandatory crash-recovery pass safe.
-        { status: "PROCESSING", processingLeaseExpiresAt: { lte: now } },
-      ],
-    },
-    data: {
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<Array<{ provider: string; status: string; attempts: number; nextAttemptAt: Date | null; processingLeaseExpiresAt: Date | null }>>`SELECT provider, status, attempts, nextAttemptAt, processingLeaseExpiresAt FROM ProviderWebhookEvent WHERE id = ${inboxId} FOR UPDATE`;
+    const row = rows[0];
+    const eligible = row?.provider === "PAYSTACK" && (
+      (row.status === "RECEIVED" && row.attempts < env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS)
+      || (row.status === "FAILED" && row.attempts < env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS && (!row.nextAttemptAt || row.nextAttemptAt <= now))
+      // A worker may die on its final configured attempt after the financial
+      // effect commits but before the inbox row is completed. Exactly-once
+      // finalizers make this mandatory crash-recovery pass safe.
+      || (row.status === "PROCESSING" && !!row.processingLeaseExpiresAt && row.processingLeaseExpiresAt <= now)
+    );
+    if (!eligible) return null;
+    await tx.providerWebhookEvent.update({ where: { id: inboxId }, data: {
       status: "PROCESSING",
       attempts: { increment: 1 },
       processingClaimToken: claimToken,
@@ -34,9 +33,9 @@ export const claimPaystackTransferWebhook = async (inboxId: string, now = new Da
       processingLeaseExpiresAt: leaseExpiresAt,
       failureReason: null,
       nextAttemptAt: null,
-    },
-  });
-  return claimed.count === 1 ? { claimToken, leaseExpiresAt } : null;
+    } });
+    return { claimToken, leaseExpiresAt };
+  }, { isolationLevel: "RepeatableRead", maxWait: 20_000, timeout: 20_000 });
 };
 
 export const acceptAndProcessPaystackTransferWebhook = async (rawBody: Buffer, parsed: TransferEvent) => {
@@ -106,6 +105,7 @@ export const retryPendingPaystackTransferWebhooks = async (limit = env.FINANCIAL
   const events = await prisma.providerWebhookEvent.findMany({
     where: {
       provider: "PAYSTACK",
+      eventType: { in: ["transfer.success", "transfer.failed", "transfer.reversed"] },
       OR: [
         { status: "RECEIVED", attempts: { lt: env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS } },
         { status: "FAILED", attempts: { lt: env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },

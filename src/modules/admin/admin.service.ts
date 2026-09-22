@@ -26,6 +26,7 @@ import {
 import { CompanyRegistryUnavailableError, companyNamesMatch, getCompanyRegistryProvider, normalizeRegistrationNumber, type CompanyVerificationResult } from "./company-registry.service";
 import { deriveSubscriptionStatus, isRenewalReminderDue } from "../billing/billing.rules";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
+import { claimSubscriptionPaymentRecovery, inboundRecoveryDelayMs, releaseSubscriptionPaymentRecovery } from "../../core/inbound-payment-recovery";
 import { supportedCurrencies, supportedDateFormats, supportedLanguages, type AdminAuditLogInput, type AuditLogRow, type BrandingSettingsResponse, type LocaleSettingsResponse, type NotificationChannelPreferences, type PlatformAnnouncementResponse, type QuickAction, type SystemAlertRow, type TenantNotificationChannelKey } from "./admin.interface";
 import {
   branchCreateSchema,
@@ -2156,6 +2157,7 @@ const initializeSubscriptionPayment = async (input: SubscriptionPaymentInput) =>
   }
 
   try {
+    await prisma.subscriptionPaymentAttempt.update({ where: { id: attempt.id }, data: { providerInitiationAttemptedAt: new Date() } });
     const provider = await initializePaystackTransaction({
       email: input.email,
       amount: paystackMinorUnits(attempt.amount),
@@ -2182,12 +2184,13 @@ const initializeSubscriptionPayment = async (input: SubscriptionPaymentInput) =>
     });
   } catch (error) {
     const providerError = error instanceof PaystackProviderError ? error : null;
+    const definitivelyRejected = providerError !== null && !providerError.ambiguous;
     attempt = await prisma.subscriptionPaymentAttempt.update({
       where: { id: attempt.id },
       data: {
-        status: providerError?.ambiguous ? "UNKNOWN" : "FAILED",
-        activeKey: providerError?.ambiguous ? activeKey : null,
-        failureReason: providerError?.message.slice(0, 500) ?? "Provider initialization failed",
+        status: definitivelyRejected ? "FAILED" : "UNKNOWN",
+        activeKey: definitivelyRejected ? null : activeKey,
+        failureReason: (error instanceof Error ? error.message : "Provider initialization outcome is unknown").slice(0, 500),
       },
     });
     if (providerError) {
@@ -2311,7 +2314,7 @@ const finalizeSubscriptionPayment = async (attemptId: string, verification: Pays
     const claimed = await tx.subscriptionPaymentAttempt.updateMany({
       where: {
         id: before.id,
-        status: { in: ["INITIALIZING", "INITIALIZED", "UNKNOWN", "VERIFIED"] },
+        status: { in: ["INITIALIZING", "INITIALIZED", "UNKNOWN"] },
       },
       data: {
         status: "VERIFIED",
@@ -2427,12 +2430,45 @@ const finalizeSubscriptionPayment = async (attemptId: string, verification: Pays
   return subscriptionPaymentDto(result);
 };
 
+type SubscriptionVerifier = (reference: string) => Promise<PaystackVerifyData>;
+
+export const reconcileStaleSubscriptionPayments = async (verifier: SubscriptionVerifier = verifyPaystackTransaction, limit = env.PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE, now = new Date()) => {
+  const staleBefore = new Date(now.getTime() - env.PAYSTACK_TRANSFER_STALE_MS);
+  const attempts = await prisma.subscriptionPaymentAttempt.findMany({
+    where: { provider: "PAYSTACK", status: { in: ["INITIALIZING", "INITIALIZED", "UNKNOWN"] }, updatedAt: { lte: staleBefore }, reconciliationDeadLetteredAt: null, OR: [{ nextReconciliationAt: null }, { nextReconciliationAt: { lte: now } }] },
+    orderBy: { updatedAt: "asc" }, take: Math.min(limit, env.PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE), select: { id: true },
+  });
+  let claimed = 0; let reconciled = 0; let unresolved = 0; let errors = 0;
+  for (const candidate of attempts) {
+    const lease = await claimSubscriptionPaymentRecovery(candidate.id, now);
+    if (!lease) continue;
+    claimed += 1;
+    try {
+      const attempt = await prisma.subscriptionPaymentAttempt.findFirstOrThrow({ where: { id: candidate.id, reconciliationClaimToken: lease.claimToken } });
+      const verification = await verifier(attempt.reference);
+      try { await finalizeSubscriptionPayment(attempt.id, verification); } catch (error) {
+        const state = await prisma.subscriptionPaymentAttempt.findUniqueOrThrow({ where: { id: attempt.id }, select: { status: true } });
+        if (state.status !== "FAILED") throw error;
+      }
+      await releaseSubscriptionPaymentRecovery(attempt.id, lease.claimToken);
+      reconciled += 1;
+    } catch (error) {
+      errors += 1; unresolved += 1;
+      const current = await prisma.subscriptionPaymentAttempt.findUnique({ where: { id: candidate.id }, select: { reconciliationAttempts: true, status: true } });
+      const exhausted = (current?.reconciliationAttempts ?? 0) >= env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS;
+      await releaseSubscriptionPaymentRecovery(candidate.id, lease.claimToken, { error: error instanceof Error ? error.message : "Subscription reconciliation failed", nextAttemptAt: exhausted ? undefined : new Date(now.getTime() + inboundRecoveryDelayMs(current?.reconciliationAttempts ?? 1)), deadLetteredAt: exhausted ? now : undefined });
+    }
+  }
+  return { inspected: attempts.length, claimed, reconciled, unresolved, errors };
+};
+
 export const financialSubscriptionTestHooks = {
   initializeSubscriptionPayment,
   finalizeSubscriptionPayment,
+  reconcileStaleSubscriptionPayments,
 };
 
-const verifyAndFinalizeSubscriptionPayment = async (attemptId: string) => {
+export const verifyAndFinalizeSubscriptionPayment = async (attemptId: string) => {
   const attempt = await prisma.subscriptionPaymentAttempt.findUnique({ where: { id: attemptId } });
   if (!attempt) throw notFound("Subscription payment attempt not found");
   if (attempt.status === "COMPLETED") return subscriptionPaymentDto(attempt);

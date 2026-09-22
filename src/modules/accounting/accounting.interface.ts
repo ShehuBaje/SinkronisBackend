@@ -199,6 +199,7 @@ export interface UiReminderSettingsInput {
 export interface PaystackFundingInput {
   walletAccountId: string;
   amount: MoneyInput;
+  idempotencyKey?: string;
 }
 export interface ExpenseListQuery extends PaginationQuery {
   search?: string;

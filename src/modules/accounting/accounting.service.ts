@@ -28,7 +28,9 @@ import {
   verifyPaystackWebhookSignature,
 } from "../../core/paystack";
 import { processSubscriptionPaystackWebhook } from "../admin/admin.service";
+import { claimPaystackTransferWebhook } from "../../core/paystack-transfer-webhook";
 import { assertFinancialCurrency } from "../../core/wallet-integrity";
+import { claimWalletFundingRecovery, inboundRecoveryDelayMs, releaseWalletFundingRecovery } from "../../core/inbound-payment-recovery";
 import type {
   AccountingListQuery,
   AgentBulkInviteInput,
@@ -2772,15 +2774,33 @@ export const initializePaystackWalletFunding = async (organizationId: string, in
   if (!wallet) throw notFound("Wallet not found");
   if (wallet.currency !== "NGN") throw conflict("Paystack wallet funding currently supports NGN wallets only");
   const fundingAmount = new Prisma.Decimal(input.amount);
+  if (input.idempotencyKey) {
+    const existing = await prisma.walletFundingAttempt.findUnique({ where: { organizationId_idempotencyKey: { organizationId, idempotencyKey: input.idempotencyKey } } });
+    if (existing) {
+      if (existing.walletAccountId !== wallet.id || !existing.amount.equals(fundingAmount) || existing.currency !== wallet.currency) throw conflict("Wallet funding idempotency key is already associated with another funding intent");
+      return { id: existing.id, provider: existing.provider, reference: existing.reference, amount: amount(existing.amount), currency: existing.currency, status: existing.status, authorizationUrl: existing.authorizationUrl, accessCode: existing.accessCode };
+    }
+  }
   const referenceValue = reference("PSK");
-  const attempt = await prisma.walletFundingAttempt.create({ data: { organizationId, walletAccountId: wallet.id, reference: referenceValue, amount: fundingAmount, currency: wallet.currency, createdById: user.id } });
+  let attempt;
   try {
+    attempt = await prisma.walletFundingAttempt.create({ data: { organizationId, walletAccountId: wallet.id, reference: referenceValue, idempotencyKey: input.idempotencyKey, amount: fundingAmount, currency: wallet.currency, status: "INITIALIZING", createdById: user.id } });
+  } catch (error) {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002" || !input.idempotencyKey) throw error;
+    const existing = await prisma.walletFundingAttempt.findUniqueOrThrow({ where: { organizationId_idempotencyKey: { organizationId, idempotencyKey: input.idempotencyKey } } });
+    if (existing.walletAccountId !== wallet.id || !existing.amount.equals(fundingAmount) || existing.currency !== wallet.currency) throw conflict("Wallet funding idempotency key is already associated with another funding intent");
+    return { id: existing.id, provider: existing.provider, reference: existing.reference, amount: amount(existing.amount), currency: existing.currency, status: existing.status, authorizationUrl: existing.authorizationUrl, accessCode: existing.accessCode };
+  }
+  try {
+    await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { providerInitiationAttemptedAt: new Date() } });
     const response = await initializePaystackTransaction({ email: user.email, amount: paystackMinorUnits(fundingAmount), currency: wallet.currency, reference: referenceValue, callbackUrl: env.PAYSTACK_CALLBACK_URL, metadata: { fundingAttemptId: attempt.id, organizationId, walletAccountId: wallet.id, paymentDomain: "WALLET_FUNDING" } });
-    const updated = await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { authorizationUrl: response.authorization_url, accessCode: response.access_code, providerReference: response.reference, providerPayload: response as unknown as Prisma.InputJsonValue } });
+    const updated = await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "INITIALIZED", authorizationUrl: response.authorization_url, accessCode: response.access_code, providerReference: response.reference, providerPayload: response as unknown as Prisma.InputJsonValue } });
     await audit(organizationId, user, "ACCOUNTING_WALLET_FUNDING_INITIALIZED", "WALLET_FUNDING", updated.id, `Initialized Paystack wallet funding ${updated.reference}`);
     return { id: updated.id, provider: updated.provider, reference: updated.reference, amount: amount(updated.amount), currency: updated.currency, status: updated.status, authorizationUrl: updated.authorizationUrl, accessCode: updated.accessCode };
   } catch (error) {
-    await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "FAILED", failureReason: error instanceof Error ? error.message.slice(0, 500) : "Initialization failed" } });
+    const providerError = error instanceof PaystackProviderError ? error : null;
+    const definitivelyRejected = providerError !== null && !providerError.ambiguous;
+    await prisma.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: definitivelyRejected ? "FAILED" : "UNKNOWN", failureReason: error instanceof Error ? error.message.slice(0, 500) : "Initialization outcome is unknown" } });
     walletPaystackError(error);
   }
 };
@@ -2793,8 +2813,9 @@ const finalizeVerifiedPaystackFunding = async (attemptId: string, verification: 
       const existing = await db.walletTransaction.findFirst({ where: { walletAccountId: attempt.walletAccountId, sourceType: "PAYSTACK_FUNDING", sourceId: attempt.id, type: "WALLET_FUNDING" } });
       return { attempt, transaction: existing, idempotentReplay: true };
     }
-    if (verification.status !== "success" || verification.reference !== attempt.reference || verification.amount !== paystackMinorUnits(attempt.amount) || verification.currency !== attempt.currency) throw conflict("Paystack payment verification does not match the funding request");
-    const claimed = await db.walletFundingAttempt.updateMany({ where: { id: attempt.id, status: { in: ["PENDING", "FAILED"] } }, data: { status: "PROCESSING", providerPayload: verification as unknown as Prisma.InputJsonValue } });
+    const metadata = verification.metadata ?? {};
+    if (verification.status !== "success" || verification.reference !== attempt.reference || verification.amount !== paystackMinorUnits(attempt.amount) || verification.currency.toUpperCase() !== attempt.currency.toUpperCase() || metadata.paymentDomain !== "WALLET_FUNDING" || metadata.fundingAttemptId !== attempt.id || metadata.organizationId !== attempt.organizationId || metadata.walletAccountId !== attempt.walletAccountId) throw conflict("Paystack payment verification does not match the funding request");
+    const claimed = await db.walletFundingAttempt.updateMany({ where: { id: attempt.id, status: { in: ["PENDING", "INITIALIZING", "INITIALIZED", "UNKNOWN"] } }, data: { status: "PROCESSING", providerPayload: verification as unknown as Prisma.InputJsonValue } });
     if (claimed.count !== 1) throw conflict("Wallet funding is already being processed");
     const wallet = await db.walletAccount.findFirst({ where: { id: attempt.walletAccountId, organizationId: attempt.organizationId } });
     if (!wallet) throw notFound("Wallet not found");
@@ -2803,7 +2824,7 @@ const finalizeVerifiedPaystackFunding = async (attemptId: string, verification: 
     const transaction = await db.walletTransaction.create({ data: { organizationId: attempt.organizationId, walletAccountId: wallet.id, type: "WALLET_FUNDING", direction: "CREDIT", amount: attempt.amount, balanceBefore: wallet.balance, balanceAfter: updatedWallet.balance, reference: reference("WLT"), transferReference: attempt.reference, description: "Paystack wallet funding", sourceType: "PAYSTACK_FUNDING", sourceId: attempt.id, createdById: attempt.createdById } });
     const completed = await db.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "COMPLETED", verifiedAt: verification.paid_at ? new Date(verification.paid_at) : new Date(), providerReference: verification.reference, failureReason: null } });
     return { attempt: completed, transaction, idempotentReplay: false };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
   if (!result.idempotentReplay) await createAuditLog({ organizationId: result.attempt.organizationId, actorUserId: result.attempt.createdById ?? undefined, action: "ACCOUNTING_WALLET_FUNDING_COMPLETED", resource: "WALLET_FUNDING", resourceId: result.attempt.id, summary: `Verified Paystack wallet funding ${result.attempt.reference}` });
   return { reference: result.attempt.reference, status: result.attempt.status, amount: amount(result.attempt.amount), currency: result.attempt.currency, transactionId: result.transaction?.id ?? null, idempotentReplay: result.idempotentReplay };
 };
@@ -2811,6 +2832,39 @@ const finalizeVerifiedPaystackFunding = async (attemptId: string, verification: 
 const verifyPaystackReference = async (referenceValue: string) => {
   return verifyPaystackTransaction(referenceValue);
 };
+
+type WalletFundingVerifier = (reference: string) => Promise<PaystackVerifyData>;
+
+export const reconcileStaleWalletFundingAttempts = async (verifier: WalletFundingVerifier = verifyPaystackReference, limit = env.PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE, now = new Date()) => {
+  const staleBefore = new Date(now.getTime() - env.PAYSTACK_TRANSFER_STALE_MS);
+  const attempts = await prisma.walletFundingAttempt.findMany({ where: { provider: "PAYSTACK", status: { in: ["PENDING", "INITIALIZING", "INITIALIZED", "UNKNOWN", "PROCESSING"] }, updatedAt: { lte: staleBefore }, reconciliationDeadLetteredAt: null, OR: [{ nextReconciliationAt: null }, { nextReconciliationAt: { lte: now } }] }, orderBy: { updatedAt: "asc" }, take: Math.min(limit, env.PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE), select: { id: true } });
+  let claimed = 0; let reconciled = 0; let unresolved = 0; let errors = 0;
+  for (const candidate of attempts) {
+    const lease = await claimWalletFundingRecovery(candidate.id, now);
+    if (!lease) continue;
+    claimed += 1;
+    try {
+      const attempt = await prisma.walletFundingAttempt.findFirstOrThrow({ where: { id: candidate.id, reconciliationClaimToken: lease.claimToken } });
+      const verification = await verifier(attempt.reference);
+      try { await finalizeVerifiedPaystackFunding(attempt.id, verification); } catch (error) {
+        const terminal = ["failed", "abandoned", "reversed"].includes(verification.status);
+        if (!terminal) throw error;
+        await prisma.walletFundingAttempt.updateMany({ where: { id: attempt.id, status: { not: "COMPLETED" } }, data: { status: "FAILED", failureReason: `Paystack transaction ${verification.status}` } });
+      }
+      await releaseWalletFundingRecovery(attempt.id, lease.claimToken);
+      reconciled += 1;
+    } catch (error) {
+      errors += 1; unresolved += 1;
+      const current = await prisma.walletFundingAttempt.findUnique({ where: { id: candidate.id }, select: { reconciliationAttempts: true } });
+      const exhausted = (current?.reconciliationAttempts ?? 0) >= env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS;
+      await prisma.walletFundingAttempt.updateMany({ where: { id: candidate.id, reconciliationClaimToken: lease.claimToken, status: { notIn: ["COMPLETED", "FAILED"] } }, data: { status: "UNKNOWN" } });
+      await releaseWalletFundingRecovery(candidate.id, lease.claimToken, { error: error instanceof Error ? error.message : "Wallet funding reconciliation failed", nextAttemptAt: exhausted ? undefined : new Date(now.getTime() + inboundRecoveryDelayMs(current?.reconciliationAttempts ?? 1)), deadLetteredAt: exhausted ? now : undefined });
+    }
+  }
+  return { inspected: attempts.length, claimed, reconciled, unresolved, errors };
+};
+
+export const financialWalletFundingTestHooks = { finalizeVerifiedPaystackFunding, reconcileStaleWalletFundingAttempts };
 
 export const verifyPaystackWalletFunding = async (organizationId: string, referenceValue: string) => {
   const attempt = await prisma.walletFundingAttempt.findFirst({ where: { reference: referenceValue, organizationId } });
@@ -2825,11 +2879,54 @@ export const processPaystackWebhook = async (rawBody: Buffer | undefined, signat
   const event = JSON.parse(rawBody!.toString("utf8")) as { event?: string; data?: { reference?: string } };
   if (event.event?.startsWith("transfer.")) return acceptAndProcessPaystackTransferWebhook(rawBody!, event);
   if (event.event !== "charge.success" || !event.data?.reference) return { received: true, processed: false };
-  const attempt = await prisma.walletFundingAttempt.findUnique({ where: { reference: event.data.reference } });
-  if (!attempt) return processSubscriptionPaystackWebhook(event.data.reference);
-  const verification = await verifyPaystackReference(attempt.reference);
-  const result = await finalizeVerifiedPaystackFunding(attempt.id, verification);
-  return { received: true, processed: true, ...result };
+  const referenceValue = event.data.reference;
+  const fingerprint = crypto.createHash("sha256").update(`PAYSTACK:charge.success:${referenceValue}`).digest("hex");
+  const inboxId = crypto.randomUUID();
+  const inserted = await prisma.$executeRaw`INSERT IGNORE INTO ProviderWebhookEvent (id, provider, eventFingerprint, eventType, providerReference, payload, status, attempts, deferredAttempts, receivedAt, updatedAt) VALUES (${inboxId}, 'PAYSTACK', ${fingerprint}, 'charge.success', ${referenceValue}, ${JSON.stringify({ reference: referenceValue })}, 'RECEIVED', 0, 0, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))`;
+  if (inserted !== 1) return { received: true, processed: false, duplicate: true };
+  return processStoredPaystackInboundWebhook(inboxId);
+};
+
+type InboundWebhookProcessors = {
+  verifyFunding?: WalletFundingVerifier;
+  processSubscription?: (reference: string) => Promise<{ received: boolean; processed: boolean }>;
+};
+
+export const processStoredPaystackInboundWebhook = async (inboxId: string, suppliedClaimToken?: string, processors: InboundWebhookProcessors = {}) => {
+  const initial = await prisma.providerWebhookEvent.findUniqueOrThrow({ where: { id: inboxId } });
+  if (initial.eventType !== "charge.success") return { received: true, processed: false };
+  const owned = suppliedClaimToken ? null : await claimPaystackTransferWebhook(inboxId);
+  const claimToken = suppliedClaimToken ?? owned?.claimToken;
+  if (!claimToken) return { received: true, processed: false, duplicate: true };
+  const inbox = await prisma.providerWebhookEvent.findFirst({ where: { id: inboxId, processingClaimToken: claimToken, processingLeaseExpiresAt: { gt: new Date() } } });
+  const referenceValue = inbox?.providerReference;
+  if (!inbox || !referenceValue) return { received: true, processed: false };
+  try {
+    const funding = await prisma.walletFundingAttempt.findUnique({ where: { reference: referenceValue } });
+    const processed = funding
+      ? await finalizeVerifiedPaystackFunding(funding.id, await (processors.verifyFunding ?? verifyPaystackReference)(referenceValue))
+      : await (processors.processSubscription ?? processSubscriptionPaystackWebhook)(referenceValue);
+    const didProcess = funding ? true : "processed" in processed && processed.processed;
+    await prisma.providerWebhookEvent.updateMany({ where: { id: inbox.id, processingClaimToken: claimToken }, data: { status: didProcess ? "PROCESSED" : "IGNORED", processedAt: new Date(), processingClaimToken: null, processingClaimedAt: null, processingLeaseExpiresAt: null, failureReason: null, nextAttemptAt: null } });
+    return { received: true, processed: didProcess, ...(funding ? processed : {}) };
+  } catch (error) {
+    const exhausted = initial.attempts + 1 >= env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS;
+    await prisma.providerWebhookEvent.updateMany({ where: { id: inbox.id, processingClaimToken: claimToken }, data: { status: exhausted ? "DEAD_LETTER" : "FAILED", failureReason: (error instanceof Error ? error.message : "Inbound webhook processing failed").slice(0, 2000), nextAttemptAt: exhausted ? null : new Date(Date.now() + inboundRecoveryDelayMs(initial.attempts + 1)), deadLetteredAt: exhausted ? new Date() : null, processingClaimToken: null, processingClaimedAt: null, processingLeaseExpiresAt: null } });
+    throw error;
+  }
+};
+
+export const retryPendingPaystackInboundWebhooks = async (limit = env.FINANCIAL_WEBHOOK_RECOVERY_BATCH_SIZE, now = new Date(), processors: InboundWebhookProcessors = {}) => {
+  const events = await prisma.providerWebhookEvent.findMany({ where: { provider: "PAYSTACK", eventType: "charge.success", OR: [{ status: "RECEIVED", attempts: { lt: env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS } }, { status: "FAILED", attempts: { lt: env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] }, { status: "PROCESSING", processingLeaseExpiresAt: { lte: now } }] }, orderBy: { receivedAt: "asc" }, take: Math.min(limit, env.FINANCIAL_WEBHOOK_RECOVERY_BATCH_SIZE), select: { id: true } });
+  let claimed = 0; let processed = 0; let deadLettered = 0; let errors = 0;
+  for (const event of events) {
+    const lease = await claimPaystackTransferWebhook(event.id, now);
+    if (!lease) continue;
+    claimed += 1;
+    try { const result = await processStoredPaystackInboundWebhook(event.id, lease.claimToken, processors); if (result.processed) processed += 1; }
+    catch { errors += 1; const state = await prisma.providerWebhookEvent.findUnique({ where: { id: event.id }, select: { status: true } }); if (state?.status === "DEAD_LETTER") deadLettered += 1; }
+  }
+  return { inspected: events.length, claimed, processed, deadLettered, errors };
 };
 
 export const listInvoiceTemplates = (organizationId: string) => prisma.accountingInvoiceTemplate.findMany({ where: { organizationId }, orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }] });
