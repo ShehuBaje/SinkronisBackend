@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Prisma, type FinancialSettlement } from "@prisma/client";
 import { prisma } from "./prisma";
 import { conflict, notFound } from "./http-error";
+import { assertIncidentWalletMutationAllowed } from "./payroll-wallet-incident-pause";
 
 type Db = Prisma.TransactionClient;
 const financialTransactionOptions = { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 } as const;
@@ -12,6 +13,7 @@ const makeReference = () => `stl_${crypto.randomUUID().replaceAll("-", "").slice
 export const settlementDto = (row: FinancialSettlement) => ({ id: row.id, sourceType: row.sourceType, sourceId: row.sourceId, method: row.method, status: row.status, amount: Number(row.amount), currency: row.currency, internalReference: row.internalReference, externalReference: row.externalReference, provider: row.provider, providerStatus: row.providerStatus, failureReason: row.failureReason, reservedAt: row.reservedAt, settledAt: row.settledAt, reversedAt: row.reversedAt, createdAt: row.createdAt });
 
 export const completeManualSettlement = async <T>(source: SettlementSource, input: ManualSettlementInput, finalize: (tx: Db, settlement: FinancialSettlement, ledgerId: string) => Promise<T>) => {
+  assertIncidentWalletMutationAllowed(source.organizationId, source.walletAccountId);
   try {
     return await prisma.$transaction(async (tx) => {
       const existing = await tx.financialSettlement.findFirst({ where: { organizationId: source.organizationId, sourceType: source.sourceType, sourceId: source.sourceId } });
@@ -54,6 +56,7 @@ export const releaseSettlementReservation = async (organizationId: string, settl
   return prisma.$transaction(async (tx) => {
     const settlement = await tx.financialSettlement.findFirst({ where: { id: settlementId, organizationId } });
     if (!settlement) throw notFound("Settlement not found");
+    assertIncidentWalletMutationAllowed(organizationId, settlement.walletAccountId);
     if (settlement.status === "FAILED" && settlement.reservationReleasedAt) return settlement;
     if (!["RESERVED", "PROVIDER_PROCESSING", "UNKNOWN"].includes(settlement.status) || !settlement.reservedAt || settlement.reservationReleasedAt) {
       throw conflict("Settlement does not hold a releasable reservation");
@@ -80,6 +83,7 @@ export const reverseSucceededSettlement = async (
     return await prisma.$transaction(async (tx) => {
       const settlement = await tx.financialSettlement.findFirst({ where: { id: settlementId, organizationId } });
       if (!settlement) throw notFound("Settlement not found");
+      assertIncidentWalletMutationAllowed(organizationId, settlement.walletAccountId);
       if (settlement.status === "REVERSED" && settlement.reversalReference === reversalReference) return settlement;
       if (settlement.status !== "SUCCEEDED") throw conflict("Only a successful settlement can be reversed");
       const original = await tx.walletTransaction.findFirst({

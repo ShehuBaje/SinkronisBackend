@@ -17,9 +17,9 @@ export type IncidentProfile = {
 };
 
 export const productionIncidentProfile: IncidentProfile = {
-  identityHash: "fcefcb648dfd", currency: "NGN", purpose: "PRIMARY", balance: "1545000.00", reserved: "0.00",
-  legitimateCredits: "1183000.00", legitimateDebits: "0.00", unsupported: "362000.00", correctedBalance: "1183000.00",
-  walletUpdatedAt: "2026-09-23T05:59:05.249Z",
+  identityHash: "fcefcb648dfd", currency: "NGN", purpose: "PRIMARY", balance: "1546000.00", reserved: "0.00",
+  legitimateCredits: "1184000.00", legitimateDebits: "0.00", unsupported: "362000.00", correctedBalance: "1184000.00",
+  walletUpdatedAt: "2026-09-23T15:15:09.724Z",
   entries: [
     { createdAt: "2026-09-22T21:49:45.499Z", amount: "250000.00", before: "0.00", after: "250000.00", referenceHash: "e66080bc14af" },
     { createdAt: "2026-09-22T21:51:24.612Z", amount: "1000.00", before: "250000.00", after: "251000.00", referenceHash: "081d769f6b80" },
@@ -28,6 +28,7 @@ export const productionIncidentProfile: IncidentProfile = {
     { createdAt: "2026-09-23T05:48:58.498Z", amount: "300000.00", before: "1151000.00", after: "1451000.00", referenceHash: "b621b19693d4" },
     { createdAt: "2026-09-23T05:55:41.810Z", amount: "30000.00", before: "1481000.00", after: "1511000.00", referenceHash: "154dc9ac6a9e" },
     { createdAt: "2026-09-23T05:58:51.492Z", amount: "2000.00", before: "1541000.00", after: "1543000.00", referenceHash: "186335bc65ec" },
+    { createdAt: "2026-09-23T15:15:10.206Z", amount: "1000.00", before: "1545000.00", after: "1546000.00", referenceHash: "bf56acf6ceb5" },
   ],
 };
 
@@ -70,7 +71,7 @@ export const inspectPayrollWalletIncident = async (db: Db, profile: IncidentProf
   if (!wallet.balance.equals(profile.balance)) reasons.push("BALANCE_CHANGED");
   if (!wallet.reservedBalance.equals(profile.reserved)) reasons.push("RESERVED_BALANCE_CHANGED");
   if (wallet.updatedAt.toISOString() !== profile.walletUpdatedAt) reasons.push("WALLET_UPDATED");
-  if (rows.length !== 7 || credits.length !== 7) reasons.push("LEDGER_COUNT_CHANGED");
+  if (rows.length !== profile.entries.length || credits.length !== profile.entries.length) reasons.push("LEDGER_COUNT_CHANGED");
   if (!creditTotal.equals(profile.legitimateCredits)) reasons.push("CREDIT_TOTAL_CHANGED");
   if (!debitTotal.equals(profile.legitimateDebits)) reasons.push("DEBIT_TOTAL_CHANGED");
   if (!rows[0]?.balanceBefore.equals(0)) reasons.push("OPENING_BALANCE_CHANGED");

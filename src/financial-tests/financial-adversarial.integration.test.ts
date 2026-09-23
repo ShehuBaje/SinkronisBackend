@@ -15,6 +15,7 @@ import { errorMiddleware } from '../middleware/error.middleware.js';
 import { assertSafeTestDatabase } from '../test-infrastructure/test-database.js';
 import { authorize } from '../middleware/rbac.middleware.js';
 import { executePayrollWalletIncidentRepair, expectedEvidenceDigest, inspectPayrollWalletIncident, type IncidentProfile } from '../core/payroll-wallet-incident-repair.js';
+import { assertIncidentWalletFingerprintMutationAllowed } from '../core/payroll-wallet-incident-pause.js';
 
 const enabled = Boolean(process.env.TEST_DATABASE_GUARD);
 if (enabled) {
@@ -80,14 +81,15 @@ const manual = (fx: Awaited<ReturnType<typeof fixture>>, sourceId: string, amoun
   completeManualSettlement(source(fx, sourceId, amount), { idempotencyKey: `idem:${reference}`, externalReference: reference, settledAt: new Date(), note: 'Adversarial integration fixture' }, finalize);
 
 const repairFixture = async () => {
-  const fx = await fixture(1_545_000);
-  const updatedAt = new Date('2026-09-23T05:59:05.249Z');
+  const fx = await fixture(1_546_000);
+  const updatedAt = new Date('2026-09-23T15:15:09.724Z');
   await prisma.walletAccount.update({ where: { id: fx.wallet.id }, data: { updatedAt } });
   const values = [
     ['2026-09-22T21:49:45.499Z','250000.00','0.00','250000.00'], ['2026-09-22T21:51:24.612Z','1000.00','250000.00','251000.00'],
     ['2026-09-23T05:46:24.237Z','300000.00','251000.00','551000.00'], ['2026-09-23T05:47:20.488Z','300000.00','851000.00','1151000.00'],
     ['2026-09-23T05:48:58.498Z','300000.00','1151000.00','1451000.00'], ['2026-09-23T05:55:41.810Z','30000.00','1481000.00','1511000.00'],
     ['2026-09-23T05:58:51.492Z','2000.00','1541000.00','1543000.00'],
+    ['2026-09-23T15:15:10.206Z','1000.00','1545000.00','1546000.00'],
   ];
   const entries: IncidentProfile['entries'] = [];
   for (const [createdAt, amount, before, after] of values) {
@@ -95,7 +97,7 @@ const repairFixture = async () => {
     await prisma.walletTransaction.create({ data: { organizationId: fx.organization.id, walletAccountId: fx.wallet.id, type: 'FUNDING', direction: 'CREDIT', amount: money(amount), balanceBefore: money(before), balanceAfter: money(after), reference: uid('repair-ledger'), transferReference, description: 'Payroll wallet funding', createdById: fx.user.id, createdAt: new Date(createdAt) } });
     entries.push({ createdAt, amount, before, after, referenceHash: crypto.createHash('sha256').update(transferReference).digest('hex').slice(0,12) });
   }
-  const profile: IncidentProfile = { identityHash: crypto.createHash('sha256').update(`${fx.organization.id}:${fx.wallet.id}`).digest('hex').slice(0,12), currency: 'NGN', purpose: 'PRIMARY', balance: '1545000.00', reserved: '0.00', legitimateCredits: '1183000.00', legitimateDebits: '0.00', unsupported: '362000.00', correctedBalance: '1183000.00', walletUpdatedAt: updatedAt.toISOString(), entries };
+  const profile: IncidentProfile = { identityHash: crypto.createHash('sha256').update(`${fx.organization.id}:${fx.wallet.id}`).digest('hex').slice(0,12), currency: 'NGN', purpose: 'PRIMARY', balance: '1546000.00', reserved: '0.00', legitimateCredits: '1184000.00', legitimateDebits: '0.00', unsupported: '362000.00', correctedBalance: '1184000.00', walletUpdatedAt: updatedAt.toISOString(), entries };
   return { ...fx, profile };
 };
 
@@ -107,6 +109,8 @@ financialTest('incident dry-run is SELECT-only and fails closed on changed state
   const before = { wallet: await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } }), rows: await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id } }), audits: await prisma.auditLog.count({ where: { organizationId: fx.organization.id } }) };
   const result = await inspectPayrollWalletIncident(prisma, fx.profile);
   assert.equal(result.status, 'SAFE_TO_EXECUTE');
+  const oldSnapshot: IncidentProfile = { ...fx.profile, balance: '1545000.00', legitimateCredits: '1183000.00', correctedBalance: '1183000.00', walletUpdatedAt: '2026-09-23T05:59:05.249Z', entries: fx.profile.entries.slice(0, 7) };
+  assert.equal((await inspectPayrollWalletIncident(prisma, oldSnapshot)).status, 'NOT_SAFE_TO_EXECUTE');
   assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), before.wallet.balance.toString());
   assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id } }), before.rows);
   assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id } }), before.audits);
@@ -114,7 +118,7 @@ financialTest('incident dry-run is SELECT-only and fails closed on changed state
   const changed = await inspectPayrollWalletIncident(prisma, fx.profile);
   assert.equal(changed.status, 'NOT_SAFE_TO_EXECUTE');
   assert.ok(changed.reasons.includes('RESERVED_BALANCE_CHANGED'));
-  await prisma.walletAccount.update({ where: { id: fx.wallet.id }, data: { reservedBalance: money(0), balance: money('1545000'), updatedAt: new Date(fx.profile.walletUpdatedAt) } });
+  await prisma.walletAccount.update({ where: { id: fx.wallet.id }, data: { reservedBalance: money(0), balance: money('1546000'), updatedAt: new Date(fx.profile.walletUpdatedAt) } });
   const original = await prisma.walletTransaction.findFirstOrThrow({ where: { walletAccountId: fx.wallet.id }, orderBy: { createdAt: 'asc' } });
   await prisma.walletTransaction.update({ where: { id: original.id }, data: { amount: money('250000.01') } });
   assert.equal((await inspectPayrollWalletIncident(prisma, fx.profile)).status, 'NOT_SAFE_TO_EXECUTE');
@@ -128,12 +132,20 @@ financialTest('incident dry-run is SELECT-only and fails closed on changed state
   assert.equal((await inspectPayrollWalletIncident(prisma, fx.profile)).status, 'SAFE_TO_EXECUTE');
 });
 
+financialTest('incident wallet maintenance pause is exact and does not block repair', async () => {
+  assert.throws(() => assertIncidentWalletFingerprintMutationAllowed('fcefcb648dfd'), /temporarily unavailable/);
+  assert.doesNotThrow(() => assertIncidentWalletFingerprintMutationAllowed('unrelated-wallet'));
+  const fx = await repairFixture();
+  const result = await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', expectedEvidenceDigest(fx.profile), fx.profile);
+  assert.equal(result.status, 'APPLIED');
+});
+
 financialTest('incident repair commits balance, unique evidence and audit exactly once', async () => {
   const fx = await repairFixture(); const digest = expectedEvidenceDigest(fx.profile);
   const result = await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile);
   assert.equal(result.status, 'APPLIED');
   const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
-  assert.equal(wallet.balance.toString(), '1183000'); assert.equal(wallet.reservedBalance.toString(), '0');
+  assert.equal(wallet.balance.toString(), '1184000'); assert.equal(wallet.reservedBalance.toString(), '0');
   assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, type: 'FINANCIAL_INTEGRITY_CORRECTION', direction: 'ADJUSTMENT' } }), 1);
   assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'FINANCIAL_INTEGRITY_WALLET_CORRECTION' } }), 1);
   const replay = await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile);
@@ -145,7 +157,7 @@ financialTest('incident repair audit failure rolls back and retry succeeds', asy
   const fx = await repairFixture(); const digest = expectedEvidenceDigest(fx.profile);
   await prisma.auditLogChain.create({ data: { organizationId: fx.organization.id, sequence: 2_147_483_647 } });
   await assert.rejects(executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile));
-  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '1545000');
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '1546000');
   assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, type: 'FINANCIAL_INTEGRITY_CORRECTION' } }), 0);
   await prisma.auditLogChain.update({ where: { organizationId: fx.organization.id }, data: { sequence: 0, lastHash: null } });
   assert.equal((await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile)).status, 'APPLIED');

@@ -5,6 +5,7 @@ import { conflict, forbidden, notFound } from "../../core/http-error";
 import type { AuthUser } from "../../types";
 import { createAuditLog } from "../admin/admin.audit";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
+import { assertIncidentWalletMutationAllowed } from "../../core/payroll-wallet-incident-pause";
 
 const assertPlatformAdmin = (user: AuthUser) => {
   if (!user.isPlatformAdmin) throw forbidden("Platform Admin access is required");
@@ -57,6 +58,7 @@ export const creditTestTenantWallet = async (tenantId: string, input: { walletAc
     transaction = await prisma.$transaction(async (tx) => {
       const wallet = await tx.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId: tenantId } });
       if (!wallet) throw notFound("Tenant wallet not found");
+      assertIncidentWalletMutationAllowed(tenantId, wallet.id);
       const updated = await tx.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: value } } });
       const transaction = await tx.walletTransaction.create({ data: { organizationId: tenantId, walletAccountId: wallet.id, type: "TEST_E2E_CREDIT", direction: "CREDIT", amount: value, balanceBefore: wallet.balance, balanceAfter: updated.balance, reference: `TE2E-${crypto.randomUUID()}`, transferReference: input.reference, description: `NON-REAL TEST VALUE: ${input.reason}`, sourceType: "TEST_E2E_CREDIT", sourceId: input.reference, createdById: user.id } });
       await createAuditLog({ organizationId: tenantId, actorUserId: user.id, action: "PLATFORM_TEST_WALLET_CREDITED", resource: "WALLET_TRANSACTION", resourceId: transaction.id, summary: "Credited non-real TEST_E2E wallet value", metadata: { walletAccountId: input.walletAccountId, amount: input.amount, reference: input.reference, reason: input.reason, valueClassification: "NON_REAL_TEST_VALUE" } }, tx);

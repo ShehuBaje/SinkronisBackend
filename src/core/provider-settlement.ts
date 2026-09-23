@@ -7,6 +7,7 @@ import { PaystackProviderError, paystackMinorUnits } from "./paystack";
 import { PaystackTransferProvider } from "./paystack-transfer-provider";
 import { assertProviderTransfersEnabled, type ProviderTransferResult, type SettlementProvider } from "./settlement-provider";
 import { releaseSettlementReservation, reverseSucceededSettlement } from "./financial-settlement";
+import { assertIncidentWalletMutationAllowed } from "./payroll-wallet-incident-pause";
 
 const txOptions = { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 } as const;
 const activeStatuses = ["RESERVED", "PROVIDER_PROCESSING", "UNKNOWN"] as const;
@@ -29,6 +30,7 @@ const assertTenantProviderMode = async (organizationId: string) => {
 export const reserveAndClaimProviderSettlement = async (organizationId: string, settlementId: string) => prisma.$transaction(async (tx) => {
   let settlement = await tx.financialSettlement.findFirst({ where: { id: settlementId, organizationId } });
   if (!settlement) throw notFound("Settlement not found");
+  assertIncidentWalletMutationAllowed(organizationId, settlement.walletAccountId);
   if (settlement.status === "SUCCEEDED" || settlement.status === "REVERSED" || settlement.status === "FAILED") return { settlement, shouldInitiate: false };
   if (settlement.status === "PREPARED") {
     const preparedClaim = await tx.financialSettlement.updateMany({ where: { id: settlement.id, organizationId, status: "PREPARED" }, data: { status: "RESERVED", reservedAt: new Date(), providerTransferReference: settlement.internalReference } });
@@ -83,6 +85,7 @@ const updatePayrollAggregate = async (tx: Prisma.TransactionClient, payslipId: s
 export const finalizeProviderSettlementSuccess = async (settlementId: string, result: ProviderTransferResult) => prisma.$transaction(async (tx) => {
   const settlement = await tx.financialSettlement.findUnique({ where: { id: settlementId } });
   if (!settlement) throw notFound("Settlement not found");
+  assertIncidentWalletMutationAllowed(settlement.organizationId, settlement.walletAccountId);
   if (settlement.status === "SUCCEEDED") return settlement;
   if (!activeStatuses.includes(settlement.status as typeof activeStatuses[number]) || !settlement.reservedAt || settlement.reservationReleasedAt) throw conflict("Settlement is not eligible for provider success");
   assertResult(settlement, result);

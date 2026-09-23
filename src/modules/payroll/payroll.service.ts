@@ -15,6 +15,7 @@ import { getQueueByName, isQueueBackendAvailable, PAYROLL_QUEUE_NAME } from "../
 import { completeManualSettlement, prepareProviderSettlement, settlementDto } from "../../core/financial-settlement";
 import { initiateProviderSettlement } from "../../core/provider-settlement";
 import { assertProviderTransfersEnabled } from "../../core/settlement-provider";
+import { assertIncidentWalletMutationAllowed } from "../../core/payroll-wallet-incident-pause";
 
 const payrollReportableStatuses = ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSING", "DISBURSED", "PAID"] as const;
 const payrollDisbursementPendingStatuses = ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSING"] as const;
@@ -334,7 +335,8 @@ export const fundPayrollWallet = async (organizationId: string, input: any, user
   try {
     const result = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM Organization WHERE id = ${organizationId} FOR UPDATE`;
-      const wallet = await walletForTenant(organizationId, tx);
+    const wallet = await walletForTenant(organizationId, tx);
+    assertIncidentWalletMutationAllowed(organizationId, wallet.id);
       const existing = await tx.walletTransaction.findFirst({ where: { organizationId, transferReference: input.transferReference } });
       if (existing) {
         if (existing.walletAccountId !== wallet.id || existing.type !== "FUNDING" || existing.direction !== "CREDIT" || !existing.amount.equals(amount)) throw conflict("Transfer reference has already been recorded");
@@ -366,7 +368,7 @@ const walletObligations = async (organizationId: string, query: { page: number; 
 };
 export const listPayrollWalletObligations = walletObligations;
 
-export const payPayrollWalletObligation = async (organizationId: string, obligationId: string, user: AuthUser) => { const separator = obligationId.indexOf(":"); const sourceType = obligationId.slice(0, separator); const sourceId = obligationId.slice(separator + 1); if (!sourceId || !["PAYROLL_RUN", "PAYEE_PAYMENT", "PAYE_REMITTANCE", "PENSION_REMITTANCE", "TAX_REPORT"].includes(sourceType)) throw badRequest("Unsupported wallet obligation"); const result = await prisma.$transaction(async (tx) => { const wallet = await walletForTenant(organizationId, tx); let amount = zeroDecimal(); let type = ""; let description = ""; let payrollRunId: string | undefined; let taxRemittanceId: string | undefined;
+export const payPayrollWalletObligation = async (organizationId: string, obligationId: string, user: AuthUser) => { const separator = obligationId.indexOf(":"); const sourceType = obligationId.slice(0, separator); const sourceId = obligationId.slice(separator + 1); if (!sourceId || !["PAYROLL_RUN", "PAYEE_PAYMENT", "PAYE_REMITTANCE", "PENSION_REMITTANCE", "TAX_REPORT"].includes(sourceType)) throw badRequest("Unsupported wallet obligation"); const result = await prisma.$transaction(async (tx) => { const wallet = await walletForTenant(organizationId, tx); assertIncidentWalletMutationAllowed(organizationId, wallet.id); let amount = zeroDecimal(); let type = ""; let description = ""; let payrollRunId: string | undefined; let taxRemittanceId: string | undefined;
     const prior = await tx.walletTransaction.findFirst({ where: { walletAccountId: wallet.id, sourceType, sourceId } }); if (prior) return prior;
     if (sourceType === "PAYROLL_RUN") { const source = await tx.payrollRun.findFirst({ where: { id: sourceId, organizationId, status: { in: ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSING"] } } }); if (!source) throw conflict("Payroll obligation is not payable"); amount = source.totalNetPay; type = "PAYROLL_DISBURSEMENT"; description = `${source.name} payroll disbursement`; payrollRunId = source.id; }
     if (sourceType === "PAYEE_PAYMENT") { const source = await tx.payeePayment.findFirst({ where: { id: sourceId, organizationId, status: "PENDING", payrollRun: { status: { in: ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSING"] } } } }); if (!source) throw conflict("Payee payment is not payable"); amount = source.netAmount; type = "PAYEE_PAYMENT"; description = `${source.payeeNameSnapshot} payment`; payrollRunId = source.payrollRunId; }

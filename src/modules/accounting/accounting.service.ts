@@ -7,6 +7,7 @@ import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
 import { createObjectKey, deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { completeManualSettlement, prepareProviderSettlement, settlementDto } from "../../core/financial-settlement";
+import { assertIncidentWalletMutationAllowed } from "../../core/payroll-wallet-incident-pause";
 import { finalizeProviderSettlementOtp, initiateProviderSettlement } from "../../core/provider-settlement";
 import { acceptAndProcessPaystackTransferWebhook } from "../../core/paystack-transfer-webhook";
 import { assertProviderTransfersEnabled } from "../../core/settlement-provider";
@@ -2742,6 +2743,7 @@ export const fundWalletManually = async (organizationId: string, input: ManualWa
     await db.$queryRaw`SELECT id FROM Organization WHERE id = ${organizationId} FOR UPDATE`;
     const wallet = await db.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId } });
     if (!wallet) throw notFound("Wallet not found");
+    assertIncidentWalletMutationAllowed(organizationId, wallet.id);
     const existing = await db.walletTransaction.findFirst({ where: { organizationId, transferReference: input.externalReference } });
     if (existing) {
       if (existing.walletAccountId !== wallet.id || !existing.amount.equals(value) || existing.type !== "MANUAL_FUNDING" || existing.direction !== "CREDIT") throw conflict("External funding reference is already in use");
@@ -2802,6 +2804,7 @@ const finalizeVerifiedPaystackFunding = async (attemptId: string, verification: 
     if (claimed.count !== 1) throw conflict("Wallet funding is already being processed");
     const wallet = await db.walletAccount.findFirst({ where: { id: attempt.walletAccountId, organizationId: attempt.organizationId } });
     if (!wallet) throw notFound("Wallet not found");
+    assertIncidentWalletMutationAllowed(attempt.organizationId, wallet.id);
     const updatedWallet = await db.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: attempt.amount } } });
     const transaction = await db.walletTransaction.create({ data: { organizationId: attempt.organizationId, walletAccountId: wallet.id, type: "WALLET_FUNDING", direction: "CREDIT", amount: attempt.amount, balanceBefore: wallet.balance, balanceAfter: updatedWallet.balance, reference: reference("WLT"), transferReference: attempt.reference, description: "Paystack wallet funding", sourceType: "PAYSTACK_FUNDING", sourceId: attempt.id, createdById: attempt.createdById } });
     const completed = await db.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "COMPLETED", verifiedAt: verification.paid_at ? new Date(verification.paid_at) : new Date(), providerReference: verification.reference, failureReason: null } });
