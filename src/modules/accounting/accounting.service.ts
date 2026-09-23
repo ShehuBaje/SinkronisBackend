@@ -178,6 +178,7 @@ const audit = (
   resourceId: string,
   summary: string,
   metadata?: Prisma.InputJsonValue,
+  tx?: Prisma.TransactionClient,
 ) =>
   createAuditLog({
     organizationId,
@@ -187,7 +188,7 @@ const audit = (
     resourceId,
     summary,
     metadata,
-  });
+  }, tx);
 
 export const getAccountingDashboard = async (
   organizationId: string,
@@ -1348,12 +1349,12 @@ export const recordInvoicePayment = async (
 ) => {
   const paymentAmount = new Prisma.Decimal(input.amount);
   const paidAt = input.paidAt ?? new Date();
-  let outcome: { invoiceNo: string; nextStatus: "PAID" | "PARTIALLY_PAID"; replay: boolean };
   try {
-    outcome = await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Invoice WHERE id = ${id} AND organizationId = ${organizationId} FOR UPDATE`;
       const existing = await tx.accountingInvoicePayment.findFirst({ where: { organizationId, reference: input.reference } });
       if (existing) {
-        if (existing.invoiceId !== id) throw conflict("Payment reference has already been used");
+        if (existing.invoiceId !== id || !existing.amount.equals(paymentAmount)) throw conflict("Payment reference has already been used");
         const replayInvoice = await tx.invoice.findFirst({ where: { id, organizationId }, select: { invoiceNo: true, status: true } });
         if (!replayInvoice) throw notFound("Invoice not found");
         return { invoiceNo: replayInvoice.invoiceNo, nextStatus: replayInvoice.status === "PAID" ? "PAID" as const : "PARTIALLY_PAID" as const, replay: true };
@@ -1395,8 +1396,9 @@ export const recordInvoicePayment = async (
           description: `${nextStatus === "PAID" ? "Final" : "Partial"} payment ${input.reference} recorded`,
         },
       });
+      await audit(organizationId, user, "ACCOUNTING_INVOICE_PAYMENT_RECORDED", "INVOICE", id, `Recorded ${nextStatus === "PAID" ? "final" : "partial"} payment for ${current.invoiceNo}`, { paymentReference: input.reference, amount: input.amount, status: nextStatus }, tx);
       return { invoiceNo: current.invoiceNo, nextStatus, replay: false };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -1405,20 +1407,6 @@ export const recordInvoicePayment = async (
       throw conflict("Payment reference has already been used");
     throw error;
   }
-  if (outcome.replay) return getInvoiceById(organizationId, id);
-  await audit(
-    organizationId,
-    user,
-    "ACCOUNTING_INVOICE_PAYMENT_RECORDED",
-    "INVOICE",
-    id,
-    `Recorded ${outcome.nextStatus === "PAID" ? "final" : "partial"} payment for ${outcome.invoiceNo}`,
-    {
-      paymentReference: input.reference,
-      amount: input.amount,
-      status: outcome.nextStatus,
-    },
-  );
   return getInvoiceById(organizationId, id);
 };
 export const deleteInvoice = async (
@@ -2748,13 +2736,30 @@ export const createAccountingWallet = async (organizationId: string, input: Acco
 };
 export const listWalletTransactions = async (organizationId: string, query: WalletTransactionQuery) => { const where = { organizationId, ...(query.direction === "ALL" ? {} : { direction: query.direction === "INFLOW" ? { in: ["CREDIT", "INFLOW"] } : { in: ["DEBIT", "OUTFLOW"] } }) }; const [rows,total] = await Promise.all([prisma.walletTransaction.findMany({ where, orderBy: { createdAt: "desc" }, skip: (query.page-1)*query.limit, take: query.limit }), prisma.walletTransaction.count({ where })]); return { transactions: rows.map(r => ({ ...r, amount: amount(r.amount), balanceBefore: amount(r.balanceBefore), balanceAfter: amount(r.balanceAfter) })), pagination: pagination(query.page,query.limit,total) }; };
 export const fundWalletManually = async (organizationId: string, input: ManualWalletFundingInput, user: AuthUser) => {
-  const existing = await prisma.walletTransaction.findFirst({ where: { organizationId, transferReference: input.externalReference } });
-  if (existing) {
-    if (existing.walletAccountId !== input.walletAccountId || !existing.amount.equals(new Prisma.Decimal(input.amount)) || existing.type !== "MANUAL_FUNDING") throw conflict("External funding reference is already in use");
-    return { ...existing, amount: amount(existing.amount), idempotentReplay: true };
+  const value = new Prisma.Decimal(input.amount);
+  let result: { transaction: any; idempotentReplay: boolean };
+  try { result = await prisma.$transaction(async db => {
+    await db.$queryRaw`SELECT id FROM Organization WHERE id = ${organizationId} FOR UPDATE`;
+    const wallet = await db.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId } });
+    if (!wallet) throw notFound("Wallet not found");
+    const existing = await db.walletTransaction.findFirst({ where: { organizationId, transferReference: input.externalReference } });
+    if (existing) {
+      if (existing.walletAccountId !== wallet.id || !existing.amount.equals(value) || existing.type !== "MANUAL_FUNDING" || existing.direction !== "CREDIT") throw conflict("External funding reference is already in use");
+      return { transaction: existing, idempotentReplay: true };
+    }
+    const updated = await db.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: value } } });
+    const transaction = await db.walletTransaction.create({ data: { organizationId, walletAccountId: wallet.id, type: "MANUAL_FUNDING", direction: "CREDIT", amount: value, balanceBefore: wallet.balance, balanceAfter: updated.balance, reference: reference("WLT"), transferReference: input.externalReference, description: input.description, sourceType: "MANUAL_FUNDING", sourceId: input.externalReference, createdById: user.id } });
+    await audit(organizationId,user,"ACCOUNTING_WALLET_FUNDED","WALLET_TRANSACTION",transaction.id,"Manually funded Accounting wallet",{ amount: input.amount, reference: transaction.reference }, db);
+    return { transaction, idempotentReplay: false };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 }); }
+  catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const existing = await prisma.walletTransaction.findFirst({ where: { organizationId, transferReference: input.externalReference } });
+      if (existing && existing.walletAccountId === input.walletAccountId && existing.amount.equals(value) && existing.type === "MANUAL_FUNDING" && existing.direction === "CREDIT") result = { transaction: existing, idempotentReplay: true };
+      else throw conflict("External funding reference is already in use");
+    } else throw error;
   }
-  const value = new Prisma.Decimal(input.amount); const tx = await prisma.$transaction(async db => { const wallet = await db.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId } }); if (!wallet) throw notFound("Wallet not found"); const updated = await db.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: value } } }); return db.walletTransaction.create({ data: { organizationId, walletAccountId: wallet.id, type: "MANUAL_FUNDING", direction: "CREDIT", amount: value, balanceBefore: wallet.balance, balanceAfter: updated.balance, reference: reference("WLT"), transferReference: input.externalReference, description: input.description, sourceType: "MANUAL_FUNDING", sourceId: input.externalReference, createdById: user.id } }); }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-  await audit(organizationId,user,"ACCOUNTING_WALLET_FUNDED","WALLET_TRANSACTION",tx.id,"Manually funded Accounting wallet",{ amount: input.amount, reference: tx.reference }); return { ...tx, amount: amount(tx.amount), balanceBefore: amount(tx.balanceBefore), balanceAfter: amount(tx.balanceAfter) };
+  return { ...result.transaction, amount: amount(result.transaction.amount), balanceBefore: amount(result.transaction.balanceBefore), balanceAfter: amount(result.transaction.balanceAfter), ...(result.idempotentReplay ? { idempotentReplay: true } : {}) };
 };
 export const getWalletReceipt = async (organizationId: string, id: string) => { const row = await prisma.walletTransaction.findFirst({ where: { id, organizationId }, include: { wallet: { select: { name: true, currency: true } } } }); if (!row) throw notFound("Wallet transaction not found"); return { ...row, amount: amount(row.amount), balanceBefore: amount(row.balanceBefore), balanceAfter: amount(row.balanceAfter) }; };
 
@@ -2800,9 +2805,9 @@ const finalizeVerifiedPaystackFunding = async (attemptId: string, verification: 
     const updatedWallet = await db.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: attempt.amount } } });
     const transaction = await db.walletTransaction.create({ data: { organizationId: attempt.organizationId, walletAccountId: wallet.id, type: "WALLET_FUNDING", direction: "CREDIT", amount: attempt.amount, balanceBefore: wallet.balance, balanceAfter: updatedWallet.balance, reference: reference("WLT"), transferReference: attempt.reference, description: "Paystack wallet funding", sourceType: "PAYSTACK_FUNDING", sourceId: attempt.id, createdById: attempt.createdById } });
     const completed = await db.walletFundingAttempt.update({ where: { id: attempt.id }, data: { status: "COMPLETED", verifiedAt: verification.paid_at ? new Date(verification.paid_at) : new Date(), providerReference: verification.reference, failureReason: null } });
+    await createAuditLog({ organizationId: completed.organizationId, actorUserId: completed.createdById ?? undefined, action: "ACCOUNTING_WALLET_FUNDING_COMPLETED", resource: "WALLET_FUNDING", resourceId: completed.id, summary: `Verified Paystack wallet funding ${completed.reference}` }, db);
     return { attempt: completed, transaction, idempotentReplay: false };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-  if (!result.idempotentReplay) await createAuditLog({ organizationId: result.attempt.organizationId, actorUserId: result.attempt.createdById ?? undefined, action: "ACCOUNTING_WALLET_FUNDING_COMPLETED", resource: "WALLET_FUNDING", resourceId: result.attempt.id, summary: `Verified Paystack wallet funding ${result.attempt.reference}` });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
   return { reference: result.attempt.reference, status: result.attempt.status, amount: amount(result.attempt.amount), currency: result.attempt.currency, transactionId: result.transaction?.id ?? null, idempotentReplay: result.idempotentReplay };
 };
 

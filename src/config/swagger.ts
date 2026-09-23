@@ -2197,7 +2197,7 @@ const options: swaggerJSDoc.Options = {
       [`${platformAdminBase}/pricing/modules/{moduleId}/price`]: {
         patch: {
           tags: ["Platform Pricing & Plans"], summary: "Create an effective-dated price version",
-          description: "Requires platform:pricing:manage. Preserves immutable price history and completed invoices. Existing subscriptions retain their agreed price until renewal; new subscriptions use the effective price. Serializable transaction and optional expectedVersion prevent lost concurrent updates.",
+          description: "Requires platform:pricing:manage. Preserves immutable price history and completed invoices. Existing subscriptions retain their agreed price until renewal; new subscriptions use the effective price. A versioned conditional update prevents lost concurrent updates.",
           security: [{ bearerAuth: [] }], parameters: [{ in: "path", name: "moduleId", required: true, schema: { type: "string" }, description: "Product plan ID or key, including all-in-one." }],
           requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/PlatformPriceUpdateBody" } } } },
           responses: { "200": { description: "Price version created" }, "400": { description: "Invalid amount, date, duplicate price, or optimistic-lock conflict" }, "401": { description: "Unauthorized" }, "403": { description: "Pricing-management permission required" }, "404": { description: "Module or plan not found" }, "409": { description: "Concurrent price update conflict" } }

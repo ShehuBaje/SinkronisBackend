@@ -1637,7 +1637,7 @@ const buildCostBreakdown = (
 
 const normalizeBillingStatus = (status: string) => status.toLowerCase();
 
-export const logAdminActivity = async (input: AdminAuditLogInput) => {
+export const logAdminActivity = async (input: AdminAuditLogInput, tx?: Prisma.TransactionClient) => {
   if (!input.organizationId) return;
 
   await createAuditLog({
@@ -1648,7 +1648,7 @@ export const logAdminActivity = async (input: AdminAuditLogInput) => {
     resourceId: input.resourceId,
     summary: input.summary,
     metadata: input.metadata
-  });
+  }, tx);
 };
 
 export const getDashboardData = async (req: Request) => {
@@ -2407,23 +2407,21 @@ const finalizeSubscriptionPayment = async (attemptId: string, verification: Pays
         },
       },
     });
-    return tx.subscriptionPaymentAttempt.update({
+    const completed = await tx.subscriptionPaymentAttempt.update({
       where: { id: attempt.id },
       data: { status: "COMPLETED", completedAt, activeKey: null },
     });
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
-
-  if (result.status === "COMPLETED" && before.status !== "COMPLETED") {
     await logAdminActivity({
-      organizationId: result.organizationId,
-      actorUserId: result.createdByUserId ?? undefined,
-      action: result.operationType === "PURCHASE" ? "BILLING_PLAN_PURCHASED" : "BILLING_PLAN_CHANGE_PAID",
+      organizationId: completed.organizationId,
+      actorUserId: completed.createdByUserId ?? undefined,
+      action: completed.operationType === "PURCHASE" ? "BILLING_PLAN_PURCHASED" : "BILLING_PLAN_CHANGE_PAID",
       resource: "SUBSCRIPTION_PAYMENT",
-      resourceId: result.id,
-      summary: `Verified subscription payment ${result.reference}`,
-      metadata: { reference: result.reference, planKey: result.planKey, operationType: result.operationType },
-    });
-  }
+      resourceId: completed.id,
+      summary: `Verified subscription payment ${completed.reference}`,
+      metadata: { reference: completed.reference, planKey: completed.planKey, operationType: completed.operationType },
+    }, tx);
+    return completed;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
   return subscriptionPaymentDto(result);
 };
 

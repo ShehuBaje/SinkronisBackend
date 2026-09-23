@@ -9,8 +9,9 @@ import { retryPendingPaystackTransferWebhooks } from '../core/paystack-transfer-
 import { assertProviderTransfersEnabled } from '../core/settlement-provider.js';
 import type { SettlementProvider } from '../core/settlement-provider.js';
 import { financialSubscriptionTestHooks } from '../modules/admin/admin.service.js';
-import { settlePayrollRun } from '../modules/payroll/payroll.service.js';
-import { disbursePaymentRequest, processPaystackWebhook } from '../modules/accounting/accounting.service.js';
+import { fundPayrollWallet, settlePayrollRun } from '../modules/payroll/payroll.service.js';
+import { disbursePaymentRequest, fundWalletManually, processPaystackWebhook, recordInvoicePayment } from '../modules/accounting/accounting.service.js';
+import { errorMiddleware } from '../middleware/error.middleware.js';
 import { assertSafeTestDatabase } from '../test-infrastructure/test-database.js';
 import { authorize } from '../middleware/rbac.middleware.js';
 
@@ -35,6 +36,10 @@ const clean = async () => {
   // to avoid lock pressure while ensuring interrupted runs recover promptly.
   for (let index = 0; index < organizations.length; index += 4) {
     await Promise.all(organizations.slice(index, index + 4).map(async (organization) => {
+      await prisma.accountingInvoiceStatusHistory.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.accountingInvoicePayment.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.invoice.deleteMany({ where: { organizationId: organization.id } });
+      await prisma.client.deleteMany({ where: { organizationId: organization.id } });
       await prisma.payslip.deleteMany({ where: { organizationId: organization.id } });
       await prisma.employee.deleteMany({ where: { organizationId: organization.id } });
       await prisma.auditLog.deleteMany({ where: { organizationId: organization.id } });
@@ -90,6 +95,120 @@ financialTest('wallet reservation race never overspends 100k with two concurrent
     assert.equal(await prisma.financialSettlement.count({ where: { walletAccountId: fx.wallet.id, status: 'SUCCEEDED' } }), 1);
     assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, direction: 'DEBIT' } }), 1);
   }
+});
+
+financialTest('Payroll wallet funding rolls back required audit failure and retries exactly once', async () => {
+  const fx = await fixture(0);
+  const transferReference = uid('post-commit-funding');
+  await prisma.auditLogChain.create({ data: { organizationId: fx.organization.id, sequence: 2_147_483_647 } });
+  let thrown: unknown;
+  try { await fundPayrollWallet(fx.organization.id, { amount: '125.50', transferReference }, fx.authUser); } catch (error) { thrown = error; }
+  assert.ok(thrown);
+  let httpStatus = 0;
+  errorMiddleware(thrown, {} as any, { status(value: number) { httpStatus = value; return this; }, json() { return this; } } as any, (() => undefined) as any);
+  assert.equal(httpStatus, 500);
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '0');
+  assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference } }), 0);
+  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'PAYROLL_WALLET_FUNDED' } }), 0);
+  await prisma.auditLogChain.update({ where: { organizationId: fx.organization.id }, data: { sequence: 0, lastHash: null } });
+  await fundPayrollWallet(fx.organization.id, { amount: '125.50', transferReference }, fx.authUser);
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '125.5');
+  assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference } }), 1);
+  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'PAYROLL_WALLET_FUNDED' } }), 1);
+});
+
+financialTest('Payroll wallet funding is idempotent for sequential, concurrent and response-loss replay', async () => {
+  const fx = await fixture(0);
+  const sequentialReference = uid('funding-sequential');
+  const first = await fundPayrollWallet(fx.organization.id, { amount: '10.10', transferReference: sequentialReference }, fx.authUser);
+  const replay = await fundPayrollWallet(fx.organization.id, { amount: '10.10', transferReference: sequentialReference }, fx.authUser);
+  assert.equal(replay.id, first.id);
+  const concurrentReference = uid('funding-concurrent');
+  const concurrent = await Promise.all([
+    fundPayrollWallet(fx.organization.id, { amount: '20.20', transferReference: concurrentReference }, fx.authUser),
+    fundPayrollWallet(fx.organization.id, { amount: '20.20', transferReference: concurrentReference }, fx.authUser),
+  ]);
+  assert.equal(concurrent[0].id, concurrent[1].id);
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '30.3');
+  assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference: { in: [sequentialReference, concurrentReference] } } }), 2);
+  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'PAYROLL_WALLET_FUNDED' } }), 2);
+});
+
+financialTest('Payroll wallet funding conflicting reference reuse never changes value', async () => {
+  const fx = await fixture(0);
+  const transferReference = uid('funding-conflict');
+  const settled = await Promise.allSettled([
+    fundPayrollWallet(fx.organization.id, { amount: '30.00', transferReference }, fx.authUser),
+    fundPayrollWallet(fx.organization.id, { amount: '31.00', transferReference }, fx.authUser),
+  ]);
+  assert.equal(settled.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(settled.filter((result) => result.status === 'rejected').length, 1);
+  const transaction = await prisma.walletTransaction.findFirstOrThrow({ where: { organizationId: fx.organization.id, transferReference } });
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), transaction.amount.toString());
+  assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference } }), 1);
+});
+
+financialTest('Accounting manual funding is atomic and idempotent under replay and concurrency', async () => {
+  const fx = await fixture(0);
+  const reference = uid('accounting-funding');
+  const input = { walletAccountId: fx.wallet.id, amount: '42.42', externalReference: reference, description: 'Atomic funding test' };
+  const first = await fundWalletManually(fx.organization.id, input, fx.authUser);
+  const replay = await fundWalletManually(fx.organization.id, input, fx.authUser);
+  assert.equal(replay.id, first.id);
+  const concurrentReference = uid('accounting-funding-concurrent');
+  const concurrentInput = { ...input, amount: '7.58', externalReference: concurrentReference };
+  const concurrent = await Promise.all([fundWalletManually(fx.organization.id, concurrentInput, fx.authUser), fundWalletManually(fx.organization.id, concurrentInput, fx.authUser)]);
+  assert.equal(concurrent[0].id, concurrent[1].id);
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '50');
+  assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, type: 'MANUAL_FUNDING' } }), 2);
+  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'ACCOUNTING_WALLET_FUNDED' } }), 2);
+  await assert.rejects(() => fundWalletManually(fx.organization.id, { ...input, amount: '99.99' }, fx.authUser), /already in use/i);
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '50');
+});
+
+financialTest('Accounting manual funding required audit failure rolls back all economic writes', async () => {
+  const fx = await fixture(0);
+  const reference = uid('accounting-audit-rollback');
+  await prisma.auditLogChain.create({ data: { organizationId: fx.organization.id, sequence: 2_147_483_647 } });
+  await assert.rejects(() => fundWalletManually(fx.organization.id, { walletAccountId: fx.wallet.id, amount: '15.25', externalReference: reference, description: 'Rollback test' }, fx.authUser));
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '0');
+  assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference: reference } }), 0);
+  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'ACCOUNTING_WALLET_FUNDED' } }), 0);
+});
+
+financialTest('Invoice payment recording is atomic, idempotent, and rejects conflicting concurrency', async () => {
+  const fx = await fixture(0);
+  const client = await prisma.client.create({ data: { organizationId: fx.organization.id, name: 'Atomic Invoice Client', reference: uid('client') } });
+  const createInvoice = (suffix: string) => prisma.invoice.create({ data: { organizationId: fx.organization.id, clientId: client.id, invoiceNo: uid(`invoice-${suffix}`), issueDate: new Date(), dueDate: new Date(Date.now() + 86_400_000), status: 'SENT', subtotal: money(100), total: money(100), amountPayable: money(100) } });
+  const invoice = await createInvoice('idempotent');
+  const reference = uid('invoice-payment');
+  const input = { amount: '40.00', reference, paidAt: new Date(), notes: 'Atomic payment test' };
+  await recordInvoicePayment(fx.organization.id, invoice.id, input, fx.authUser);
+  await recordInvoicePayment(fx.organization.id, invoice.id, input, fx.authUser);
+  assert.equal(await prisma.accountingInvoicePayment.count({ where: { organizationId: fx.organization.id, reference } }), 1);
+  assert.equal(await prisma.accountingInvoiceStatusHistory.count({ where: { organizationId: fx.organization.id, invoiceId: invoice.id, status: 'PARTIALLY_PAID' } }), 1);
+  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'ACCOUNTING_INVOICE_PAYMENT_RECORDED', resourceId: invoice.id } }), 1);
+  const conflictInvoice = await createInvoice('conflict');
+  const conflictReference = uid('invoice-conflict');
+  const results = await Promise.allSettled([
+    recordInvoicePayment(fx.organization.id, conflictInvoice.id, { amount: '35.00', reference: conflictReference, paidAt: new Date() }, fx.authUser),
+    recordInvoicePayment(fx.organization.id, conflictInvoice.id, { amount: '36.00', reference: conflictReference, paidAt: new Date() }, fx.authUser),
+  ]);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+  assert.equal(await prisma.accountingInvoicePayment.count({ where: { organizationId: fx.organization.id, reference: conflictReference } }), 1);
+});
+
+financialTest('Invoice required audit failure rolls payment and invoice state back', async () => {
+  const fx = await fixture(0);
+  const client = await prisma.client.create({ data: { organizationId: fx.organization.id, name: 'Rollback Invoice Client', reference: uid('client-rollback') } });
+  const invoice = await prisma.invoice.create({ data: { organizationId: fx.organization.id, clientId: client.id, invoiceNo: uid('invoice-rollback'), issueDate: new Date(), status: 'SENT', subtotal: money(25), total: money(25), amountPayable: money(25) } });
+  await prisma.auditLogChain.create({ data: { organizationId: fx.organization.id, sequence: 2_147_483_647 } });
+  await assert.rejects(() => recordInvoicePayment(fx.organization.id, invoice.id, { amount: '25.00', reference: uid('invoice-rollback-payment'), paidAt: new Date() }, fx.authUser));
+  assert.equal(await prisma.accountingInvoicePayment.count({ where: { invoiceId: invoice.id } }), 0);
+  assert.equal((await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } })).status, 'SENT');
+  assert.equal(await prisma.accountingInvoiceStatusHistory.count({ where: { invoiceId: invoice.id } }), 0);
+  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, resourceId: invoice.id } }), 0);
 });
 
 financialTest('high contention permits at most ten 10k debits from a 100k wallet and reconciles', async () => {

@@ -58,7 +58,9 @@ export const creditTestTenantWallet = async (tenantId: string, input: { walletAc
       const wallet = await tx.walletAccount.findFirst({ where: { id: input.walletAccountId, organizationId: tenantId } });
       if (!wallet) throw notFound("Tenant wallet not found");
       const updated = await tx.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: value } } });
-      return tx.walletTransaction.create({ data: { organizationId: tenantId, walletAccountId: wallet.id, type: "TEST_E2E_CREDIT", direction: "CREDIT", amount: value, balanceBefore: wallet.balance, balanceAfter: updated.balance, reference: `TE2E-${crypto.randomUUID()}`, transferReference: input.reference, description: `NON-REAL TEST VALUE: ${input.reason}`, sourceType: "TEST_E2E_CREDIT", sourceId: input.reference, createdById: user.id } });
+      const transaction = await tx.walletTransaction.create({ data: { organizationId: tenantId, walletAccountId: wallet.id, type: "TEST_E2E_CREDIT", direction: "CREDIT", amount: value, balanceBefore: wallet.balance, balanceAfter: updated.balance, reference: `TE2E-${crypto.randomUUID()}`, transferReference: input.reference, description: `NON-REAL TEST VALUE: ${input.reason}`, sourceType: "TEST_E2E_CREDIT", sourceId: input.reference, createdById: user.id } });
+      await createAuditLog({ organizationId: tenantId, actorUserId: user.id, action: "PLATFORM_TEST_WALLET_CREDITED", resource: "WALLET_TRANSACTION", resourceId: transaction.id, summary: "Credited non-real TEST_E2E wallet value", metadata: { walletAccountId: input.walletAccountId, amount: input.amount, reference: input.reference, reason: input.reason, valueClassification: "NON_REAL_TEST_VALUE" } }, tx);
+      return transaction;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
@@ -68,6 +70,5 @@ export const creditTestTenantWallet = async (tenantId: string, input: { walletAc
     }
     throw error;
   }
-  await createAuditLog({ organizationId: tenantId, actorUserId: user.id, action: "PLATFORM_TEST_WALLET_CREDITED", resource: "WALLET_TRANSACTION", resourceId: transaction.id, summary: "Credited non-real TEST_E2E wallet value", metadata: { walletAccountId: input.walletAccountId, amount: input.amount, reference: input.reference, reason: input.reason, valueClassification: "NON_REAL_TEST_VALUE" } });
   return { transaction, idempotentReplay: false };
 };
