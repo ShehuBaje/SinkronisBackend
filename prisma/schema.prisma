@@ -2544,6 +2544,62 @@ model FinancialReconciliationRun {
   @@map("FinancialReconciliationRun")
 }
 
+model FinancialIntegrityScanRun {
+  id               String    @id @default(cuid())
+  trigger          String    @db.VarChar(32)
+  scannerVersion   String    @db.VarChar(32)
+  status           String    @default("RUNNING") @db.VarChar(24)
+  startedAt        DateTime  @default(now())
+  completedAt      DateTime?
+  objectsScanned   Int       @default(0)
+  findingsDetected Int       @default(0)
+  newFindings      Int       @default(0)
+  existingFindings Int       @default(0)
+  resolvedFindings Int       @default(0)
+  errors           Int       @default(0)
+  failureReason    String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status, startedAt], map: "FinancialIntegrityScanRun_status_started_idx")
+  @@map("FinancialIntegrityScanRun")
+}
+
+model FinancialIntegrityFinding {
+  id                           String    @id @default(cuid())
+  organizationId               String?
+  category                     String    @db.VarChar(80)
+  severity                     String    @db.VarChar(16)
+  status                       String    @default("OPEN") @db.VarChar(16)
+  resourceType                 String    @db.VarChar(64)
+  resourceId                   String    @db.VarChar(191)
+  walletAccountId              String?
+  settlementId                 String?
+  provider                     String?   @db.VarChar(32)
+  providerReferenceFingerprint String?   @db.VarChar(64)
+  currency                     String?   @db.VarChar(3)
+  expectedAmount               Decimal?  @db.Decimal(14, 2)
+  actualAmount                 Decimal?  @db.Decimal(14, 2)
+  differenceAmount             Decimal?  @db.Decimal(14, 2)
+  evidenceFingerprint          String    @db.VarChar(64)
+  deduplicationKey             String    @unique(map: "FinancialIntegrityFinding_dedup_key") @db.VarChar(64)
+  details                      Json?
+  firstDetectedAt              DateTime  @default(now())
+  lastDetectedAt               DateTime  @default(now())
+  resolvedAt                   DateTime?
+  occurrenceCount              Int       @default(1)
+  firstScanRunId               String
+  lastScanRunId                String
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
+
+  @@index([status, severity, lastDetectedAt], map: "FinancialIntegrityFinding_status_severity_idx")
+  @@index([organizationId, status, category], map: "FinancialIntegrityFinding_org_status_category_idx")
+  @@index([walletAccountId, status], map: "FinancialIntegrityFinding_wallet_status_idx")
+  @@index([lastScanRunId], map: "FinancialIntegrityFinding_last_run_idx")
+  @@map("FinancialIntegrityFinding")
+}
+
 model WalletTransaction {
   id                String                @id @default(cuid())
   organizationId    String

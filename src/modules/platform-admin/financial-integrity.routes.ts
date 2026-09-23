@@ -1,0 +1,12 @@
+import { Router } from "express";
+import { asyncHandler } from "../../core/async-handler";
+import { badRequest } from "../../core/http-error";
+import { listIntegrityFindings, listIntegrityRuns, runFinancialIntegrityScan } from "../../core/financial-integrity-scanner";
+import { authorize } from "../../middleware/rbac.middleware";
+import { createAuditLog } from "../admin/admin.audit";
+export const financialIntegrityRouter=Router();
+const read=authorize("platform:dashboard:view");
+const paging=(q:Record<string,unknown>)=>{const page=Number(q.page??1),limit=Number(q.limit??20);if(!Number.isInteger(page)||page<1||!Number.isInteger(limit)||limit<1||limit>100)throw badRequest("Invalid pagination");return{page,limit};};
+financialIntegrityRouter.get("/runs",read,asyncHandler(async(req,res)=>{const p=paging(req.query);const [runs,total]=await listIntegrityRuns(p.page,p.limit);res.json({success:true,data:{runs,pagination:{...p,total}}});}));
+financialIntegrityRouter.get("/findings",read,asyncHandler(async(req,res)=>{const p=paging(req.query);const [findings,total]=await listIntegrityFindings({...p,organizationId:req.query.organizationId as string|undefined,category:req.query.category as string|undefined,severity:req.query.severity as string|undefined,status:req.query.status as string|undefined,resourceType:req.query.resourceType as string|undefined});res.json({success:true,data:{findings,pagination:{...p,total}}});}));
+financialIntegrityRouter.post("/runs",authorize("platform:tenants:billing:manage"),asyncHandler(async(req,res)=>{const run=await runFinancialIntegrityScan({trigger:"PLATFORM_ADMIN",limit:Math.min(Number(req.body?.limit??100),500)});await createAuditLog({organizationId:req.user!.organizationId,actorUserId:req.user!.id,action:"FINANCIAL_INTEGRITY_SCAN_TRIGGERED",resource:"FINANCIAL_INTEGRITY_SCAN_RUN",resourceId:run.id,summary:"Triggered bounded financial integrity scan",metadata:{status:run.status,objectsScanned:run.objectsScanned,findingsDetected:run.findingsDetected}});res.status(201).json({success:true,data:run});}));

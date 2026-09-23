@@ -7,6 +7,7 @@ import { processMyPlanLifecycle, processMyPlanRenewalNotifications } from "../ad
 import { snapshotTenantModuleUsage } from "../telemetry/telemetry.service";
 import { expireOrganizationExports, processPendingOrganizationExports } from "../admin/organization-privacy.service";
 import { runFinancialRecovery } from "../../core/financial-recovery";
+import { runFinancialIntegrityScan } from "../../core/financial-integrity-scanner";
 
 export const internalRouter = Router();
 
@@ -60,3 +61,4 @@ internalRouter.get(
     });
   }),
 );
+internalRouter.get("/cron/financial-integrity",asyncHandler(async(_req,res)=>{const run=await runFinancialIntegrityScan({trigger:"VERCEL_CRON",limit:100});res.json({success:true,message:"Bounded financial integrity scan completed",data:run});}));
