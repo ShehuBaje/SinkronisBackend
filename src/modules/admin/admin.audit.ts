@@ -53,17 +53,10 @@ const buildAuditHash = (
   return crypto.createHash("sha256").update(stableStringify(payload)).digest("hex");
 };
 
-export const createAuditLog = async (input: CreateAuditLogInput) => {
+const persistAuditLog = async (input: CreateAuditLogInput, tx: Prisma.TransactionClient) => {
   const metadata = mergeAuditMetadata(input.metadata);
-
-  try {
-    await prisma.auditLogChain.create({ data: { organizationId: input.organizationId } });
-  } catch (error) {
-    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
-  }
-
-  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    const txAny = tx as any;
+  const txAny = tx as any;
+  await txAny.auditLogChain.upsert({ where: { organizationId: input.organizationId }, create: { organizationId: input.organizationId }, update: {} });
 
     const [chain] = await tx.$queryRaw<Array<{ lastHash: string | null; sequence: number }>>`
       SELECT lastHash, sequence
@@ -97,7 +90,11 @@ export const createAuditLog = async (input: CreateAuditLogInput) => {
       where: { organizationId: input.organizationId },
       data: { lastHash: hash, sequence }
     });
-  }, { maxWait: 20_000, timeout: 60_000 });
+};
+
+export const createAuditLog = async (input: CreateAuditLogInput, tx?: Prisma.TransactionClient) => {
+  if (tx) return persistAuditLog(input, tx);
+  return prisma.$transaction((transaction) => persistAuditLog(input, transaction), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
 };
 
 export const extractEntityId = (entity: unknown): string | undefined => {

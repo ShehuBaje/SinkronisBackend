@@ -1157,9 +1157,7 @@ export const updatePlatformModulePrice = async (moduleId: string, body: unknown,
       })),
       skipDuplicates: true
     });
-    return price;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-  await createAuditLog({
+    await createAuditLog({
     organizationId: platformAdmin.organizationId, actorUserId: platformAdmin.id,
     action: payload.effectiveAt > now ? "PRICE_CHANGE_SCHEDULED" : "MODULE_PRICE_CHANGED",
     resource: "BILLING_PRODUCT_PLAN", resourceId: plan.id, summary: `Changed ${plan.name} monthly price`,
@@ -1169,7 +1167,9 @@ export const updatePlatformModulePrice = async (moduleId: string, body: unknown,
       priceVersionId: result.id, previousVersionId: latest.id,
       ipAddress: requestMeta?.ipAddress ?? null, requestId: requestMeta?.requestId ?? null
     }
-  });
+    }, tx);
+    return price;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   return {
     planId: plan.id, key: plan.key, name: plan.name, oldPrice: Number(latest.monthlyPrice),
     newPrice: payload.monthlyPrice, currency: "NGN", effectiveAt: payload.effectiveAt,
@@ -1502,6 +1502,7 @@ export const deactivatePlatformUser = async (targetUserId: string, user: AuthUse
   assertPlatformAdmin(user); if (targetUserId === user.id) throw conflict("You cannot deactivate your own account", { errorCode: "SELF_DEACTIVATION_BLOCKED" });
   const now = new Date();
   const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM User WHERE isPlatformAdmin = true AND isActive = true FOR UPDATE`;
     const target = await tx.user.findUnique({ where: { id: targetUserId }, select: { id: true, organizationId: true, email: true, isActive: true, isPlatformAdmin: true } });
     if (!target) throw notFound("User not found"); if (!target.isActive) throw conflict("User is already inactive", { errorCode: "USER_ALREADY_INACTIVE" });
     if (target.isPlatformAdmin && await tx.user.count({ where: { isPlatformAdmin: true, isActive: true } }) <= 1) throw conflict("The last active Platform Administrator cannot be deactivated", { errorCode: "LAST_PLATFORM_ADMIN" });
@@ -1509,9 +1510,10 @@ export const deactivatePlatformUser = async (targetUserId: string, user: AuthUse
     if (updated.count !== 1) throw conflict("User state changed; reload and retry", { errorCode: "USER_STATE_CONFLICT" });
     const revoked = await tx.userSession.updateMany({ where: { userId: target.id, revokedAt: null }, data: { revokedAt: now, revokeReason: "PLATFORM_ADMIN_DEACTIVATION", isCurrent: false } });
     await tx.platformImpersonationSession.updateMany({ where: { tenantAdminUserId: target.id, status: "ACTIVE", endedAt: null }, data: { status: "REVOKED", endedAt: now } });
-    return { ...target, revokedSessions: revoked.count };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-  await createAuditLog({ organizationId: result.organizationId, actorUserId: user.id, action: "PLATFORM_USER_DEACTIVATED", resource: "USER", resourceId: result.id, summary: "Deactivated platform user", metadata: { revokedSessions: result.revokedSessions, result: "SUCCESS" } });
+    const result = { ...target, revokedSessions: revoked.count };
+    await createAuditLog({ organizationId: result.organizationId, actorUserId: user.id, action: "PLATFORM_USER_DEACTIVATED", resource: "USER", resourceId: result.id, summary: "Deactivated platform user", metadata: { revokedSessions: result.revokedSessions, result: "SUCCESS" } }, tx);
+    return result;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   return { id: result.id, status: "INACTIVE", deactivatedAt: now, revokedSessions: result.revokedSessions };
 };
 
@@ -1546,16 +1548,18 @@ export const impersonatePlatformUser = async (targetUserId: string, reason: stri
   let session;
   try {
     session = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM User WHERE id = ${user.id} FOR UPDATE`;
       await tx.platformImpersonationSession.updateMany({ where: { platformAdminUserId: user.id, status: "ACTIVE", expiresAt: { lte: new Date() } }, data: { status: "EXPIRED", endedAt: new Date() } });
       if (await tx.platformImpersonationSession.count({ where: { platformAdminUserId: user.id, status: "ACTIVE", endedAt: null, expiresAt: { gt: new Date() } } })) throw conflict("An impersonation session is already active", { errorCode: "IMPERSONATION_ALREADY_ACTIVE" });
-      return tx.platformImpersonationSession.create({ data: { organizationId: target.organizationId, platformAdminUserId: user.id, tenantAdminUserId: target.id, expiresAt, ipAddress: meta?.ipAddress, userAgent: meta?.userAgent } });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      const created = await tx.platformImpersonationSession.create({ data: { organizationId: target.organizationId, platformAdminUserId: user.id, tenantAdminUserId: target.id, expiresAt, ipAddress: meta?.ipAddress, userAgent: meta?.userAgent } });
+      await createAuditLog({ organizationId: target.organizationId, actorUserId: user.id, action: "PLATFORM_IMPERSONATION_STARTED", resource: "IMPERSONATION_SESSION", resourceId: created.id, summary: "Started user impersonation", metadata: { targetUserId: target.id, reason, expiresAt: expiresAt.toISOString(), ipAddress: meta?.ipAddress ?? null, userAgent: meta?.userAgent ?? null, result: "SUCCESS" } }, tx);
+      return created;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   } catch (error) {
     await createAuditLog({ organizationId: target.organizationId, actorUserId: user.id, action: "PLATFORM_IMPERSONATION_FAILED", resource: "USER", resourceId: target.id, summary: "User impersonation failed", metadata: { result: "FAILED", reason: "ACTIVE_SESSION_OR_CONCURRENCY_CONFLICT" } });
     throw error;
   }
   const accessToken = jwt.sign({ organizationId: target.organizationId, purpose: "platform-impersonation", impersonationSessionId: session.id, platformAdminUserId: user.id }, env.JWT_ACCESS_SECRET, { subject: target.id, expiresIn: "15m" });
-  await createAuditLog({ organizationId: target.organizationId, actorUserId: user.id, action: "PLATFORM_IMPERSONATION_STARTED", resource: "IMPERSONATION_SESSION", resourceId: session.id, summary: "Started user impersonation", metadata: { targetUserId: target.id, reason, expiresAt: expiresAt.toISOString(), ipAddress: meta?.ipAddress ?? null, userAgent: meta?.userAgent ?? null, result: "SUCCESS" } });
   return { impersonationSessionId: session.id, tenant: { id: target.organizationId, name: target.organization.name }, impersonatedUser: { id: target.id, name: `${target.firstName} ${target.lastName}`.trim(), email: target.email }, accessToken, tokenType: "Bearer", expiresAt, impersonated: true, banner: `You are impersonating ${target.firstName} ${target.lastName} from ${target.organization.name}.` };
 };
 
@@ -1633,18 +1637,19 @@ export const updatePlatformTenantModules = async (tenantId: string, input: unkno
   if (!changed.length) return { changed: false, previous: payload.modules.map((item) => ({ ...item, enabled: prior.get(item.module)?.enabled ?? false })), current: payload.modules, effectiveAt: now };
   try {
     await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Organization WHERE id = ${tenantId} FOR UPDATE`;
       for (const item of changed) {
         if (!item.enabled) await assertDisableSafe(tx, tenantId, item.module);
         const status = item.enabled ? "ACTIVE" : "INACTIVE"; const key = `module.${item.module}.status`;
         await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key } }, create: { organizationId: tenantId, key, value: status, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN" }, update: { value: status, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN", rowVersion: { increment: 1 } } });
         await tx.systemConfig.upsert({ where: { organizationId_key: { organizationId: tenantId, key: `module.${item.module}.enabled` } }, create: { organizationId: tenantId, key: `module.${item.module}.enabled`, value: item.enabled, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN" }, update: { value: item.enabled, updatedByUserId: user.id, updateReason: payload.reason, updateSource: "PLATFORM_ADMIN", rowVersion: { increment: 1 } } });
+        await createAuditLog({ organizationId: tenantId, actorUserId: user.id, action: item.enabled ? "PLATFORM_MODULE_ENABLED" : "PLATFORM_MODULE_DISABLED", resource: "MODULE", resourceId: item.module, summary: `${item.enabled ? "Enabled" : "Disabled"} ${moduleLabels[item.module]}`, metadata: { previousState: prior.get(item.module)?.enabled ?? false, newState: item.enabled, reason: payload.reason, result: "SUCCESS" } }, tx);
       }
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   } catch (error) {
     await createAuditLog({ organizationId: tenantId, actorUserId: user.id, action: "PLATFORM_MODULE_UPDATE_FAILED", resource: "MODULE", summary: "Platform module update failed", metadata: { modules: changed.map((item) => item.module), reason: payload.reason, result: "FAILED" } });
     throw error;
   }
-  for (const item of changed) await createAuditLog({ organizationId: tenantId, actorUserId: user.id, action: item.enabled ? "PLATFORM_MODULE_ENABLED" : "PLATFORM_MODULE_DISABLED", resource: "MODULE", resourceId: item.module, summary: `${item.enabled ? "Enabled" : "Disabled"} ${moduleLabels[item.module]}`, metadata: { previousState: prior.get(item.module)?.enabled ?? false, newState: item.enabled, reason: payload.reason, result: "SUCCESS" } });
   await snapshotTenantModuleUsage(now, tenantId);
   return { changed: true, previous: changed.map((item) => ({ module: item.module, enabled: prior.get(item.module)?.enabled ?? false })), current: changed, effectiveAt: now, configuration: await getPlatformModuleTenant(tenantId, user) };
 };

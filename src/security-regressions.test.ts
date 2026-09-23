@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -14,14 +14,30 @@ test("authentication recovery is throttled, non-enumerating, and atomically cons
   assert.match(service, /authChallenge\.updateMany\([\s\S]*consumedAt: null/);
 });
 
-test("financial state transitions use database claims and serializable payment recording", () => {
+test("financial state transitions use database claims and TiDB-supported repeatable-read payment recording", () => {
   const service = source("./modules/accounting/accounting.service.ts");
-  assert.match(service, /recordInvoicePayment[\s\S]*TransactionIsolationLevel\.Serializable/);
+  assert.match(service, /recordInvoicePayment[\s\S]*TransactionIsolationLevel\.RepeatableRead/);
   assert.match(service, /paymentRequest\.updateMany\([\s\S]*status: "PENDING"/);
   assert.match(
     service,
     /disbursePaymentRequest[\s\S]*completeManualSettlement[\s\S]*paymentRequest\.updateMany\([\s\S]*status: "APPROVED"/,
   );
+});
+
+test("TiDB runtime code never requests unsupported SERIALIZABLE isolation", () => {
+  const files: string[] = [];
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory() && !["scripts", "financial-tests", "test-infrastructure"].includes(entry.name)) walk(absolute);
+      else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) files.push(absolute);
+    }
+  };
+  walk(path.resolve(__dirname));
+  for (const file of files) {
+    const runtimeSource = readFileSync(file, "utf8");
+    assert.doesNotMatch(runtimeSource, /TransactionIsolationLevel\.Serializable|isolationLevel\s*:\s*["']Serializable["']|SET\s+TRANSACTION\s+ISOLATION\s+LEVEL\s+SERIALIZABLE/i, file);
+  }
 });
 
 test("financial settlements have durable identities, reservations and a default-off provider gate", () => {
