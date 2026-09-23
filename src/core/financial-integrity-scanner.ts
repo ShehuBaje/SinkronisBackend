@@ -49,6 +49,10 @@ const persistFinding = async (runId:string, finding:IntegrityCandidate) => {
   return existing?"existing":"new";
 };
 
+// Narrow integration-test seam: certification must exercise the real database
+// uniqueness/upsert path without exporting it as an application API.
+export const financialIntegrityTestHooks = { persistFinding };
+
 const executeFinancialIntegrityScan = async ({trigger="MANUAL",limit=100}:{trigger?:string;limit?:number}={}, onCreated?: (id:string)=>void) => {
   const run=await prisma.financialIntegrityScanRun.create({data:{trigger,scannerVersion:SCANNER_VERSION}}); let objects=0,detected=0,newCount=0,existingCount=0,resolved=0,errors=0;
   onCreated?.(run.id);

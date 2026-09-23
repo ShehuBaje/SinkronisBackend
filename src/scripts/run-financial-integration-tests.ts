@@ -11,6 +11,7 @@ if (process.env.FINANCIAL_TEST_PATTERN) args.push(`--test-name-pattern=${process
 // discovery to stall before hooks ran, leaving stale fixtures untouched.
 args.push(
   'src/financial-tests/financial-adversarial.integration.test.ts',
+  'src/financial-tests/financial-integrity-certification.integration.test.ts',
   'src/financial-tests/test-e2e-infrastructure.integration.test.ts'
 );
 const mockPaystackKey = ['sk', 'test', 'financialintegrationonly'].join('_');
