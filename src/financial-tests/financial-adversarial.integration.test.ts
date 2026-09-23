@@ -132,8 +132,8 @@ financialTest('incident dry-run is SELECT-only and fails closed on changed state
   assert.equal((await inspectPayrollWalletIncident(prisma, fx.profile)).status, 'SAFE_TO_EXECUTE');
 });
 
-financialTest('incident wallet maintenance pause is exact and does not block repair', async () => {
-  assert.throws(() => assertIncidentWalletFingerprintMutationAllowed('fcefcb648dfd'), /temporarily unavailable/);
+financialTest('completed incident wallet maintenance pause is removed and repair remains available', async () => {
+  assert.doesNotThrow(() => assertIncidentWalletFingerprintMutationAllowed('fcefcb648dfd'));
   assert.doesNotThrow(() => assertIncidentWalletFingerprintMutationAllowed('unrelated-wallet'));
   const fx = await repairFixture();
   const result = await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', expectedEvidenceDigest(fx.profile), fx.profile);

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { conflict } from "./http-error";
 
 const INCIDENT_WALLET_FINGERPRINT = "fcefcb648dfd";
-export const INCIDENT_WALLET_MUTATIONS_PAUSED = true;
+export const INCIDENT_WALLET_MUTATIONS_PAUSED = false;
 
 const fingerprint = (organizationId: string, walletAccountId: string) =>
   crypto.createHash("sha256").update(`${organizationId}:${walletAccountId}`).digest("hex").slice(0, 12);
