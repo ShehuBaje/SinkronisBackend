@@ -11,6 +11,7 @@
     "test": "cross-env NODE_ENV=test tsx --test src/**/*.test.ts",
     "test:test-db-safety": "cross-env NODE_ENV=test tsx --test src/test-infrastructure/test-database.test.ts",
     "test:financial": "cross-env NODE_ENV=test tsx src/scripts/run-financial-integration-tests.ts",
+    "repair:payroll-wallet-incident": "tsx src/scripts/payroll-wallet-incident-repair.ts",
     "test:db:migrate": "cross-env NODE_ENV=test tsx src/scripts/migrate-financial-test-database.ts",
     "test:db:verify": "cross-env NODE_ENV=test tsx src/scripts/verify-financial-test-database.ts",
     "test:appraisal:integration": "cross-env NODE_ENV=test RUN_APPRAISAL_DB_INTEGRATION=true tsx --test src/modules/hris/hris.appraisal.integration.test.ts",
