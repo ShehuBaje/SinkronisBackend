@@ -7,7 +7,7 @@ import { retryPendingPaystackTransferWebhooks } from "./paystack-transfer-webhoo
 import { reconcileStaleSubscriptionPayments } from "../modules/admin/admin.service";
 import { reconcileStaleWalletFundingAttempts, retryPendingPaystackInboundWebhooks } from "../modules/accounting/accounting.service";
 
-export type FinancialRecoveryTrigger = "VERCEL_CRON" | "BULLMQ" | "TEST";
+export type FinancialRecoveryTrigger = "VERCEL_CRON" | "BULLMQ" | "PLATFORM_ADMIN" | "TEST";
 
 export const runFinancialRecovery = async (input: { trigger: FinancialRecoveryTrigger; provider?: SettlementProvider }) => {
   const startedAt = new Date();

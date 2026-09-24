@@ -5,6 +5,7 @@ import { validate } from "../../core/validate";
 import { authorize } from "../../middleware/rbac.middleware";
 import { requirePlatformAdmin } from "../../middleware/platform-admin.middleware";
 import { financialIntegrityRouter } from "./financial-integrity.routes";
+import { financialOperationsRouter } from "./financial-operations.routes";
 import {
   activatePlatformTenantController,
   activatePlatformTenantSubscriptionController,
@@ -73,6 +74,7 @@ platformAdminRouter.post("/impersonation/exit", asyncHandler(exitPlatformTenantI
 platformAdminRouter.post("/impersonation/stop", asyncHandler(exitPlatformTenantImpersonationController));
 platformAdminRouter.use(requirePlatformAdmin);
 platformAdminRouter.use("/financial-integrity", financialIntegrityRouter);
+platformAdminRouter.use("/financial-operations", financialOperationsRouter);
 
 platformAdminRouter.get("/dashboard", dashboardPermission, validate({ query: platformDashboardQuerySchema }), asyncHandler(getPlatformDashboardController));
 platformAdminRouter.get("/pricing", authorize("platform:pricing:view"), validate({ query: platformPricingQuerySchema }), asyncHandler(getPlatformPricingOverviewController));

@@ -61,6 +61,8 @@ const envSchema = z.object({
   FINANCIAL_WEBHOOK_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
   FINANCIAL_WEBHOOK_PROCESSING_LEASE_MS: z.coerce.number().int().min(30_000).max(900_000).default(120_000),
   FINANCIAL_WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+  FINANCIAL_RECOVERY_FRESHNESS_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
+  FINANCIAL_INTEGRITY_FRESHNESS_MINUTES: z.coerce.number().int().min(1).max(10080).default(1440),
   APPLICATION_VERSION: z.string().max(191).optional(),
   STORAGE_PROVIDER: z.enum(["local", "vercel-blob"]).default("local"),
   BLOB_READ_WRITE_TOKEN: z.string().optional(),

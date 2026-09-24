@@ -12,6 +12,7 @@ if (process.env.FINANCIAL_TEST_PATTERN) args.push(`--test-name-pattern=${process
 args.push(
   'src/financial-tests/financial-adversarial.integration.test.ts',
   'src/financial-tests/financial-integrity-certification.integration.test.ts',
+  'src/financial-tests/financial-operations.integration.test.ts',
   'src/financial-tests/test-e2e-infrastructure.integration.test.ts'
 );
 const mockPaystackKey = ['sk', 'test', 'financialintegrationonly'].join('_');
