@@ -8,6 +8,7 @@ import { snapshotTenantModuleUsage } from "../telemetry/telemetry.service";
 import { expireOrganizationExports, processPendingOrganizationExports } from "../admin/organization-privacy.service";
 import { runFinancialRecovery } from "../../core/financial-recovery";
 import { runFinancialIntegrityScan } from "../../core/financial-integrity-scanner";
+import { runPayrollProcessingCron } from "../payroll/payroll.service";
 
 export const internalRouter = Router();
 
@@ -23,8 +24,8 @@ internalRouter.use((req, _res, next) => {
 });
 
 const runSubscriptionMaintenance = asyncHandler(async (_req, res) => {
-    const lifecycle = await processMyPlanLifecycle();
-    const notifications = await processMyPlanRenewalNotifications(new Date(), ["EMAIL", "IN_APP"]);
+    const lifecycle = await processMyPlanLifecycle(env.SUBSCRIPTION_CRON_BATCH_LIMIT);
+    const notifications = await processMyPlanRenewalNotifications(new Date(), ["EMAIL", "IN_APP"], undefined, env.SUBSCRIPTION_CRON_BATCH_LIMIT);
     const moduleUsageSnapshot = await snapshotTenantModuleUsage();
     const organizationExports = await processPendingOrganizationExports();
     const expiredOrganizationExports = await expireOrganizationExports();
@@ -62,3 +63,4 @@ internalRouter.get(
   }),
 );
 internalRouter.get("/cron/financial-integrity",asyncHandler(async(_req,res)=>{const run=await runFinancialIntegrityScan({trigger:"VERCEL_CRON",limit:100});res.json({success:true,message:"Bounded financial integrity scan completed",data:run});}));
+internalRouter.get("/cron/payroll-processing",asyncHandler(async(_req,res)=>{const result=await runPayrollProcessingCron();res.json({success:true,message:"Bounded Payroll processing completed",data:result});}));

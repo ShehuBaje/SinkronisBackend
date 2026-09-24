@@ -1411,7 +1411,7 @@ const getSubscriptionState = async (organizationId: string, currency: string) =>
   };
 };
 
-const applyDuePlanChanges = async (organizationId?: string) => {
+const applyDuePlanChanges = async (organizationId?: string, limit = 100) => {
   const now = new Date();
   const changes = await prismaAny.subscriptionPlanChange.findMany({
     where: {
@@ -1421,7 +1421,8 @@ const applyDuePlanChanges = async (organizationId?: string) => {
       subscriptionPaymentAttempt: { status: "COMPLETED" },
       effectiveAt: { lte: now },
     },
-    orderBy: { effectiveAt: "asc" }
+    orderBy: { effectiveAt: "asc" },
+    take: limit,
   });
   for (const change of changes) {
     const plan = await getBillingPlan(change.toPlanKey as BillingPlanKey, change.organizationId);
@@ -1448,11 +1449,13 @@ const applyDuePlanChanges = async (organizationId?: string) => {
   return { applied: changes.length };
 };
 
-export const processMyPlanLifecycle = async () => {
-  const appliedPlanChanges = await applyDuePlanChanges();
-  const subscriptions = await prisma.systemConfig.findMany({ where: { key: billingConfigKeys.subscription }, select: { organizationId: true } });
+export const processMyPlanLifecycle = async (limit = 100, window = Math.floor(Date.now() / 86_400_000)) => {
+  const appliedPlanChanges = await applyDuePlanChanges(undefined, limit);
+  const total = await prisma.systemConfig.count({ where: { key: billingConfigKeys.subscription } });
+  const skip = total > limit ? (window * limit) % total : 0;
+  const subscriptions = await prisma.systemConfig.findMany({ where: { key: billingConfigKeys.subscription }, orderBy: { organizationId: "asc" }, skip, take: limit, select: { organizationId: true } });
   for (const subscription of subscriptions) await getSubscriptionState(subscription.organizationId, "NGN");
-  return { processed: subscriptions.length, appliedPlanChanges: appliedPlanChanges.applied };
+  return { processed: subscriptions.length, appliedPlanChanges: appliedPlanChanges.applied, bounded: true, limit, remainingEstimate: Math.max(0, total - subscriptions.length) };
 };
 
 const getPaymentMethodState = async (organizationId: string, fallbackEmail?: string | null) => {
@@ -2798,8 +2801,10 @@ export const downloadMyPlanInvoice = async (req: Request) => {
   return { buffer: Buffer.from(pdf), filename: `${invoiceNumber}.pdf` };
 };
 
-export const processMyPlanRenewalNotifications = async (asOf = new Date(), channels: Array<"EMAIL" | "IN_APP" | "PUSH"> = ["EMAIL", "IN_APP"], organizationId?: string) => {
-  const rows = await prisma.systemConfig.findMany({ where: { key: billingConfigKeys.subscription, ...(organizationId ? { organizationId } : {}) } });
+export const processMyPlanRenewalNotifications = async (asOf = new Date(), channels: Array<"EMAIL" | "IN_APP" | "PUSH"> = ["EMAIL", "IN_APP"], organizationId?: string, limit = 100) => {
+  const total = await prisma.systemConfig.count({ where: { key: billingConfigKeys.subscription, ...(organizationId ? { organizationId } : {}) } });
+  const skip = !organizationId && total > limit ? (Math.floor(asOf.getTime() / 86_400_000) * limit) % total : 0;
+  const rows = await prisma.systemConfig.findMany({ where: { key: billingConfigKeys.subscription, ...(organizationId ? { organizationId } : {}) }, orderBy: { organizationId: "asc" }, skip, take: limit });
   let created = 0; let sent = 0; let failed = 0;
   for (const row of rows) {
     const value = row.value as Record<string, unknown>;
@@ -2840,7 +2845,7 @@ export const processMyPlanRenewalNotifications = async (asOf = new Date(), chann
     await prismaAny.billingNotification.update({ where: { id: notification.id }, data: { channels: channelStates, status: allSent ? "SENT" : "FAILED", attempts: { increment: 1 }, lastAttemptAt: new Date(), sentAt: allSent ? new Date() : null, failedAt: deliveryFailed ? new Date() : null, errorMessage: deliveryFailed ? "One or more channels failed" : null } });
     if (allSent) sent++; else failed++;
   }
-  return { processedAt: asOf, leadDays: 15, created, sent, failed, duplicateNotificationsPrevented: true };
+  return { processedAt: asOf, leadDays: 15, created, sent, failed, scanned: rows.length, bounded: true, remainingEstimate: Math.max(0, total - rows.length), duplicateNotificationsPrevented: true };
 };
 
 export const triggerMyPlanRenewalNotifications = async (req: Request) => {

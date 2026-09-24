@@ -12,6 +12,10 @@
     {
       "path": "/api/v1/internal/cron/financial-integrity",
       "schedule": "17 * * * *"
+    },
+    {
+      "path": "/api/v1/internal/cron/payroll-processing",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

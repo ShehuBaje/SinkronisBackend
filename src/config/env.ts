@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { z } from "zod";
 
-const envSchema = z.object({
+export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().min(1),
@@ -14,6 +14,7 @@ const envSchema = z.object({
   REDIS_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   RATE_LIMIT_STORE: z.enum(["memory", "redis"]).default("memory"),
   BACKGROUND_JOBS_MODE: z.enum(["inline", "queue"]).default("queue"),
+  DEPLOYMENT_RUNTIME: z.enum(["serverless", "persistent-worker"]).default("serverless"),
   CRON_SECRET: z.string().min(16).optional(),
   JWT_ACCESS_SECRET: z.string().min(24),
   JWT_REFRESH_SECRET: z.string().min(24),
@@ -63,6 +64,9 @@ const envSchema = z.object({
   FINANCIAL_WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
   FINANCIAL_RECOVERY_FRESHNESS_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
   FINANCIAL_INTEGRITY_FRESHNESS_MINUTES: z.coerce.number().int().min(1).max(10080).default(1440),
+  PAYROLL_CRON_RUN_LIMIT: z.coerce.number().int().min(1).max(20).default(5),
+  PAYROLL_CRON_BATCH_LIMIT: z.coerce.number().int().min(1).max(20).default(5),
+  SUBSCRIPTION_CRON_BATCH_LIMIT: z.coerce.number().int().min(1).max(500).default(100),
   APPLICATION_VERSION: z.string().max(191).optional(),
   STORAGE_PROVIDER: z.enum(["local", "vercel-blob"]).default("local"),
   BLOB_READ_WRITE_TOKEN: z.string().optional(),
@@ -85,6 +89,15 @@ const envSchema = z.object({
   }
   if (!value.CRON_SECRET) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["CRON_SECRET"], message: "CRON_SECRET is required in production" });
+  }
+  if (value.DEPLOYMENT_RUNTIME === "serverless" && value.BACKGROUND_JOBS_MODE === "queue") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["BACKGROUND_JOBS_MODE"], message: "Serverless production must use inline background delivery; durable Cron paths handle correctness-critical recovery" });
+  }
+  if (value.PAYSTACK_TRANSFERS_ENABLED && !value.PAYSTACK_TRANSFERS_MODE) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["PAYSTACK_TRANSFERS_MODE"], message: "Enabled Paystack transfers require an explicit transfer mode" });
+  }
+  if (value.PAYSTACK_TRANSFERS_ENABLED && !value.PAYSTACK_SECRET_KEY) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["PAYSTACK_SECRET_KEY"], message: "Enabled Paystack transfers require configured provider credentials" });
   }
   if (value.TRUST_PROXY_HOPS > 0 && !value.TRUST_PROXY_CIDRS.trim()) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["TRUST_PROXY_CIDRS"], message: "Production proxy trust requires explicit trusted proxy CIDRs; numeric hop trust is permitted only outside production" });

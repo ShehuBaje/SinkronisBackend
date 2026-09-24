@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import crypto from "node:crypto";
-import { badRequest, conflict, notFound, serviceUnavailable } from "../../core/http-error";
+import { badRequest, conflict, notFound } from "../../core/http-error";
 import { env } from "../../config/env";
 import { prisma } from "../../core/prisma";
 import { payrollCreateEmployeeSchema } from "./payroll.validation";
@@ -229,7 +229,6 @@ const payrollJobOptions = { attempts: 5, backoff: { type: "exponential" as const
 const enqueuePayrollJob = (name: string, data: Record<string, unknown>, jobId: string) => getQueueByName(PAYROLL_QUEUE_NAME).add(name, data, { ...payrollJobOptions, jobId });
 
 export const createAndComputePayRun = async (organizationId: string, input: any, user: AuthUser) => {
-  if (env.BACKGROUND_JOBS_MODE !== "queue" || !isQueueBackendAvailable()) throw serviceUnavailable("Payroll calculation queue is unavailable", { available: false, reasonCode: "PAYROLL_QUEUE_UNAVAILABLE", retryable: true, availableActions: ["RETRY"], nextAction: "Retry when background processing is available" });
   const periodStart = new Date(`${input.from}T00:00:00.000Z`); const periodEnd = new Date(`${input.to}T23:59:59.999Z`);
   const settings = await prisma.organizationGeneralSettings.findUnique({ where: { organizationId }, select: { currency: true } }); const organization = await prisma.organization.findUnique({ where: { id: organizationId }, select: { currency: true } }); const currency = settings?.currency ?? organization?.currency ?? "NGN";
   const result = await prisma.$transaction(async (tx) => {
@@ -237,13 +236,15 @@ export const createAndComputePayRun = async (organizationId: string, input: any,
     const overlap = await tx.payrollRun.findFirst({ where: { organizationId, status: { not: "CANCELLED" }, periodStart: { lte: periodEnd }, periodEnd: { gte: periodStart } }, select: { id: true } }); if (overlap) throw conflict("A payroll run already exists for an overlapping period");
     return tx.payrollRun.create({ data: { organizationId, name: input.periodLabel, periodStart, periodEnd, payDate: input.payDate ? new Date(`${input.payDate}T00:00:00.000Z`) : null, status: "PROCESSING", processingHeartbeatAt: new Date(), calculationInput: { periodFrom: input.from, periodTo: input.to, payDate: input.payDate ?? null, currency, requestedById: user.id, requestedAt: new Date().toISOString(), batchSize: payrollBatchSize } } });
   });
-  try { await enqueuePayrollJob("initialize-pay-run", { payrollRunId: result.id }, `payroll-init-${result.id}`); }
-  catch { await prisma.payrollRun.delete({ where: { id: result.id } }); throw serviceUnavailable("Payroll calculation could not be queued", { available: false, reasonCode: "PAYROLL_QUEUE_UNAVAILABLE", retryable: true, availableActions: ["RETRY"], nextAction: "Retry creating the pay run" }); }
+  if (env.BACKGROUND_JOBS_MODE === "queue" && isQueueBackendAvailable()) {
+    try { await enqueuePayrollJob("initialize-pay-run", { payrollRunId: result.id }, `payroll-init-${result.id}`); }
+    catch { /* The durable PROCESSING run is recovered by the authenticated Payroll Cron. */ }
+  }
   await createAuditLog({ organizationId, actorUserId: user.id, action: "PAYROLL_CALCULATION_QUEUED", resource: "PAYROLL_RUN", resourceId: result.id, summary: `Queued payroll ${result.name}`, metadata: { periodStart: input.from, periodEnd: input.to, newStatus: "PROCESSING" } });
   return getPayRunDetail(organizationId, result.id, { page: 1, limit: 50 }, user);
 };
 
-export const initializePayRunCalculation = async (payrollRunId: string) => {
+export const initializePayRunCalculation = async (payrollRunId: string, options: { execution?: "queue" | "direct"; batchLimit?: number } = {}) => {
   const run = await prisma.payrollRun.findFirst({ where: { id: payrollRunId, status: "PROCESSING" } }); if (!run) return { skipped: true };
   const existing = await prisma.payrollCalculationBatch.count({ where: { payrollRunId } });
   if (!existing) {
@@ -251,14 +252,19 @@ export const initializePayRunCalculation = async (payrollRunId: string) => {
     while (true) {
       const employees = await prisma.employee.findMany({ where: payRunEmployeeWhere(run.organizationId, run.periodStart, run.periodEnd), orderBy: { id: "asc" }, take: payrollBatchSize, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}), select: { id: true } });
       if (!employees.length) break;
-      await prisma.payrollCalculationBatch.create({ data: { organizationId: run.organizationId, payrollRunId, batchIndex, employeeIds: employees.map((employee) => employee.id), expectedCount: employees.length } });
+      await prisma.payrollCalculationBatch.upsert({ where: { payrollRunId_batchIndex: { payrollRunId, batchIndex } }, create: { organizationId: run.organizationId, payrollRunId, batchIndex, employeeIds: employees.map((employee) => employee.id), expectedCount: employees.length }, update: {} });
       expected += employees.length; batchIndex += 1; cursor = employees.at(-1)!.id;
       if (employees.length < payrollBatchSize) break;
     }
     if (!expected) { await prisma.payrollRun.update({ where: { id: payrollRunId }, data: { status: "FAILED", failureReason: "No eligible employees are configured for this payroll period", failedEmployeeCount: 0 } }); return { failed: true }; }
     await prisma.payrollRun.update({ where: { id: payrollRunId }, data: { expectedEmployeeCount: expected, employeeCount: expected, processingHeartbeatAt: new Date() } });
   }
-  const batches = await prisma.payrollCalculationBatch.findMany({ where: { payrollRunId, status: "PENDING" }, select: { id: true } });
+  const batches = await prisma.payrollCalculationBatch.findMany({ where: { payrollRunId, status: "PENDING" }, orderBy: { batchIndex: "asc" }, take: options.batchLimit, select: { id: true } });
+  if (options.execution === "direct") {
+    const results = [];
+    for (const batch of batches) results.push(await processPayRunBatch(batch.id));
+    return { processedBatches: results.length };
+  }
   await Promise.all(batches.map((batch) => enqueuePayrollJob("calculate-payroll-batch", { batchId: batch.id }, `payroll-batch-${batch.id}`)));
   return { queuedBatches: batches.length };
 };
@@ -290,13 +296,19 @@ export const failPayRunBatch = async (batchId: string, error: Error) => {
   await prisma.$transaction([prisma.payrollCalculationBatch.update({ where: { id: batch.id }, data: { status: "FAILED", failedCount: batch.expectedCount, errorMessage: error.message.slice(0, 2000) } }), prisma.payrollRun.update({ where: { id: batch.payrollRunId }, data: { status: "FAILED", failedEmployeeCount: { increment: batch.expectedCount }, failureReason: "One or more payroll calculation batches failed" } })]);
 };
 
-export const reconcileProcessingPayRuns = async () => {
+export const reconcileProcessingPayRuns = async (options: { execution?: "queue" | "direct"; runLimit?: number; batchLimit?: number } = {}) => {
   const stale = new Date(Date.now() - 5 * 60_000);
   await prisma.payrollCalculationBatch.updateMany({ where: { status: "PROCESSING", updatedAt: { lt: stale } }, data: { status: "PENDING", errorMessage: "Recovered after an interrupted worker" } });
-  const runs = await prisma.payrollRun.findMany({ where: { status: "PROCESSING" }, orderBy: { updatedAt: "asc" }, take: 20, select: { id: true } });
-  await Promise.all(runs.map((run) => enqueuePayrollJob("initialize-pay-run", { payrollRunId: run.id }, `payroll-recover-${run.id}-${Math.floor(Date.now() / 300_000)}`)));
+  const runs = await prisma.payrollRun.findMany({ where: { status: "PROCESSING" }, orderBy: { updatedAt: "asc" }, take: options.runLimit ?? 20, select: { id: true } });
+  if (options.execution === "direct") {
+    for (const run of runs) await initializePayRunCalculation(run.id, { execution: "direct", batchLimit: options.batchLimit ?? 5 });
+  } else {
+    await Promise.all(runs.map((run) => enqueuePayrollJob("initialize-pay-run", { payrollRunId: run.id }, `payroll-recover-${run.id}-${Math.floor(Date.now() / 300_000)}`)));
+  }
   return { recoveredRuns: runs.length };
 };
+
+export const runPayrollProcessingCron = () => reconcileProcessingPayRuns({ execution: "direct", runLimit: env.PAYROLL_CRON_RUN_LIMIT, batchLimit: env.PAYROLL_CRON_BATCH_LIMIT });
 export const getPayRunDetail = async (organizationId: string, payRunId: string, query: any, user: AuthUser) => { const run = await prisma.payrollRun.findFirst({ where: { id: payRunId, organizationId } }); if (!run) throw notFound("Payroll run not found"); const where: Prisma.PayslipWhereInput = { organizationId, payrollRunId: payRunId, ...(query.search ? { OR: [{ employeeNameSnapshot: { contains: query.search } }, { employeeNoSnapshot: { contains: query.search } }, { departmentNameSnapshot: { contains: query.search } }] } : {}) }; const [rows, total] = await Promise.all([prisma.payslip.findMany({ where, orderBy: { employeeNameSnapshot: "asc" }, skip: (query.page - 1) * query.limit, take: query.limit }), prisma.payslip.count({ where })]); const items = rows.map((row) => ({ id: row.id, employeeId: row.employeeId, employeeNo: row.employeeNoSnapshot, employeeName: row.employeeNameSnapshot, role: row.roleSnapshot, department: { id: row.departmentIdSnapshot, name: row.departmentNameSnapshot }, gross: Number(row.grossPay), paye: Number(row.payeTax), pension: Number(row.pension), nhf: Number(row.nhf), loans: Number(row.loanDeduction), otherDeductions: Number(row.customDeduction), netPay: Number(row.netPay), bank: row.bankSnapshot, status: row.paymentStatus, currency: row.currency })); return { payRun: payRunDto(run, user.permissions.includes("payroll:runs:approve")), items, pagination: payeePagination(query.page, query.limit, total) }; };
 export const approvePayRun = async (organizationId: string, payRunId: string, user: AuthUser) => { const now = new Date(); const result = await prisma.$transaction(async (tx) => { const updated = await tx.payrollRun.updateMany({ where: { id: payRunId, organizationId, status: "PENDING_APPROVAL" }, data: { status: "APPROVED", approvedAt: now, approvedById: user.id } }); if (!updated.count) { const existing = await tx.payrollRun.findFirst({ where: { id: payRunId, organizationId }, select: { status: true } }); if (!existing) throw notFound("Payroll run not found"); throw conflict(`Payroll run cannot be approved from ${existing.status}`); } const row = await tx.payrollRun.findUniqueOrThrow({ where: { id: payRunId } }); await createAuditLog({ organizationId, actorUserId: user.id, action: "PAYROLL_APPROVED", resource: "PAYROLL_RUN", resourceId: payRunId, summary: `Approved payroll ${row.name}`, metadata: { previousStatus: "PENDING_APPROVAL", newStatus: "APPROVED" } }, tx); return row; }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }); return payRunDto(result, true); };
 export const exportPayRun = async (organizationId: string, payRunId: string, user: AuthUser) => { const items = await collectExportRows(async (page) => { const detail = await getPayRunDetail(organizationId, payRunId, { page, limit: 100 }, user); return { rows: detail.items, totalPages: detail.pagination.totalPages }; }); const header = ["EmployeeID", "Employee", "Department", "Gross", "PAYE", "Pension", "NHF", "Loans", "OtherDeductions", "NetPay", "Bank", "AccountNumber", "Status"]; const lines = items.map((item: any) => [item.employeeNo, item.employeeName, item.department.name, item.gross, item.paye, item.pension, item.nhf, item.loans, item.otherDeductions, item.netPay, item.bank?.bankName, item.bank?.accountNumber, item.status]); await createAuditLog({ organizationId, actorUserId: user.id, action: "PAYROLL_EXPORTED", resource: "PAYROLL_RUN", resourceId: payRunId, summary: "Exported payroll run", metadata: { exportedRowCount: items.length } }); return `\uFEFF${[header, ...lines].map((row) => row.map(sanitizePayrollCsv).join(",")).join("\r\n")}`; };
