@@ -1,0 +1,14 @@
+import {Router} from "express";
+import {asyncHandler} from "../../core/async-handler";
+import {authorize} from "../../middleware/rbac.middleware";
+import {getFinancialOperationsSummary,listAttentionSettlements,listAttentionWebhooks,listInboundRecovery,listRecoveryRuns,requeueDeadLetterWebhook,triggerFinancialRecovery} from "./financial-operations.service";
+export const financialOperationsRouter=Router();
+const read=authorize("platform:financial-operations:view");
+const manage=authorize("platform:financial-operations:manage");
+financialOperationsRouter.get("/health",read,asyncHandler(async(_req,res)=>res.json({success:true,data:await getFinancialOperationsSummary()})));
+financialOperationsRouter.get("/recovery-runs",read,asyncHandler(async(req,res)=>res.json({success:true,data:await listRecoveryRuns(req.query)})));
+financialOperationsRouter.get("/settlements",read,asyncHandler(async(req,res)=>res.json({success:true,data:await listAttentionSettlements(req.query)})));
+financialOperationsRouter.get("/webhooks",read,asyncHandler(async(req,res)=>res.json({success:true,data:await listAttentionWebhooks(req.query)})));
+financialOperationsRouter.get("/inbound-attempts",read,asyncHandler(async(req,res)=>res.json({success:true,data:await listInboundRecovery(req.query)})));
+financialOperationsRouter.post("/recovery-runs",manage,asyncHandler(async(req,res)=>res.status(201).json({success:true,data:await triggerFinancialRecovery(req.user!)})));
+financialOperationsRouter.post("/webhooks/:id/requeue",manage,asyncHandler(async(req,res)=>res.json({success:true,data:await requeueDeadLetterWebhook(String(req.params.id),req.user!)})));

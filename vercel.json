@@ -4,6 +4,18 @@
     {
       "path": "/api/v1/internal/cron/subscriptions",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/v1/internal/cron/financial-recovery",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/v1/internal/cron/financial-integrity",
+      "schedule": "17 * * * *"
+    },
+    {
+      "path": "/api/v1/internal/cron/payroll-processing",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

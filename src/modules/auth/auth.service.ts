@@ -275,6 +275,7 @@ export const refreshAuthenticationTokens = async (input: z.infer<typeof refreshT
       userId: payload.sub,
       organizationId: payload.organizationId,
       refreshTokenHash,
+      isCurrent: true,
       revokedAt: null,
       expiresAt: { gt: now }
     },
@@ -287,7 +288,7 @@ export const refreshAuthenticationTokens = async (input: z.infer<typeof refreshT
 
   const tokens = signTokens(session.user, session.id);
   const rotated = await prisma.userSession.updateMany({
-    where: { id: session.id, refreshTokenHash, revokedAt: null, expiresAt: { gt: now } },
+    where: { id: session.id, refreshTokenHash, isCurrent: true, revokedAt: null, expiresAt: { gt: now } },
     data: {
       refreshTokenHash: hashRefreshToken(tokens.refreshToken),
       lastSeenAt: now,
@@ -513,19 +514,25 @@ const completeLoginSuccess = async (
     } as any
   });
 
-  await prismaAny.$transaction([
-    prismaAny.userSession.updateMany({
+  await prismaAny.$transaction(async (tx: Prisma.TransactionClient) => {
+    await tx.$queryRaw`SELECT id FROM User WHERE id = ${user.id} AND organizationId = ${user.organizationId} FOR UPDATE`;
+    const now = new Date();
+    await tx.userSession.updateMany({
+      where: { organizationId: user.organizationId, userId: user.id, revokedAt: null },
+      data: { isCurrent: false, revokedAt: now, revokeReason: "Superseded by a new login" }
+    });
+    await tx.userSession.deleteMany({
       where: {
         organizationId: user.organizationId,
         userId: user.id,
-        revokedAt: null,
-        isCurrent: true
-      },
-      data: {
-        isCurrent: false
+        isCurrent: false,
+        OR: [
+          { expiresAt: { lt: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000) } },
+          { revokedAt: { lt: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000) } }
+        ]
       }
-    }),
-    prismaAny.userSession.create({
+    });
+    await tx.userSession.create({
       data: {
         id: sessionId,
         organizationId: user.organizationId,
@@ -542,8 +549,8 @@ const completeLoginSuccess = async (
         isCurrent: true,
         expiresAt: tokenExpiresAt(tokens.refreshToken)
       }
-    })
-  ]);
+    });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 
   await logAuthEvent({
     organizationId: user.organizationId,
@@ -1084,7 +1091,7 @@ export const acceptTenantAdminInvitation = async (input: z.infer<typeof acceptTe
     if (consumed.count !== 1) throw badRequest("Invitation is invalid or expired");
     await tx.user.update({ where: { id: user.id }, data: { passwordHash, passwordChangedAt: acceptedAt, isActive: true } });
     await tx.accountingAgentProfile.updateMany({ where: { organizationId: invitation.organizationId, userId: user.id }, data: { status: "ACTIVE", deactivatedAt: null } });
-    await tx.userSession.updateMany({ where: { organizationId: invitation.organizationId, userId: user.id, revokedAt: null }, data: { revokedAt: acceptedAt, revokeReason: "Tenant invitation password established" } });
+    await tx.userSession.updateMany({ where: { organizationId: invitation.organizationId, userId: user.id, revokedAt: null }, data: { revokedAt: acceptedAt, revokeReason: "Tenant invitation password established", isCurrent: false } });
   });
   await createAuditLog({ organizationId: invitation.organizationId, actorUserId: user.id, action: "TENANT_ADMIN_INVITATION_ACCEPTED", resource: "INVITATION", resourceId: invitation.id, summary: "Tenant Admin accepted workspace invitation", metadata: { userId: user.id } });
   return { message: "Workspace password created successfully", organization: { name: invitation.organization.name, slug: invitation.organization.slug }, email: invitation.email, role: invitation.role?.name ?? null };

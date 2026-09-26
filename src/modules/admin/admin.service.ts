@@ -26,6 +26,7 @@ import {
 import { CompanyRegistryUnavailableError, companyNamesMatch, getCompanyRegistryProvider, normalizeRegistrationNumber, type CompanyVerificationResult } from "./company-registry.service";
 import { deriveSubscriptionStatus, isRenewalReminderDue } from "../billing/billing.rules";
 import { isOrganizationModuleEnabled } from "../billing/module-access.service";
+import { claimSubscriptionPaymentRecovery, inboundRecoveryDelayMs, releaseSubscriptionPaymentRecovery } from "../../core/inbound-payment-recovery";
 import { supportedCurrencies, supportedDateFormats, supportedLanguages, type AdminAuditLogInput, type AuditLogRow, type BrandingSettingsResponse, type LocaleSettingsResponse, type NotificationChannelPreferences, type PlatformAnnouncementResponse, type QuickAction, type SystemAlertRow, type TenantNotificationChannelKey } from "./admin.interface";
 import {
   branchCreateSchema,
@@ -1410,7 +1411,7 @@ const getSubscriptionState = async (organizationId: string, currency: string) =>
   };
 };
 
-const applyDuePlanChanges = async (organizationId?: string) => {
+const applyDuePlanChanges = async (organizationId?: string, limit = 100) => {
   const now = new Date();
   const changes = await prismaAny.subscriptionPlanChange.findMany({
     where: {
@@ -1420,7 +1421,8 @@ const applyDuePlanChanges = async (organizationId?: string) => {
       subscriptionPaymentAttempt: { status: "COMPLETED" },
       effectiveAt: { lte: now },
     },
-    orderBy: { effectiveAt: "asc" }
+    orderBy: { effectiveAt: "asc" },
+    take: limit,
   });
   for (const change of changes) {
     const plan = await getBillingPlan(change.toPlanKey as BillingPlanKey, change.organizationId);
@@ -1447,11 +1449,13 @@ const applyDuePlanChanges = async (organizationId?: string) => {
   return { applied: changes.length };
 };
 
-export const processMyPlanLifecycle = async () => {
-  const appliedPlanChanges = await applyDuePlanChanges();
-  const subscriptions = await prisma.systemConfig.findMany({ where: { key: billingConfigKeys.subscription }, select: { organizationId: true } });
+export const processMyPlanLifecycle = async (limit = 100, window = Math.floor(Date.now() / 86_400_000)) => {
+  const appliedPlanChanges = await applyDuePlanChanges(undefined, limit);
+  const total = await prisma.systemConfig.count({ where: { key: billingConfigKeys.subscription } });
+  const skip = total > limit ? (window * limit) % total : 0;
+  const subscriptions = await prisma.systemConfig.findMany({ where: { key: billingConfigKeys.subscription }, orderBy: { organizationId: "asc" }, skip, take: limit, select: { organizationId: true } });
   for (const subscription of subscriptions) await getSubscriptionState(subscription.organizationId, "NGN");
-  return { processed: subscriptions.length, appliedPlanChanges: appliedPlanChanges.applied };
+  return { processed: subscriptions.length, appliedPlanChanges: appliedPlanChanges.applied, bounded: true, limit, remainingEstimate: Math.max(0, total - subscriptions.length) };
 };
 
 const getPaymentMethodState = async (organizationId: string, fallbackEmail?: string | null) => {
@@ -2156,6 +2160,7 @@ const initializeSubscriptionPayment = async (input: SubscriptionPaymentInput) =>
   }
 
   try {
+    await prisma.subscriptionPaymentAttempt.update({ where: { id: attempt.id }, data: { providerInitiationAttemptedAt: new Date() } });
     const provider = await initializePaystackTransaction({
       email: input.email,
       amount: paystackMinorUnits(attempt.amount),
@@ -2182,12 +2187,13 @@ const initializeSubscriptionPayment = async (input: SubscriptionPaymentInput) =>
     });
   } catch (error) {
     const providerError = error instanceof PaystackProviderError ? error : null;
+    const definitivelyRejected = providerError !== null && !providerError.ambiguous;
     attempt = await prisma.subscriptionPaymentAttempt.update({
       where: { id: attempt.id },
       data: {
-        status: providerError?.ambiguous ? "UNKNOWN" : "FAILED",
-        activeKey: providerError?.ambiguous ? activeKey : null,
-        failureReason: providerError?.message.slice(0, 500) ?? "Provider initialization failed",
+        status: definitivelyRejected ? "FAILED" : "UNKNOWN",
+        activeKey: definitivelyRejected ? null : activeKey,
+        failureReason: (error instanceof Error ? error.message : "Provider initialization outcome is unknown").slice(0, 500),
       },
     });
     if (providerError) {
@@ -2311,7 +2317,7 @@ const finalizeSubscriptionPayment = async (attemptId: string, verification: Pays
     const claimed = await tx.subscriptionPaymentAttempt.updateMany({
       where: {
         id: before.id,
-        status: { in: ["INITIALIZING", "INITIALIZED", "UNKNOWN", "VERIFIED"] },
+        status: { in: ["INITIALIZING", "INITIALIZED", "UNKNOWN"] },
       },
       data: {
         status: "VERIFIED",
@@ -2425,12 +2431,45 @@ const finalizeSubscriptionPayment = async (attemptId: string, verification: Pays
   return subscriptionPaymentDto(result);
 };
 
+type SubscriptionVerifier = (reference: string) => Promise<PaystackVerifyData>;
+
+export const reconcileStaleSubscriptionPayments = async (verifier: SubscriptionVerifier = verifyPaystackTransaction, limit = env.PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE, now = new Date()) => {
+  const staleBefore = new Date(now.getTime() - env.PAYSTACK_TRANSFER_STALE_MS);
+  const attempts = await prisma.subscriptionPaymentAttempt.findMany({
+    where: { provider: "PAYSTACK", status: { in: ["INITIALIZING", "INITIALIZED", "UNKNOWN"] }, updatedAt: { lte: staleBefore }, reconciliationDeadLetteredAt: null, OR: [{ nextReconciliationAt: null }, { nextReconciliationAt: { lte: now } }] },
+    orderBy: { updatedAt: "asc" }, take: Math.min(limit, env.PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE), select: { id: true },
+  });
+  let claimed = 0; let reconciled = 0; let unresolved = 0; let errors = 0;
+  for (const candidate of attempts) {
+    const lease = await claimSubscriptionPaymentRecovery(candidate.id, now);
+    if (!lease) continue;
+    claimed += 1;
+    try {
+      const attempt = await prisma.subscriptionPaymentAttempt.findFirstOrThrow({ where: { id: candidate.id, reconciliationClaimToken: lease.claimToken } });
+      const verification = await verifier(attempt.reference);
+      try { await finalizeSubscriptionPayment(attempt.id, verification); } catch (error) {
+        const state = await prisma.subscriptionPaymentAttempt.findUniqueOrThrow({ where: { id: attempt.id }, select: { status: true } });
+        if (state.status !== "FAILED") throw error;
+      }
+      await releaseSubscriptionPaymentRecovery(attempt.id, lease.claimToken);
+      reconciled += 1;
+    } catch (error) {
+      errors += 1; unresolved += 1;
+      const current = await prisma.subscriptionPaymentAttempt.findUnique({ where: { id: candidate.id }, select: { reconciliationAttempts: true, status: true } });
+      const exhausted = (current?.reconciliationAttempts ?? 0) >= env.FINANCIAL_WEBHOOK_MAX_ATTEMPTS;
+      await releaseSubscriptionPaymentRecovery(candidate.id, lease.claimToken, { error: error instanceof Error ? error.message : "Subscription reconciliation failed", nextAttemptAt: exhausted ? undefined : new Date(now.getTime() + inboundRecoveryDelayMs(current?.reconciliationAttempts ?? 1)), deadLetteredAt: exhausted ? now : undefined });
+    }
+  }
+  return { inspected: attempts.length, claimed, reconciled, unresolved, errors };
+};
+
 export const financialSubscriptionTestHooks = {
   initializeSubscriptionPayment,
   finalizeSubscriptionPayment,
+  reconcileStaleSubscriptionPayments,
 };
 
-const verifyAndFinalizeSubscriptionPayment = async (attemptId: string) => {
+export const verifyAndFinalizeSubscriptionPayment = async (attemptId: string) => {
   const attempt = await prisma.subscriptionPaymentAttempt.findUnique({ where: { id: attemptId } });
   if (!attempt) throw notFound("Subscription payment attempt not found");
   if (attempt.status === "COMPLETED") return subscriptionPaymentDto(attempt);
@@ -2762,8 +2801,10 @@ export const downloadMyPlanInvoice = async (req: Request) => {
   return { buffer: Buffer.from(pdf), filename: `${invoiceNumber}.pdf` };
 };
 
-export const processMyPlanRenewalNotifications = async (asOf = new Date(), channels: Array<"EMAIL" | "IN_APP" | "PUSH"> = ["EMAIL", "IN_APP"], organizationId?: string) => {
-  const rows = await prisma.systemConfig.findMany({ where: { key: billingConfigKeys.subscription, ...(organizationId ? { organizationId } : {}) } });
+export const processMyPlanRenewalNotifications = async (asOf = new Date(), channels: Array<"EMAIL" | "IN_APP" | "PUSH"> = ["EMAIL", "IN_APP"], organizationId?: string, limit = 100) => {
+  const total = await prisma.systemConfig.count({ where: { key: billingConfigKeys.subscription, ...(organizationId ? { organizationId } : {}) } });
+  const skip = !organizationId && total > limit ? (Math.floor(asOf.getTime() / 86_400_000) * limit) % total : 0;
+  const rows = await prisma.systemConfig.findMany({ where: { key: billingConfigKeys.subscription, ...(organizationId ? { organizationId } : {}) }, orderBy: { organizationId: "asc" }, skip, take: limit });
   let created = 0; let sent = 0; let failed = 0;
   for (const row of rows) {
     const value = row.value as Record<string, unknown>;
@@ -2804,7 +2845,7 @@ export const processMyPlanRenewalNotifications = async (asOf = new Date(), chann
     await prismaAny.billingNotification.update({ where: { id: notification.id }, data: { channels: channelStates, status: allSent ? "SENT" : "FAILED", attempts: { increment: 1 }, lastAttemptAt: new Date(), sentAt: allSent ? new Date() : null, failedAt: deliveryFailed ? new Date() : null, errorMessage: deliveryFailed ? "One or more channels failed" : null } });
     if (allSent) sent++; else failed++;
   }
-  return { processedAt: asOf, leadDays: 15, created, sent, failed, duplicateNotificationsPrevented: true };
+  return { processedAt: asOf, leadDays: 15, created, sent, failed, scanned: rows.length, bounded: true, remainingEstimate: Math.max(0, total - rows.length), duplicateNotificationsPrevented: true };
 };
 
 export const triggerMyPlanRenewalNotifications = async (req: Request) => {

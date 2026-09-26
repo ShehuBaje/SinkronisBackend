@@ -309,7 +309,7 @@ model AuditLog {
   hash           String?      @db.Char(64)
   sequence       Int?
   actorUser      User?        @relation(fields: [actorUserId], references: [id], map: "AuditLog_actorUserId_fkey")
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuditLog_organizationId_fkey")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "AuditLog_organizationId_fkey")
 
   @@unique([organizationId, sequence], map: "AuditLog_organizationId_sequence_key")
   @@index([actorUserId], map: "AuditLog_actorUserId_fkey")
@@ -324,7 +324,7 @@ model AuditLogChain {
   lastHash       String?      @db.Char(64)
   sequence       Int          @default(0)
   updatedAt      DateTime     @updatedAt
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuditLogChain_organizationId_fkey")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "AuditLogChain_organizationId_fkey")
 
   @@map("AuditLogChain")
 }
@@ -407,7 +407,7 @@ model BillingHistory {
   metadata                     Json?
   createdAt                    DateTime                    @default(now())
   updatedAt                    DateTime                    @updatedAt
-  organization                 Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "BillingHistory_organizationId_fkey")
+  organization                 Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "BillingHistory_organizationId_fkey")
   subscriptionPaymentAttempt   SubscriptionPaymentAttempt? @relation(fields: [subscriptionPaymentAttemptId], references: [id], onDelete: SetNull, map: "BillingHistory_subscriptionPaymentAttemptId_fkey")
 
   @@index([organizationId, billedAt], map: "BillingHistory_organizationId_billedAt_idx")
@@ -1606,37 +1606,46 @@ model PaymentCard {
 }
 
 model SubscriptionPaymentAttempt {
-  id                String                  @id @default(cuid())
-  organizationId    String
-  operationType     String                  @db.VarChar(32)
-  planKey           String                  @db.VarChar(64)
-  fromPlanKey       String?                 @db.VarChar(64)
-  billingCycle      String                  @db.VarChar(16)
-  amount            Decimal                 @db.Decimal(14, 2)
-  currency          String                  @default("NGN") @db.VarChar(8)
-  provider          String                  @default("PAYSTACK") @db.VarChar(32)
-  reference         String                  @unique(map: "SubscriptionPaymentAttempt_reference_key")
-  idempotencyKey    String                  @db.VarChar(191)
-  activeKey         String?                 @unique(map: "SubscriptionPaymentAttempt_activeKey_key") @db.VarChar(191)
-  status            String                  @default("CREATED") @db.VarChar(32)
-  authorizationUrl  String?                 @db.Text
-  accessCode        String?                 @db.VarChar(191)
-  providerReference String?                 @db.VarChar(191)
-  providerPayload   Json?
-  automaticRenewal  Boolean                 @default(true)
-  effectiveAt       DateTime?
-  failureReason     String?                 @db.Text
-  verifiedAt        DateTime?
-  completedAt       DateTime?
-  createdByUserId   String?
-  createdAt         DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
-  organization      Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SubscriptionPaymentAttempt_organizationId_fkey")
-  billingHistory    BillingHistory?
-  planChange        SubscriptionPlanChange?
+  id                            String                  @id @default(cuid())
+  organizationId                String
+  operationType                 String                  @db.VarChar(32)
+  planKey                       String                  @db.VarChar(64)
+  fromPlanKey                   String?                 @db.VarChar(64)
+  billingCycle                  String                  @db.VarChar(16)
+  amount                        Decimal                 @db.Decimal(14, 2)
+  currency                      String                  @default("NGN") @db.VarChar(8)
+  provider                      String                  @default("PAYSTACK") @db.VarChar(32)
+  reference                     String                  @unique(map: "SubscriptionPaymentAttempt_reference_key")
+  idempotencyKey                String                  @db.VarChar(191)
+  activeKey                     String?                 @unique(map: "SubscriptionPaymentAttempt_activeKey_key") @db.VarChar(191)
+  status                        String                  @default("CREATED") @db.VarChar(32)
+  authorizationUrl              String?                 @db.Text
+  accessCode                    String?                 @db.VarChar(191)
+  providerReference             String?                 @db.VarChar(191)
+  providerPayload               Json?
+  automaticRenewal              Boolean                 @default(true)
+  effectiveAt                   DateTime?
+  failureReason                 String?                 @db.Text
+  providerInitiationAttemptedAt DateTime?
+  reconciliationClaimToken      String?                 @db.VarChar(64)
+  reconciliationClaimedAt       DateTime?
+  reconciliationLeaseExpiresAt  DateTime?
+  reconciliationAttempts        Int                     @default(0)
+  nextReconciliationAt          DateTime?
+  reconciliationDeadLetteredAt  DateTime?
+  lastReconciliationError       String?                 @db.Text
+  verifiedAt                    DateTime?
+  completedAt                   DateTime?
+  createdByUserId               String?
+  createdAt                     DateTime                @default(now())
+  updatedAt                     DateTime                @updatedAt
+  organization                  Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "SubscriptionPaymentAttempt_organizationId_fkey")
+  billingHistory                BillingHistory?
+  planChange                    SubscriptionPlanChange?
 
   @@unique([organizationId, idempotencyKey], map: "SubscriptionPaymentAttempt_org_idempotency_key")
   @@index([organizationId, status, createdAt], map: "SubscriptionPaymentAttempt_org_status_created_idx")
+  @@index([provider, status, nextReconciliationAt, reconciliationLeaseExpiresAt], map: "SubscriptionPaymentAttempt_recovery_idx")
   @@map("SubscriptionPaymentAttempt")
 }
 
@@ -2341,7 +2350,7 @@ model WalletAccount {
   purpose            String                 @default("PRIMARY") @db.VarChar(191)
   createdAt          DateTime               @default(now())
   updatedAt          DateTime               @updatedAt
-  organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletAccount_organizationId_fkey")
+  organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "WalletAccount_organizationId_fkey")
   walletdisbursement WalletDisbursement[]
   transactions       WalletTransaction[]
   fundingAttempts    WalletFundingAttempt[]
@@ -2353,69 +2362,86 @@ model WalletAccount {
 }
 
 model WalletFundingAttempt {
-  id                String        @id @default(cuid())
-  organizationId    String
-  walletAccountId   String
-  provider          String        @default("PAYSTACK")
-  reference         String
-  amount            Decimal       @db.Decimal(14, 2)
-  currency          String        @default("NGN")
-  status            String        @default("PENDING")
-  authorizationUrl  String?
-  accessCode        String?
-  providerReference String?
-  providerPayload   Json?
-  failureReason     String?
-  verifiedAt        DateTime?
-  createdById       String?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletFundingAttempt_org_fkey")
-  wallet            WalletAccount @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletFundingAttempt_wallet_fkey")
+  id                            String        @id @default(cuid())
+  organizationId                String
+  walletAccountId               String
+  provider                      String        @default("PAYSTACK")
+  reference                     String
+  idempotencyKey                String?       @db.VarChar(191)
+  amount                        Decimal       @db.Decimal(14, 2)
+  currency                      String        @default("NGN")
+  status                        String        @default("PENDING")
+  authorizationUrl              String?
+  accessCode                    String?
+  providerReference             String?
+  providerPayload               Json?
+  failureReason                 String?
+  providerInitiationAttemptedAt DateTime?
+  reconciliationClaimToken      String?       @db.VarChar(64)
+  reconciliationClaimedAt       DateTime?
+  reconciliationLeaseExpiresAt  DateTime?
+  reconciliationAttempts        Int           @default(0)
+  nextReconciliationAt          DateTime?
+  reconciliationDeadLetteredAt  DateTime?
+  lastReconciliationError       String?       @db.Text
+  verifiedAt                    DateTime?
+  createdById                   String?
+  createdAt                     DateTime      @default(now())
+  updatedAt                     DateTime      @updatedAt
+  organization                  Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "WalletFundingAttempt_org_fkey")
+  wallet                        WalletAccount @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "WalletFundingAttempt_wallet_fkey")
 
   @@unique([reference], map: "WalletFundingAttempt_reference_key")
+  @@unique([organizationId, idempotencyKey], map: "WalletFundingAttempt_org_idempotency_key")
   @@index([organizationId, status, createdAt], map: "WalletFundingAttempt_org_status_created_idx")
   @@index([walletAccountId, createdAt], map: "WalletFundingAttempt_wallet_created_idx")
+  @@index([provider, status, nextReconciliationAt, reconciliationLeaseExpiresAt], map: "WalletFundingAttempt_recovery_idx")
   @@map("WalletFundingAttempt")
 }
 
 model FinancialSettlement {
-  id                         String                     @id @default(cuid())
-  organizationId             String
-  walletAccountId            String
-  sourceType                 String                     @db.VarChar(64)
-  sourceId                   String                     @db.VarChar(191)
-  method                     financialsettlement_method
-  status                     financialsettlement_status @default(PREPARED)
-  amount                     Decimal                    @db.Decimal(14, 2)
-  currency                   String                     @default("NGN") @db.VarChar(3)
-  internalReference          String                     @db.VarChar(191)
-  idempotencyKey             String                     @db.VarChar(191)
-  beneficiarySnapshot        Json?
-  provider                   String?                    @db.VarChar(32)
-  providerRecipientReference String?                    @db.VarChar(191)
-  providerRecipientId        String?
-  providerTransferReference  String?                    @db.VarChar(191)
-  providerTransferCode       String?                    @db.VarChar(191)
-  providerStatus             String?                    @db.VarChar(32)
-  initiationClaimedAt        DateTime?
-  lastVerifiedAt             DateTime?
-  externalReference          String?                    @db.VarChar(191)
-  evidence                   Json?
-  failureReason              String?                    @db.Text
-  reservationReleasedAt      DateTime?
-  reservedAt                 DateTime?
-  providerProcessingAt       DateTime?
-  settledAt                  DateTime?
-  reversedAt                 DateTime?
-  reversalReference          String?                    @db.VarChar(191)
-  reversalLedgerId           String?                    @unique(map: "FinancialSettlement_reversal_ledger_key")
-  createdById                String?
-  createdAt                  DateTime                   @default(now())
-  updatedAt                  DateTime                   @updatedAt
-  organization               Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "FinancialSettlement_org_fkey")
-  wallet                     WalletAccount              @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "FinancialSettlement_wallet_fkey")
-  providerRecipient          ProviderTransferRecipient? @relation(fields: [providerRecipientId], references: [id], onDelete: SetNull, map: "FinancialSettlement_provider_recipient_fkey")
+  id                            String                     @id @default(cuid())
+  organizationId                String
+  walletAccountId               String
+  sourceType                    String                     @db.VarChar(64)
+  sourceId                      String                     @db.VarChar(191)
+  method                        financialsettlement_method
+  status                        financialsettlement_status @default(PREPARED)
+  amount                        Decimal                    @db.Decimal(14, 2)
+  currency                      String                     @default("NGN") @db.VarChar(3)
+  internalReference             String                     @db.VarChar(191)
+  idempotencyKey                String                     @db.VarChar(191)
+  beneficiarySnapshot           Json?
+  provider                      String?                    @db.VarChar(32)
+  providerRecipientReference    String?                    @db.VarChar(191)
+  providerRecipientId           String?
+  providerTransferReference     String?                    @db.VarChar(191)
+  providerTransferCode          String?                    @db.VarChar(191)
+  providerStatus                String?                    @db.VarChar(32)
+  initiationClaimedAt           DateTime?
+  providerInitiationAttemptedAt DateTime?
+  lastVerifiedAt                DateTime?
+  reconciliationClaimToken      String?                    @db.VarChar(64)
+  reconciliationClaimedAt       DateTime?
+  reconciliationLeaseExpiresAt  DateTime?
+  reconciliationAttempts        Int                        @default(0)
+  lastReconciliationError       String?                    @db.Text
+  externalReference             String?                    @db.VarChar(191)
+  evidence                      Json?
+  failureReason                 String?                    @db.Text
+  reservationReleasedAt         DateTime?
+  reservedAt                    DateTime?
+  providerProcessingAt          DateTime?
+  settledAt                     DateTime?
+  reversedAt                    DateTime?
+  reversalReference             String?                    @db.VarChar(191)
+  reversalLedgerId              String?                    @unique(map: "FinancialSettlement_reversal_ledger_key")
+  createdById                   String?
+  createdAt                     DateTime                   @default(now())
+  updatedAt                     DateTime                   @updatedAt
+  organization                  Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "FinancialSettlement_org_fkey")
+  wallet                        WalletAccount              @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "FinancialSettlement_wallet_fkey")
+  providerRecipient             ProviderTransferRecipient? @relation(fields: [providerRecipientId], references: [id], onDelete: SetNull, map: "FinancialSettlement_provider_recipient_fkey")
 
   @@unique([organizationId, sourceType, sourceId], map: "FinancialSettlement_org_source_key")
   @@unique([organizationId, idempotencyKey], map: "FinancialSettlement_org_idempotency_key")
@@ -2426,27 +2452,28 @@ model FinancialSettlement {
   @@index([organizationId, status, createdAt], map: "FinancialSettlement_org_status_created_idx")
   @@index([walletAccountId, status], map: "FinancialSettlement_wallet_status_idx")
   @@index([providerRecipientId], map: "FinancialSettlement_provider_recipient_idx")
+  @@index([provider, status, providerProcessingAt, reconciliationLeaseExpiresAt], map: "FinancialSettlement_reconciliation_idx")
   @@map("FinancialSettlement")
 }
 
 model ProviderTransferRecipient {
-  id                        String                @id @default(cuid())
-  organizationId            String
-  provider                  String                @db.VarChar(32)
-  beneficiaryType           String                @db.VarChar(64)
-  beneficiaryId             String                @db.VarChar(191)
-  currency                  String                @db.VarChar(3)
-  bankCode                  String                @db.VarChar(20)
-  accountFingerprint        String                @db.VarChar(64)
-  accountLast4              String                @db.VarChar(4)
-  resolvedAccountName       String                @db.VarChar(200)
-  providerRecipientCode     String                @db.VarChar(191)
-  providerRecipientId       String?               @db.VarChar(191)
-  active                    Boolean               @default(true)
-  createdAt                 DateTime              @default(now())
-  updatedAt                 DateTime              @updatedAt
-  organization              Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "ProviderTransferRecipient_org_fkey")
-  settlements               FinancialSettlement[]
+  id                    String                @id @default(cuid())
+  organizationId        String
+  provider              String                @db.VarChar(32)
+  beneficiaryType       String                @db.VarChar(64)
+  beneficiaryId         String                @db.VarChar(191)
+  currency              String                @db.VarChar(3)
+  bankCode              String                @db.VarChar(20)
+  accountFingerprint    String                @db.VarChar(64)
+  accountLast4          String                @db.VarChar(4)
+  resolvedAccountName   String                @db.VarChar(200)
+  providerRecipientCode String                @db.VarChar(191)
+  providerRecipientId   String?               @db.VarChar(191)
+  active                Boolean               @default(true)
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  organization          Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "ProviderTransferRecipient_org_fkey")
+  settlements           FinancialSettlement[]
 
   @@unique([provider, providerRecipientCode], map: "ProviderTransferRecipient_provider_code_key")
   @@unique([organizationId, provider, beneficiaryType, beneficiaryId, currency, bankCode, accountFingerprint], map: "ProviderTransferRecipient_identity_key")
@@ -2455,23 +2482,122 @@ model ProviderTransferRecipient {
 }
 
 model ProviderWebhookEvent {
-  id                String   @id @default(cuid())
-  provider          String   @db.VarChar(32)
-  eventFingerprint  String   @db.VarChar(64)
-  eventType         String   @db.VarChar(64)
-  providerReference String?  @db.VarChar(191)
-  payload           Json
-  status            String   @default("RECEIVED") @db.VarChar(32)
-  attempts          Int      @default(0)
-  failureReason     String?  @db.Text
-  receivedAt        DateTime @default(now())
-  processedAt       DateTime?
-  updatedAt         DateTime @updatedAt
+  id                       String    @id @default(cuid())
+  provider                 String    @db.VarChar(32)
+  eventFingerprint         String    @db.VarChar(64)
+  eventType                String    @db.VarChar(64)
+  providerReference        String?   @db.VarChar(191)
+  payload                  Json
+  status                   String    @default("RECEIVED") @db.VarChar(32)
+  attempts                 Int       @default(0)
+  deferredAttempts         Int       @default(0)
+  failureReason            String?   @db.Text
+  processingClaimToken     String?   @db.VarChar(64)
+  processingClaimedAt      DateTime?
+  processingLeaseExpiresAt DateTime?
+  nextAttemptAt            DateTime?
+  deadLetteredAt           DateTime?
+  receivedAt               DateTime  @default(now())
+  processedAt              DateTime?
+  updatedAt                DateTime  @updatedAt
 
   @@unique([provider, eventFingerprint], map: "ProviderWebhookEvent_provider_fingerprint_key")
   @@index([provider, status, receivedAt], map: "ProviderWebhookEvent_provider_status_idx")
   @@index([provider, providerReference], map: "ProviderWebhookEvent_provider_reference_idx")
+  @@index([provider, status, nextAttemptAt, processingLeaseExpiresAt], map: "ProviderWebhookEvent_recovery_idx")
   @@map("ProviderWebhookEvent")
+}
+
+model FinancialReconciliationRun {
+  id                               String    @id @default(cuid())
+  trigger                          String    @db.VarChar(32)
+  status                           String    @default("RUNNING") @db.VarChar(24)
+  startedAt                        DateTime  @default(now())
+  heartbeatAt                      DateTime  @default(now())
+  completedAt                      DateTime?
+  settlementsScanned               Int       @default(0)
+  settlementsClaimed               Int       @default(0)
+  settlementsReconciled            Int       @default(0)
+  settlementsUnresolved            Int       @default(0)
+  webhookEventsScanned             Int       @default(0)
+  webhookEventsClaimed             Int       @default(0)
+  webhookEventsProcessed           Int       @default(0)
+  webhookEventsDeadLettered        Int       @default(0)
+  subscriptionAttemptsScanned      Int       @default(0)
+  subscriptionAttemptsClaimed      Int       @default(0)
+  subscriptionAttemptsReconciled   Int       @default(0)
+  subscriptionAttemptsUnresolved   Int       @default(0)
+  walletFundingAttemptsScanned     Int       @default(0)
+  walletFundingAttemptsClaimed     Int       @default(0)
+  walletFundingAttemptsReconciled  Int       @default(0)
+  walletFundingAttemptsUnresolved  Int       @default(0)
+  inboundWebhookEventsProcessed    Int       @default(0)
+  inboundWebhookEventsDeadLettered Int       @default(0)
+  errors                           Int       @default(0)
+  applicationVersion               String?   @db.VarChar(191)
+  failureReason                    String?   @db.Text
+  createdAt                        DateTime  @default(now())
+  updatedAt                        DateTime  @updatedAt
+
+  @@index([status, startedAt], map: "FinancialReconciliationRun_status_started_idx")
+  @@index([completedAt], map: "FinancialReconciliationRun_completed_idx")
+  @@map("FinancialReconciliationRun")
+}
+
+model FinancialIntegrityScanRun {
+  id               String    @id @default(cuid())
+  trigger          String    @db.VarChar(32)
+  scannerVersion   String    @db.VarChar(32)
+  status           String    @default("RUNNING") @db.VarChar(24)
+  startedAt        DateTime  @default(now())
+  completedAt      DateTime?
+  objectsScanned   Int       @default(0)
+  findingsDetected Int       @default(0)
+  newFindings      Int       @default(0)
+  existingFindings Int       @default(0)
+  resolvedFindings Int       @default(0)
+  errors           Int       @default(0)
+  failureReason    String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status, startedAt], map: "FinancialIntegrityScanRun_status_started_idx")
+  @@map("FinancialIntegrityScanRun")
+}
+
+model FinancialIntegrityFinding {
+  id                           String    @id @default(cuid())
+  organizationId               String?
+  category                     String    @db.VarChar(80)
+  severity                     String    @db.VarChar(16)
+  status                       String    @default("OPEN") @db.VarChar(16)
+  resourceType                 String    @db.VarChar(64)
+  resourceId                   String    @db.VarChar(191)
+  walletAccountId              String?
+  settlementId                 String?
+  provider                     String?   @db.VarChar(32)
+  providerReferenceFingerprint String?   @db.VarChar(64)
+  currency                     String?   @db.VarChar(3)
+  expectedAmount               Decimal?  @db.Decimal(14, 2)
+  actualAmount                 Decimal?  @db.Decimal(14, 2)
+  differenceAmount             Decimal?  @db.Decimal(14, 2)
+  evidenceFingerprint          String    @db.VarChar(64)
+  deduplicationKey             String    @unique(map: "FinancialIntegrityFinding_dedup_key") @db.VarChar(64)
+  details                      Json?
+  firstDetectedAt              DateTime  @default(now())
+  lastDetectedAt               DateTime  @default(now())
+  resolvedAt                   DateTime?
+  occurrenceCount              Int       @default(1)
+  firstScanRunId               String
+  lastScanRunId                String
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
+
+  @@index([status, severity, lastDetectedAt], map: "FinancialIntegrityFinding_status_severity_idx")
+  @@index([organizationId, status, category], map: "FinancialIntegrityFinding_org_status_category_idx")
+  @@index([walletAccountId, status], map: "FinancialIntegrityFinding_wallet_status_idx")
+  @@index([lastScanRunId], map: "FinancialIntegrityFinding_last_run_idx")
+  @@map("FinancialIntegrityFinding")
 }
 
 model WalletTransaction {
@@ -2493,8 +2619,8 @@ model WalletTransaction {
   reversalOfId      String?
   createdById       String?
   createdAt         DateTime              @default(now())
-  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletTransaction_org_fkey")
-  wallet            WalletAccount         @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletTransaction_wallet_fkey")
+  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "WalletTransaction_org_fkey")
+  wallet            WalletAccount         @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "WalletTransaction_wallet_fkey")
   payrollRun        PayrollRun?           @relation(fields: [payrollRunId], references: [id], map: "WalletTransaction_run_fkey")
   taxRemittance     PayrollTaxRemittance? @relation(fields: [taxRemittanceId], references: [id], map: "WalletTransaction_remittance_fkey")
   reversalOf        WalletTransaction?    @relation("WalletTransactionReversal", fields: [reversalOfId], references: [id], map: "WalletTransaction_reversal_fkey")
@@ -2615,7 +2741,7 @@ model WalletDisbursement {
   reference       String?
   createdAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt
-  walletaccount   WalletAccount             @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletDisbursement_walletAccountId_fkey")
+  walletaccount   WalletAccount             @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "WalletDisbursement_walletAccountId_fkey")
 
   @@index([organizationId, status], map: "WalletDisbursement_organizationId_status_idx")
   @@index([walletAccountId], map: "WalletDisbursement_walletAccountId_fkey")

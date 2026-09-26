@@ -973,13 +973,14 @@ export const getPlatformTenantSupportTickets = async (tenantId: string, queryInp
 
 export const impersonatePlatformTenantAdmin = async (tenantId: string, platformAdmin: AuthUser, requestMeta?: { ipAddress?: string | null; userAgent?: string | null }) => {
   assertPlatformAdmin(platformAdmin);
+  if (!platformAdmin.sessionId) throw forbidden("A current Platform Admin session is required");
   const tenant = await prisma.organization.findFirst({ where: { id: tenantId, ...managedTenantWhere, status: "ACTIVE" }, select: { id: true, name: true } });
   if (!tenant) throw notFound("Active tenant not found");
   const tenantAdmin = await prisma.user.findFirst({ where: { organizationId: tenant.id, isActive: true, role: { isSystem: true, name: "Owner" } }, orderBy: { createdAt: "asc" }, select: { id: true, email: true, organizationId: true } });
   if (!tenantAdmin) throw notFound("Active Tenant Admin not found");
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
   const session = await prisma.platformImpersonationSession.create({ data: { organizationId: tenant.id, platformAdminUserId: platformAdmin.id, tenantAdminUserId: tenantAdmin.id, expiresAt, ipAddress: requestMeta?.ipAddress, userAgent: requestMeta?.userAgent } });
-  const accessToken = jwt.sign({ organizationId: tenant.id, purpose: "platform-impersonation", impersonationSessionId: session.id, platformAdminUserId: platformAdmin.id }, env.JWT_ACCESS_SECRET, { subject: tenantAdmin.id, expiresIn: "15m" });
+  const accessToken = jwt.sign({ organizationId: tenant.id, purpose: "platform-impersonation", impersonationSessionId: session.id, platformAdminUserId: platformAdmin.id, platformAdminSessionId: platformAdmin.sessionId }, env.JWT_ACCESS_SECRET, { subject: tenantAdmin.id, expiresIn: "15m" });
   await createAuditLog({ organizationId: tenant.id, actorUserId: platformAdmin.id, action: "PLATFORM_IMPERSONATION_STARTED", resource: "IMPERSONATION_SESSION", resourceId: session.id, summary: `Started impersonation of ${tenantAdmin.email}`, metadata: { expiresAt: expiresAt.toISOString() } });
   return { impersonationSessionId: session.id, tenant: { organizationId: tenant.id, organizationName: tenant.name }, impersonatedUser: { userId: tenantAdmin.id, email: tenantAdmin.email }, accessToken, tokenType: "Bearer", expiresAt, impersonated: true };
 };
@@ -991,7 +992,7 @@ export const exitPlatformTenantImpersonation = async (currentUser: AuthUser) => 
   const endedAt = new Date();
   const ended = await prisma.platformImpersonationSession.updateMany({ where: { id: session.id, status: "ACTIVE", endedAt: null }, data: { status: "ENDED", endedAt } });
   if (ended.count !== 1) throw conflict("Impersonation session has already ended", { errorCode: "IMPERSONATION_ALREADY_ENDED" });
-  const accessToken = jwt.sign({ organizationId: session.platformAdmin.organizationId }, env.JWT_ACCESS_SECRET, { subject: session.platformAdmin.id, expiresIn: env.JWT_ACCESS_EXPIRES_IN as jwt.SignOptions["expiresIn"] });
+  const accessToken = jwt.sign({ organizationId: session.platformAdmin.organizationId, sessionId: currentUser.impersonation.platformAdminSessionId }, env.JWT_ACCESS_SECRET, { subject: session.platformAdmin.id, expiresIn: env.JWT_ACCESS_EXPIRES_IN as jwt.SignOptions["expiresIn"] });
   await createAuditLog({ organizationId: session.organizationId, actorUserId: session.platformAdmin.id, action: "PLATFORM_IMPERSONATION_ENDED", resource: "IMPERSONATION_SESSION", resourceId: session.id, summary: "Ended Platform Admin impersonation session" });
   return { impersonationSessionId: session.id, endedAt, accessToken, tokenType: "Bearer", impersonated: false };
 };
@@ -1539,6 +1540,7 @@ export const resetPlatformUserPassword = async (targetUserId: string, user: Auth
 
 export const impersonatePlatformUser = async (targetUserId: string, reason: string, user: AuthUser, meta?: { ipAddress?: string | null; userAgent?: string | null }) => {
   assertPlatformAdmin(user); if (user.impersonation) throw conflict("Nested impersonation is not permitted", { errorCode: "NESTED_IMPERSONATION" });
+  if (!user.sessionId) throw forbidden("A current Platform Admin session is required");
   const target = await prisma.user.findUnique({ where: { id: targetUserId }, include: { organization: { select: { id: true, name: true, status: true } } } });
   if (!target) throw notFound("User not found");
   const fail = async (message: string, code: string) => { await createAuditLog({ organizationId: target.organizationId, actorUserId: user.id, action: "PLATFORM_IMPERSONATION_FAILED", resource: "USER", resourceId: target.id, summary: "User impersonation rejected", metadata: { result: "FAILED", reason: code } }); throw conflict(message, { errorCode: code }); };
@@ -1559,7 +1561,7 @@ export const impersonatePlatformUser = async (targetUserId: string, reason: stri
     await createAuditLog({ organizationId: target.organizationId, actorUserId: user.id, action: "PLATFORM_IMPERSONATION_FAILED", resource: "USER", resourceId: target.id, summary: "User impersonation failed", metadata: { result: "FAILED", reason: "ACTIVE_SESSION_OR_CONCURRENCY_CONFLICT" } });
     throw error;
   }
-  const accessToken = jwt.sign({ organizationId: target.organizationId, purpose: "platform-impersonation", impersonationSessionId: session.id, platformAdminUserId: user.id }, env.JWT_ACCESS_SECRET, { subject: target.id, expiresIn: "15m" });
+  const accessToken = jwt.sign({ organizationId: target.organizationId, purpose: "platform-impersonation", impersonationSessionId: session.id, platformAdminUserId: user.id, platformAdminSessionId: user.sessionId }, env.JWT_ACCESS_SECRET, { subject: target.id, expiresIn: "15m" });
   return { impersonationSessionId: session.id, tenant: { id: target.organizationId, name: target.organization.name }, impersonatedUser: { id: target.id, name: `${target.firstName} ${target.lastName}`.trim(), email: target.email }, accessToken, tokenType: "Bearer", expiresAt, impersonated: true, banner: `You are impersonating ${target.firstName} ${target.lastName} from ${target.organization.name}.` };
 };
 

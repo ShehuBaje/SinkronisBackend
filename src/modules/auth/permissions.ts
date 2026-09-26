@@ -1,5 +1,7 @@
 export const permissions = [
   "platform:dashboard:view",
+  "platform:financial-operations:view",
+  "platform:financial-operations:manage",
   "platform:tenants:view",
   "platform:tenants:suspend",
   "platform:tenants:create",

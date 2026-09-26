@@ -43,11 +43,13 @@ test("TiDB runtime code never requests unsupported SERIALIZABLE isolation", () =
 test("financial settlements have durable identities, reservations and a default-off provider gate", () => {
   const schema = source("../prisma/schema.prisma");
   const settlement = source("./core/financial-settlement.ts");
+  const walletIntegrity = source("./core/wallet-integrity.ts");
   const provider = source("./core/settlement-provider.ts");
   const env = source("./config/env.ts");
   assert.match(schema, /model FinancialSettlement[\s\S]*@@unique\(\[organizationId, sourceType, sourceId\]/);
   assert.match(schema, /reservedBalance/);
-  assert.match(settlement, /balance - reservedBalance >=/);
+  assert.match(walletIntegrity, /balance - reservedBalance >=/);
+  assert.match(settlement, /reserveWalletBalance/);
   assert.match(settlement, /status: "SUCCEEDED"/);
   assert.match(provider, /PROVIDER_SETTLEMENT_DISABLED/);
   assert.match(env, /PAYSTACK_TRANSFERS_ENABLED[\s\S]*default\("false"\)/);
@@ -138,9 +140,13 @@ test("private local objects are not mounted as unauthenticated static files", ()
   assert.match(storage, /get\(reference/);
 });
 
-test("release hardening includes readiness, POST cron, strict dates, and separate workers", () => {
+test("release hardening includes readiness, authenticated financial recovery cron, strict dates, and separate workers", () => {
   assert.match(source("./app.ts"), /app\.get\("\/ready"/);
-  assert.match(source("./modules/internal/internal.routes.ts"), /internalRouter\.post\([\s\S]*"\/cron\/subscriptions"/);
+  const internalRoutes = source("./modules/internal/internal.routes.ts");
+  assert.match(internalRoutes, /timingSafeEqual/);
+  assert.match(internalRoutes, /internalRouter\.post\([\s\S]*"\/cron\/subscriptions"/);
+  assert.match(internalRoutes, /internalRouter\.get\([\s\S]*"\/cron\/financial-recovery"/);
+  assert.match(source("./core/financial-recovery.ts"), /financialReconciliationRun\.create/);
   assert.match(source("./core/date-only.ts"), /getUTCFullYear/);
   const queues = source("./queues/index.ts");
   for (const name of ["NOTIFICATION_QUEUE_NAME", "LIFECYCLE_QUEUE_NAME", "EXPORT_QUEUE_NAME"]) assert.match(queues, new RegExp(name));

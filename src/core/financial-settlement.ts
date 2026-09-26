@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Prisma, type FinancialSettlement } from "@prisma/client";
 import { prisma } from "./prisma";
 import { conflict, notFound } from "./http-error";
+import { assertFinancialCurrency, consumeWalletReservation, financialWallet, releaseWalletReservation, reserveWalletBalance } from "./wallet-integrity";
 import { assertIncidentWalletMutationAllowed } from "./payroll-wallet-incident-pause";
 
 type Db = Prisma.TransactionClient;
@@ -20,18 +21,16 @@ export const completeManualSettlement = async <T>(source: SettlementSource, inpu
       if (existing) {
         if (existing.method === "MANUAL" && existing.externalReference === input.externalReference && existing.status === "SUCCEEDED") return { settlement: existing, result: null as T | null, idempotentReplay: true };
         if (!(existing.method === "PROVIDER" && existing.status === "PREPARED")) throw conflict("This business obligation already has a settlement");
+        assertFinancialCurrency(source.currency, existing.currency);
       }
-      const reserved = await tx.$executeRaw`UPDATE WalletAccount SET reservedBalance = reservedBalance + ${source.amount} WHERE id = ${source.walletAccountId} AND organizationId = ${source.organizationId} AND balance - reservedBalance >= ${source.amount}`;
-      if (reserved !== 1) throw conflict("Insufficient spendable wallet balance");
+      const currency = assertFinancialCurrency(source.currency, source.currency);
+      await reserveWalletBalance(tx, { ...source, currency });
       const manualData = { method: "MANUAL" as const, status: "RESERVED" as const, idempotencyKey: input.idempotencyKey, externalReference: input.externalReference, evidence: { note: input.note, assertedExternalSettlementAt: input.settledAt.toISOString() }, reservedAt: new Date(), provider: null, providerRecipientReference: null, providerTransferReference: null };
       const settlement = existing
         ? await tx.financialSettlement.update({ where: { id: existing.id }, data: manualData })
-        : await tx.financialSettlement.create({ data: { organizationId: source.organizationId, walletAccountId: source.walletAccountId, sourceType: source.sourceType, sourceId: source.sourceId, amount: source.amount, currency: source.currency, internalReference: makeReference(), beneficiarySnapshot: source.beneficiarySnapshot, createdById: source.createdById, ...manualData } });
-      const wallet = await tx.walletAccount.findFirst({ where: { id: source.walletAccountId, organizationId: source.organizationId } });
-      if (!wallet) throw notFound("Wallet not found");
-      const finalized = await tx.$executeRaw`UPDATE WalletAccount SET balance = balance - ${source.amount}, reservedBalance = reservedBalance - ${source.amount} WHERE id = ${source.walletAccountId} AND organizationId = ${source.organizationId} AND reservedBalance >= ${source.amount}`;
-      if (finalized !== 1) throw conflict("Wallet reservation could not be finalized");
-      const ledger = await tx.walletTransaction.create({ data: { organizationId: source.organizationId, walletAccountId: source.walletAccountId, type: `MANUAL_${source.sourceType}`, direction: "DEBIT", amount: source.amount, balanceBefore: wallet.balance, balanceAfter: wallet.balance.sub(source.amount), reference: settlement.internalReference, transferReference: input.externalReference, description: `Externally settled: ${input.note}`, sourceType: source.sourceType, sourceId: source.sourceId, createdById: source.createdById } });
+        : await tx.financialSettlement.create({ data: { organizationId: source.organizationId, walletAccountId: source.walletAccountId, sourceType: source.sourceType, sourceId: source.sourceId, amount: source.amount, currency, internalReference: makeReference(), beneficiarySnapshot: source.beneficiarySnapshot, createdById: source.createdById, ...manualData } });
+      const debit = await consumeWalletReservation(tx, { ...source, currency });
+      const ledger = await tx.walletTransaction.create({ data: { organizationId: source.organizationId, walletAccountId: source.walletAccountId, type: `MANUAL_${source.sourceType}`, direction: "DEBIT", amount: source.amount, balanceBefore: debit.balanceBefore, balanceAfter: debit.balanceAfter, reference: settlement.internalReference, transferReference: input.externalReference, description: `Externally settled: ${input.note}`, sourceType: source.sourceType, sourceId: source.sourceId, createdById: source.createdById } });
       const completed = await tx.financialSettlement.update({ where: { id: settlement.id }, data: { status: "SUCCEEDED", reservationReleasedAt: new Date(), settledAt: input.settledAt } });
       return { settlement: completed, result: await finalize(tx, completed, ledger.id), idempotentReplay: false };
     }, financialTransactionOptions);
@@ -45,7 +44,10 @@ export const prepareProviderSettlement = async (source: SettlementSource, idempo
   try {
     const existing = await prisma.financialSettlement.findFirst({ where: { organizationId: source.organizationId, sourceType: source.sourceType, sourceId: source.sourceId } });
     if (existing) return existing;
-    return await prisma.financialSettlement.create({ data: { organizationId: source.organizationId, walletAccountId: source.walletAccountId, sourceType: source.sourceType, sourceId: source.sourceId, method: "PROVIDER", status: "PREPARED", amount: source.amount, currency: source.currency, internalReference: makeReference(), idempotencyKey, beneficiarySnapshot: source.beneficiarySnapshot, provider: "PAYSTACK", createdById: source.createdById } });
+    const wallet = await prisma.walletAccount.findFirst({ where: { id: source.walletAccountId, organizationId: source.organizationId } });
+    if (!wallet) throw notFound("Wallet not found");
+    const currency = assertFinancialCurrency(source.currency, wallet.currency);
+    return await prisma.financialSettlement.create({ data: { organizationId: source.organizationId, walletAccountId: source.walletAccountId, sourceType: source.sourceType, sourceId: source.sourceId, method: "PROVIDER", status: "PREPARED", amount: source.amount, currency, internalReference: makeReference(), idempotencyKey, beneficiarySnapshot: source.beneficiarySnapshot, provider: "PAYSTACK", createdById: source.createdById } });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return prisma.financialSettlement.findFirstOrThrow({ where: { organizationId: source.organizationId, sourceType: source.sourceType, sourceId: source.sourceId } });
     throw error;
@@ -61,11 +63,7 @@ export const releaseSettlementReservation = async (organizationId: string, settl
     if (!["RESERVED", "PROVIDER_PROCESSING", "UNKNOWN"].includes(settlement.status) || !settlement.reservedAt || settlement.reservationReleasedAt) {
       throw conflict("Settlement does not hold a releasable reservation");
     }
-    const released = await tx.walletAccount.updateMany({
-      where: { id: settlement.walletAccountId, organizationId, reservedBalance: { gte: settlement.amount } },
-      data: { reservedBalance: { decrement: settlement.amount } },
-    });
-    if (released.count !== 1) throw conflict("Wallet reservation could not be released");
+    await releaseWalletReservation(tx, { organizationId, walletAccountId: settlement.walletAccountId, amount: settlement.amount, currency: settlement.currency });
     return tx.financialSettlement.update({
       where: { id: settlement.id },
       data: { status: "FAILED", failureReason: failureReason.slice(0, 2000), reservationReleasedAt: new Date() },
@@ -91,8 +89,7 @@ export const reverseSucceededSettlement = async (
         orderBy: { createdAt: "asc" },
       });
       if (!original) throw conflict("Settlement debit ledger entry is missing");
-      const wallet = await tx.walletAccount.findFirst({ where: { id: settlement.walletAccountId, organizationId } });
-      if (!wallet) throw notFound("Wallet not found");
+      const wallet = await financialWallet(tx, organizationId, settlement.walletAccountId, settlement.currency);
       const restored = await tx.walletAccount.update({ where: { id: wallet.id }, data: { balance: { increment: settlement.amount } } });
       const ledger = await tx.walletTransaction.create({
         data: {

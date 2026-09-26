@@ -12,6 +12,7 @@ type JwtPayload = {
   purpose?: string;
   impersonationSessionId?: string;
   platformAdminUserId?: string;
+  platformAdminSessionId?: string;
   sessionId?: string;
 };
 
@@ -51,11 +52,16 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
       return next(unauthorized("Organization access is suspended"));
     }
     if (payload.sessionId) {
-      const session = await prisma.userSession.findFirst({ where: { id: payload.sessionId, userId: user.id, organizationId: user.organizationId, revokedAt: null, expiresAt: { gt: new Date() } }, select: { id: true } });
+      const session = await prisma.userSession.findFirst({ where: { id: payload.sessionId, userId: user.id, organizationId: user.organizationId, isCurrent: true, revokedAt: null, expiresAt: { gt: new Date() } }, select: { id: true } });
       if (!session) return next(unauthorized("Session is no longer active"));
     }
     if (payload.purpose === "platform-impersonation") {
-      if (!payload.impersonationSessionId || !payload.platformAdminUserId) return next(unauthorized("Invalid impersonation token"));
+      if (!payload.impersonationSessionId || !payload.platformAdminUserId || !payload.platformAdminSessionId) return next(unauthorized("Invalid impersonation token"));
+      const platformAdminSession = await prisma.userSession.findFirst({
+        where: { id: payload.platformAdminSessionId, userId: payload.platformAdminUserId, isCurrent: true, revokedAt: null, expiresAt: { gt: new Date() } },
+        select: { id: true }
+      });
+      if (!platformAdminSession) return next(unauthorized("Platform Admin session is no longer active"));
       const session = await prisma.platformImpersonationSession.findFirst({
         where: {
           id: payload.impersonationSessionId,
@@ -69,6 +75,8 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
         select: { id: true }
       });
       if (!session) return next(unauthorized("Impersonation session is no longer active"));
+    } else if (!payload.sessionId) {
+      return next(unauthorized("Access token is not bound to an active session"));
     }
 
     const grantedPermissions = new Set(user.role.permissions.map((item) => item.permission.key));
@@ -89,7 +97,7 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
       moduleAccess: Array.isArray(user.moduleAccess) ? user.moduleAccess.filter((value): value is string => typeof value === "string") : null,
       sessionId: payload.sessionId,
       ...(payload.purpose === "platform-impersonation" && payload.impersonationSessionId && payload.platformAdminUserId
-        ? { impersonation: { sessionId: payload.impersonationSessionId, platformAdminUserId: payload.platformAdminUserId } }
+        ? { impersonation: { sessionId: payload.impersonationSessionId, platformAdminUserId: payload.platformAdminUserId, platformAdminSessionId: payload.platformAdminSessionId! } }
         : {}),
       permissions: [...grantedPermissions] as AuthUser["permissions"]
     };

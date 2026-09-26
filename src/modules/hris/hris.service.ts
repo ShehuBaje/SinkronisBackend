@@ -140,10 +140,20 @@ const attendanceCountsForDate = async (
   const officialStart = zonedDateTimeToUtc(dateKey, schedule.workStartTime, timeZone);
   const lateAfter = new Date(officialStart.getTime() + schedule.gracePeriodMinutes * 60_000);
   const officialEnd = zonedDateTimeToUtc(dateKey, schedule.workEndTime, timeZone);
-  const rowsPromise = prisma.$queryRawUnsafe<AttendanceAggregateRow[]>(
-    "SELECT COUNT(*) AS attended, COALESCE(SUM(firstClockIn <= ?), 0) AS onTime, COALESCE(SUM(firstClockIn > ?), 0) AS lateClockIn, COALESCE(SUM(firstClockIn < ?), 0) AS earlyClockIn, COALESCE(SUM(hasOpen = 1 AND ? >= ?), 0) AS noClockOut FROM (SELECT employeeId, MIN(clockInAt) AS firstClockIn, MAX(CASE WHEN clockOutAt IS NULL THEN 1 ELSE 0 END) AS hasOpen FROM Attendance WHERE organizationId = ? AND clockInAt >= ? AND clockInAt < ? GROUP BY employeeId) dailyAttendance",
-    lateAfter, lateAfter, officialStart, asOf, officialEnd, organizationId, start, end
-  );
+  const rowsPromise = prisma.$queryRaw<AttendanceAggregateRow[]>(Prisma.sql`
+    SELECT COUNT(*) AS attended,
+      COALESCE(SUM(firstClockIn <= ${lateAfter}), 0) AS onTime,
+      COALESCE(SUM(firstClockIn > ${lateAfter}), 0) AS lateClockIn,
+      COALESCE(SUM(firstClockIn < ${officialStart}), 0) AS earlyClockIn,
+      COALESCE(SUM(hasOpen = 1 AND ${asOf} >= ${officialEnd}), 0) AS noClockOut
+    FROM (
+      SELECT employeeId, MIN(clockInAt) AS firstClockIn,
+        MAX(CASE WHEN clockOutAt IS NULL THEN 1 ELSE 0 END) AS hasOpen
+      FROM Attendance
+      WHERE organizationId = ${organizationId} AND clockInAt >= ${start} AND clockInAt < ${end}
+      GROUP BY employeeId
+    ) dailyAttendance
+  `);
   const absentPromise = isScheduledWorkDay(dateKey, schedule)
     ? prisma.employee.count({
         where: {
@@ -315,10 +325,14 @@ export const getHRISDashboard = async (organizationId: string, _user: AuthUser, 
       where: { organizationId, status: "PENDING" }, orderBy: { createdAt: "desc" }, take: 10,
       include: { employee: { include: { department: true } } }
     }),
-    prisma.$queryRawUnsafe<Array<{ departmentId: string; departmentName: string; headcount: bigint }>>(
-      "SELECT d.id AS departmentId, d.name AS departmentName, COUNT(e.id) AS headcount FROM Department d LEFT JOIN Employee e ON e.departmentId = d.id AND e.organizationId = ? AND e.status <> 'TERMINATED' WHERE d.organizationId = ? GROUP BY d.id, d.name ORDER BY headcount DESC, d.name ASC",
-      organizationId, organizationId
-    ),
+    prisma.$queryRaw<Array<{ departmentId: string; departmentName: string; headcount: bigint }>>(Prisma.sql`
+      SELECT d.id AS departmentId, d.name AS departmentName, COUNT(e.id) AS headcount
+      FROM Department d
+      LEFT JOIN Employee e ON e.departmentId = d.id AND e.organizationId = ${organizationId} AND e.status <> 'TERMINATED'
+      WHERE d.organizationId = ${organizationId}
+      GROUP BY d.id, d.name
+      ORDER BY headcount DESC, d.name ASC
+    `),
     prisma.auditLog.findMany({
       where: { organizationId, OR: [{ resource: { in: hrisAuditResources } }, { action: { startsWith: "HRIS_" } }] },
       orderBy: { createdAt: "desc" }, take: 10

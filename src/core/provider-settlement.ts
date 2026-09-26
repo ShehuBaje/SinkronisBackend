@@ -7,10 +7,12 @@ import { PaystackProviderError, paystackMinorUnits } from "./paystack";
 import { PaystackTransferProvider } from "./paystack-transfer-provider";
 import { assertProviderTransfersEnabled, type ProviderTransferResult, type SettlementProvider } from "./settlement-provider";
 import { releaseSettlementReservation, reverseSucceededSettlement } from "./financial-settlement";
+import { consumeWalletReservation, financialWallet, reserveWalletBalance } from "./wallet-integrity";
 import { assertIncidentWalletMutationAllowed } from "./payroll-wallet-incident-pause";
 
 const txOptions = { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 } as const;
 const activeStatuses = ["RESERVED", "PROVIDER_PROCESSING", "UNKNOWN"] as const;
+const recoverableStatuses = ["PROVIDER_PROCESSING", "UNKNOWN"] as const;
 type Beneficiary = { bankCode: string; accountNumber: string; accountName?: string; bankName?: string };
 
 const beneficiary = (value: Prisma.JsonValue | null): Beneficiary => {
@@ -35,8 +37,7 @@ export const reserveAndClaimProviderSettlement = async (organizationId: string, 
   if (settlement.status === "PREPARED") {
     const preparedClaim = await tx.financialSettlement.updateMany({ where: { id: settlement.id, organizationId, status: "PREPARED" }, data: { status: "RESERVED", reservedAt: new Date(), providerTransferReference: settlement.internalReference } });
     if (preparedClaim.count !== 1) return { settlement, shouldInitiate: false };
-    const reserved = await tx.$executeRaw`UPDATE WalletAccount SET reservedBalance = reservedBalance + ${settlement.amount} WHERE id = ${settlement.walletAccountId} AND organizationId = ${organizationId} AND balance - reservedBalance >= ${settlement.amount}`;
-    if (reserved !== 1) throw conflict("Insufficient spendable wallet balance");
+    await reserveWalletBalance(tx, { organizationId, walletAccountId: settlement.walletAccountId, amount: settlement.amount, currency: settlement.currency });
     settlement = await tx.financialSettlement.findUniqueOrThrow({ where: { id: settlement.id } });
   }
   if (settlement.status !== "RESERVED" || settlement.initiationClaimedAt) return { settlement, shouldInitiate: false };
@@ -89,11 +90,9 @@ export const finalizeProviderSettlementSuccess = async (settlementId: string, re
   if (settlement.status === "SUCCEEDED") return settlement;
   if (!activeStatuses.includes(settlement.status as typeof activeStatuses[number]) || !settlement.reservedAt || settlement.reservationReleasedAt) throw conflict("Settlement is not eligible for provider success");
   assertResult(settlement, result);
-  const wallet = await tx.walletAccount.findFirst({ where: { id: settlement.walletAccountId, organizationId: settlement.organizationId } });
-  if (!wallet) throw notFound("Wallet not found");
-  const debited = await tx.$executeRaw`UPDATE WalletAccount SET balance = balance - ${settlement.amount}, reservedBalance = reservedBalance - ${settlement.amount} WHERE id = ${wallet.id} AND organizationId = ${settlement.organizationId} AND balance >= ${settlement.amount} AND reservedBalance >= ${settlement.amount}`;
-  if (debited !== 1) throw conflict("Wallet reservation could not be finalized");
-  await tx.walletTransaction.create({ data: { organizationId: settlement.organizationId, walletAccountId: wallet.id, type: `PROVIDER_${settlement.sourceType}`, direction: "DEBIT", amount: settlement.amount, balanceBefore: wallet.balance, balanceAfter: wallet.balance.sub(settlement.amount), reference: settlement.internalReference, transferReference: settlement.providerTransferReference, description: `Paystack settlement ${settlement.internalReference}`, sourceType: settlement.sourceType, sourceId: settlement.sourceId, createdById: settlement.createdById } });
+  await financialWallet(tx, settlement.organizationId, settlement.walletAccountId, settlement.currency);
+  const debit = await consumeWalletReservation(tx, { organizationId: settlement.organizationId, walletAccountId: settlement.walletAccountId, amount: settlement.amount, currency: settlement.currency });
+  await tx.walletTransaction.create({ data: { organizationId: settlement.organizationId, walletAccountId: settlement.walletAccountId, type: `PROVIDER_${settlement.sourceType}`, direction: "DEBIT", amount: settlement.amount, balanceBefore: debit.balanceBefore, balanceAfter: debit.balanceAfter, reference: settlement.internalReference, transferReference: settlement.providerTransferReference, description: `Paystack settlement ${settlement.internalReference}`, sourceType: settlement.sourceType, sourceId: settlement.sourceId, createdById: settlement.createdById } });
   if (settlement.sourceType === "ACCOUNTING_PAYMENT_REQUEST") {
     const businessClaim = await tx.paymentRequest.updateMany({ where: { id: settlement.sourceId, organizationId: settlement.organizationId, status: "APPROVED" }, data: { status: "PAID", disbursementReference: settlement.internalReference, disbursedAt: new Date() } });
     if (businessClaim.count !== 1) throw conflict("Accounting obligation is not eligible for settlement finalization");
@@ -140,6 +139,7 @@ export const initiateProviderSettlement = async (organizationId: string, settlem
   try {
     const recipient = await ensureRecipient(claimed.settlement, provider);
     const settlement = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientId: recipient.id, providerRecipientReference: recipient.providerRecipientCode } });
+    await prisma.financialSettlement.update({ where: { id: settlement.id }, data: { providerInitiationAttemptedAt: new Date() } });
     const result = await provider.initiateTransfer({ recipientReference: recipient.providerRecipientCode, amountMinor: paystackMinorUnits(settlement.amount), currency: settlement.currency, reference: settlement.providerTransferReference!, reason: `Sinkronis ${settlement.sourceType.toLowerCase().replaceAll("_", " ")}` });
     return applyProviderTransferResult(settlement, result);
   } catch (error) {
@@ -149,22 +149,80 @@ export const initiateProviderSettlement = async (organizationId: string, settlem
   }
 };
 
-export const verifyAndReconcileProviderSettlement = async (settlementId: string, provider: SettlementProvider = new PaystackTransferProvider()) => {
-  assertProviderTransfersEnabled();
-  const settlement = await prisma.financialSettlement.findUnique({ where: { id: settlementId } });
+export const claimProviderSettlementReconciliation = async (settlementId: string, now = new Date(), claimToken = crypto.randomUUID()) => {
+  const leaseExpiresAt = new Date(now.getTime() + env.FINANCIAL_RECONCILIATION_LEASE_MS);
+  const claimed = await prisma.financialSettlement.updateMany({
+    where: {
+      id: settlementId,
+      provider: "PAYSTACK",
+      method: "PROVIDER",
+      status: { in: [...recoverableStatuses] },
+      OR: [{ reconciliationLeaseExpiresAt: null }, { reconciliationLeaseExpiresAt: { lte: now } }],
+    },
+    data: {
+      reconciliationClaimToken: claimToken,
+      reconciliationClaimedAt: now,
+      reconciliationLeaseExpiresAt: leaseExpiresAt,
+      reconciliationAttempts: { increment: 1 },
+      lastReconciliationError: null,
+    },
+  });
+  return claimed.count === 1 ? { claimToken, leaseExpiresAt } : null;
+};
+
+const releaseProviderSettlementReconciliation = async (settlementId: string, claimToken: string, error?: unknown) => {
+  await prisma.financialSettlement.updateMany({
+    where: { id: settlementId, reconciliationClaimToken: claimToken },
+    data: {
+      reconciliationClaimToken: null,
+      reconciliationClaimedAt: null,
+      reconciliationLeaseExpiresAt: null,
+      lastReconciliationError: error ? (error instanceof Error ? error.message : "Provider reconciliation failed").slice(0, 2000) : null,
+    },
+  });
+};
+
+export const verifyAndReconcileProviderSettlement = async (
+  settlementId: string,
+  provider: SettlementProvider = new PaystackTransferProvider(),
+  suppliedClaimToken?: string,
+  assertNewInitiationEnabled: () => void = assertProviderTransfersEnabled,
+) => {
+  const ownedClaim = suppliedClaimToken ? null : await claimProviderSettlementReconciliation(settlementId);
+  const claimToken = suppliedClaimToken ?? ownedClaim?.claimToken;
+  if (!claimToken) throw conflict("Provider settlement is already being reconciled");
+  const settlement = await prisma.financialSettlement.findFirst({ where: { id: settlementId, reconciliationClaimToken: claimToken, reconciliationLeaseExpiresAt: { gt: new Date() } } });
   if (!settlement || settlement.provider !== "PAYSTACK" || !settlement.providerTransferReference) throw notFound("Provider settlement not found");
   await assertTenantProviderMode(settlement.organizationId);
-  if (["SUCCEEDED", "FAILED", "REVERSED"].includes(settlement.status)) return settlement;
+  let reconciliationError: unknown;
   try {
     const result = await provider.verifyTransfer(settlement.providerTransferReference);
     return applyProviderTransferResult(settlement, result);
   } catch (error) {
-    if (error instanceof PaystackProviderError && error.statusCode === 404 && settlement.providerRecipientReference) {
+    if (error instanceof PaystackProviderError && error.statusCode === 404 && !settlement.providerInitiationAttemptedAt && settlement.providerRecipientReference) {
+      // A missing attempted-at marker is the only durable proof that this new
+      // code has not crossed the transfer-call boundary. Historical rows are
+      // backfilled conservatively by the migration.
+      assertNewInitiationEnabled();
+      const attemptClaim = await prisma.financialSettlement.updateMany({
+        where: { id: settlement.id, reconciliationClaimToken: claimToken, providerInitiationAttemptedAt: null },
+        data: { providerInitiationAttemptedAt: new Date() },
+      });
+      if (attemptClaim.count !== 1) throw conflict("Provider initiation decision was already claimed");
       const result = await provider.initiateTransfer({ recipientReference: settlement.providerRecipientReference, amountMinor: paystackMinorUnits(settlement.amount), currency: settlement.currency, reference: settlement.providerTransferReference, reason: `Sinkronis ${settlement.sourceType.toLowerCase().replaceAll("_", " ")}` });
-      return applyProviderTransferResult(settlement, result);
+      const applied = await applyProviderTransferResult(settlement, result);
+      reconciliationError = undefined;
+      return applied;
     }
-    if (error instanceof PaystackProviderError && error.ambiguous) return prisma.financialSettlement.update({ where: { id: settlement.id }, data: { status: "UNKNOWN", failureReason: error.message, lastVerifiedAt: new Date() } });
+    if (error instanceof PaystackProviderError && (error.ambiguous || error.statusCode === 404)) {
+      const unknown = await prisma.financialSettlement.update({ where: { id: settlement.id }, data: { status: "UNKNOWN", failureReason: error.message, lastVerifiedAt: new Date() } });
+      reconciliationError = undefined;
+      return unknown;
+    }
+    reconciliationError = error;
     throw error;
+  } finally {
+    await releaseProviderSettlementReconciliation(settlement.id, claimToken, reconciliationError).catch(() => undefined);
   }
 };
 
@@ -232,12 +290,26 @@ export const validatePaystackTransferApproval = async (payload: Record<string, u
 };
 
 export const reconcileStaleProviderSettlements = async (provider: SettlementProvider = new PaystackTransferProvider()) => {
-  if (!env.PAYSTACK_TRANSFERS_ENABLED) return { inspected: 0, reconciled: 0, disabled: true };
   const cutoff = new Date(Date.now() - env.PAYSTACK_TRANSFER_STALE_MS);
-  const rows = await prisma.financialSettlement.findMany({ where: { provider: "PAYSTACK", status: { in: ["PROVIDER_PROCESSING", "UNKNOWN"] }, providerProcessingAt: { lte: cutoff } }, orderBy: { providerProcessingAt: "asc" }, take: env.PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE });
+  const rows = await prisma.financialSettlement.findMany({ where: { provider: "PAYSTACK", method: "PROVIDER", status: { in: [...recoverableStatuses] }, providerProcessingAt: { lte: cutoff }, OR: [{ reconciliationLeaseExpiresAt: null }, { reconciliationLeaseExpiresAt: { lte: new Date() } }] }, orderBy: { providerProcessingAt: "asc" }, take: env.PAYSTACK_TRANSFER_RECONCILIATION_BATCH_SIZE, select: { id: true } });
+  let claimed = 0;
   let reconciled = 0;
+  let unresolved = 0;
+  let errors = 0;
   for (const row of rows) {
-    try { await verifyAndReconcileProviderSettlement(row.id, provider); reconciled += 1; } catch (error) { console.error("[paystack-transfer-reconciliation] verification failed", { settlementId: row.id, providerReference: row.providerTransferReference, error: error instanceof Error ? error.message : "unknown" }); }
+    const lease = await claimProviderSettlementReconciliation(row.id);
+    if (!lease) continue;
+    claimed += 1;
+    try {
+      const result = await verifyAndReconcileProviderSettlement(row.id, provider, lease.claimToken);
+      if (["SUCCEEDED", "FAILED", "REVERSED"].includes(result.status)) reconciled += 1;
+      else unresolved += 1;
+    } catch (error) {
+      errors += 1;
+      unresolved += 1;
+      await releaseProviderSettlementReconciliation(row.id, lease.claimToken, error).catch(() => undefined);
+      console.error("[paystack-transfer-reconciliation] verification failed", { settlementId: row.id, error: error instanceof Error ? error.message : "unknown" });
+    }
   }
-  return { inspected: rows.length, reconciled, disabled: false };
+  return { inspected: rows.length, claimed, reconciled, unresolved, errors };
 };

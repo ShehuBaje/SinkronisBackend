@@ -4,18 +4,23 @@ import { after, before, test } from 'node:test';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../core/prisma.js';
 import { completeManualSettlement, prepareProviderSettlement, releaseSettlementReservation, reverseSucceededSettlement } from '../core/financial-settlement.js';
-import { applyProviderTransferResult, finalizeProviderSettlementOtp, reserveAndClaimProviderSettlement, validatePaystackTransferApproval } from '../core/provider-settlement.js';
-import { retryPendingPaystackTransferWebhooks } from '../core/paystack-transfer-webhook.js';
+import { applyProviderTransferResult, claimProviderSettlementReconciliation, finalizeProviderSettlementOtp, finalizeProviderSettlementSuccess, reserveAndClaimProviderSettlement, validatePaystackTransferApproval, verifyAndReconcileProviderSettlement } from '../core/provider-settlement.js';
+import { claimPaystackTransferWebhook, retryPendingPaystackTransferWebhooks } from '../core/paystack-transfer-webhook.js';
+import { PaystackProviderError } from '../core/paystack.js';
+import { runFinancialRecovery } from '../core/financial-recovery.js';
 import { assertProviderTransfersEnabled } from '../core/settlement-provider.js';
 import type { SettlementProvider } from '../core/settlement-provider.js';
 import { financialSubscriptionTestHooks } from '../modules/admin/admin.service.js';
-import { fundPayrollWallet, settlePayrollRun } from '../modules/payroll/payroll.service.js';
-import { disbursePaymentRequest, fundWalletManually, processPaystackWebhook, recordInvoicePayment } from '../modules/accounting/accounting.service.js';
-import { errorMiddleware } from '../middleware/error.middleware.js';
+import { fundPayrollWallet, payPayrollWalletObligation, settlePayrollRun } from '../modules/payroll/payroll.service.js';
+import { disbursePaymentRequest, fundWalletManually, initializePaystackWalletFunding, processPaystackWebhook, recordInvoicePayment } from '../modules/accounting/accounting.service.js';
 import { assertSafeTestDatabase } from '../test-infrastructure/test-database.js';
 import { authorize } from '../middleware/rbac.middleware.js';
-import { executePayrollWalletIncidentRepair, expectedEvidenceDigest, inspectPayrollWalletIncident, type IncidentProfile } from '../core/payroll-wallet-incident-repair.js';
-import { assertIncidentWalletFingerprintMutationAllowed } from '../core/payroll-wallet-incident-pause.js';
+import express from 'express';
+import { internalRouter } from '../modules/internal/internal.routes.js';
+import { errorMiddleware } from '../middleware/error.middleware.js';
+import { env } from '../config/env.js';
+import { claimSubscriptionPaymentRecovery, claimWalletFundingRecovery, releaseSubscriptionPaymentRecovery, releaseWalletFundingRecovery } from '../core/inbound-payment-recovery.js';
+import { financialWalletFundingTestHooks, retryPendingPaystackInboundWebhooks } from '../modules/accounting/accounting.service.js';
 
 const enabled = Boolean(process.env.TEST_DATABASE_GUARD);
 if (enabled) {
@@ -31,6 +36,7 @@ const uid = (label: string) => `${PREFIX}${label}-${Date.now()}-${sequence++}`;
 const money = (value: number | string) => new Prisma.Decimal(value);
 
 const clean = async () => {
+  await prisma.financialReconciliationRun.deleteMany();
   await prisma.providerWebhookEvent.deleteMany();
   const organizations = await prisma.organization.findMany({ where: { slug: { startsWith: PREFIX } }, select: { id: true } });
   // Remote TiDB made stale-fixture cleanup exceed the suite timeout when old
@@ -48,7 +54,10 @@ const clean = async () => {
       await prisma.auditLogChain.deleteMany({ where: { organizationId: organization.id } });
       await prisma.user.deleteMany({ where: { organizationId: organization.id } });
       await prisma.role.deleteMany({ where: { organizationId: organization.id } });
-      await prisma.organization.delete({ where: { id: organization.id } });
+      // Financial evidence is retention-protected in Phase 3G. Mirror the
+      // production deletion workflow by archiving any fixture tenant whose
+      // historical evidence intentionally remains instead of hard-deleting it.
+      await prisma.organization.update({ where: { id: organization.id }, data: { status: "ARCHIVED" } });
     }));
   }
 };
@@ -80,95 +89,8 @@ const source = (fx: Awaited<ReturnType<typeof fixture>>, sourceId: string, amoun
 const manual = (fx: Awaited<ReturnType<typeof fixture>>, sourceId: string, amount: number, reference: string, finalize: Parameters<typeof completeManualSettlement>[2] = async (_tx, _settlement, _ledgerId) => null) =>
   completeManualSettlement(source(fx, sourceId, amount), { idempotencyKey: `idem:${reference}`, externalReference: reference, settledAt: new Date(), note: 'Adversarial integration fixture' }, finalize);
 
-const repairFixture = async () => {
-  const fx = await fixture(1_546_000);
-  const updatedAt = new Date('2026-09-23T15:15:09.724Z');
-  await prisma.walletAccount.update({ where: { id: fx.wallet.id }, data: { updatedAt } });
-  const values = [
-    ['2026-09-22T21:49:45.499Z','250000.00','0.00','250000.00'], ['2026-09-22T21:51:24.612Z','1000.00','250000.00','251000.00'],
-    ['2026-09-23T05:46:24.237Z','300000.00','251000.00','551000.00'], ['2026-09-23T05:47:20.488Z','300000.00','851000.00','1151000.00'],
-    ['2026-09-23T05:48:58.498Z','300000.00','1151000.00','1451000.00'], ['2026-09-23T05:55:41.810Z','30000.00','1481000.00','1511000.00'],
-    ['2026-09-23T05:58:51.492Z','2000.00','1541000.00','1543000.00'],
-    ['2026-09-23T15:15:10.206Z','1000.00','1545000.00','1546000.00'],
-  ];
-  const entries: IncidentProfile['entries'] = [];
-  for (const [createdAt, amount, before, after] of values) {
-    const transferReference = uid('repair-funding');
-    await prisma.walletTransaction.create({ data: { organizationId: fx.organization.id, walletAccountId: fx.wallet.id, type: 'FUNDING', direction: 'CREDIT', amount: money(amount), balanceBefore: money(before), balanceAfter: money(after), reference: uid('repair-ledger'), transferReference, description: 'Payroll wallet funding', createdById: fx.user.id, createdAt: new Date(createdAt) } });
-    entries.push({ createdAt, amount, before, after, referenceHash: crypto.createHash('sha256').update(transferReference).digest('hex').slice(0,12) });
-  }
-  const profile: IncidentProfile = { identityHash: crypto.createHash('sha256').update(`${fx.organization.id}:${fx.wallet.id}`).digest('hex').slice(0,12), currency: 'NGN', purpose: 'PRIMARY', balance: '1546000.00', reserved: '0.00', legitimateCredits: '1184000.00', legitimateDebits: '0.00', unsupported: '362000.00', correctedBalance: '1184000.00', walletUpdatedAt: updatedAt.toISOString(), entries };
-  return { ...fx, profile };
-};
-
 if (enabled) before(clean);
 if (enabled) after(async () => { await clean(); await prisma.$disconnect(); });
-
-financialTest('incident dry-run is SELECT-only and fails closed on changed state', async () => {
-  const fx = await repairFixture();
-  const before = { wallet: await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } }), rows: await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id } }), audits: await prisma.auditLog.count({ where: { organizationId: fx.organization.id } }) };
-  const result = await inspectPayrollWalletIncident(prisma, fx.profile);
-  assert.equal(result.status, 'SAFE_TO_EXECUTE');
-  const oldSnapshot: IncidentProfile = { ...fx.profile, balance: '1545000.00', legitimateCredits: '1183000.00', correctedBalance: '1183000.00', walletUpdatedAt: '2026-09-23T05:59:05.249Z', entries: fx.profile.entries.slice(0, 7) };
-  assert.equal((await inspectPayrollWalletIncident(prisma, oldSnapshot)).status, 'NOT_SAFE_TO_EXECUTE');
-  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), before.wallet.balance.toString());
-  assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id } }), before.rows);
-  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id } }), before.audits);
-  await prisma.walletAccount.update({ where: { id: fx.wallet.id }, data: { reservedBalance: money(1) } });
-  const changed = await inspectPayrollWalletIncident(prisma, fx.profile);
-  assert.equal(changed.status, 'NOT_SAFE_TO_EXECUTE');
-  assert.ok(changed.reasons.includes('RESERVED_BALANCE_CHANGED'));
-  await prisma.walletAccount.update({ where: { id: fx.wallet.id }, data: { reservedBalance: money(0), balance: money('1546000'), updatedAt: new Date(fx.profile.walletUpdatedAt) } });
-  const original = await prisma.walletTransaction.findFirstOrThrow({ where: { walletAccountId: fx.wallet.id }, orderBy: { createdAt: 'asc' } });
-  await prisma.walletTransaction.update({ where: { id: original.id }, data: { amount: money('250000.01') } });
-  assert.equal((await inspectPayrollWalletIncident(prisma, fx.profile)).status, 'NOT_SAFE_TO_EXECUTE');
-  await prisma.walletTransaction.update({ where: { id: original.id }, data: { amount: original.amount } });
-  const extra = await prisma.walletTransaction.create({ data: { organizationId: fx.organization.id, walletAccountId: fx.wallet.id, type: 'FUNDING', direction: 'CREDIT', amount: money(1), balanceBefore: money(0), balanceAfter: money(1), reference: uid('extra-ledger'), transferReference: uid('extra-transfer'), description: 'Unexpected row', createdById: fx.user.id } });
-  assert.equal((await inspectPayrollWalletIncident(prisma, fx.profile)).status, 'NOT_SAFE_TO_EXECUTE');
-  await prisma.walletTransaction.delete({ where: { id: extra.id } });
-  const settlement = await prisma.financialSettlement.create({ data: { organizationId: fx.organization.id, walletAccountId: fx.wallet.id, sourceType: 'TEST', sourceId: uid('settlement-source'), method: 'MANUAL', status: 'PREPARED', amount: money(1), currency: 'NGN', internalReference: uid('internal-ref'), idempotencyKey: uid('idem'), createdById: fx.user.id } });
-  assert.equal((await inspectPayrollWalletIncident(prisma, fx.profile)).status, 'NOT_SAFE_TO_EXECUTE');
-  await prisma.financialSettlement.delete({ where: { id: settlement.id } });
-  assert.equal((await inspectPayrollWalletIncident(prisma, fx.profile)).status, 'SAFE_TO_EXECUTE');
-});
-
-financialTest('completed incident wallet maintenance pause is removed and repair remains available', async () => {
-  assert.doesNotThrow(() => assertIncidentWalletFingerprintMutationAllowed('fcefcb648dfd'));
-  assert.doesNotThrow(() => assertIncidentWalletFingerprintMutationAllowed('unrelated-wallet'));
-  const fx = await repairFixture();
-  const result = await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', expectedEvidenceDigest(fx.profile), fx.profile);
-  assert.equal(result.status, 'APPLIED');
-});
-
-financialTest('incident repair commits balance, unique evidence and audit exactly once', async () => {
-  const fx = await repairFixture(); const digest = expectedEvidenceDigest(fx.profile);
-  const result = await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile);
-  assert.equal(result.status, 'APPLIED');
-  const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
-  assert.equal(wallet.balance.toString(), '1184000'); assert.equal(wallet.reservedBalance.toString(), '0');
-  assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, type: 'FINANCIAL_INTEGRITY_CORRECTION', direction: 'ADJUSTMENT' } }), 1);
-  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'FINANCIAL_INTEGRITY_WALLET_CORRECTION' } }), 1);
-  const replay = await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile);
-  assert.equal(replay.status, 'ALREADY_APPLIED');
-  assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, type: 'FINANCIAL_INTEGRITY_CORRECTION' } }), 1);
-});
-
-financialTest('incident repair audit failure rolls back and retry succeeds', async () => {
-  const fx = await repairFixture(); const digest = expectedEvidenceDigest(fx.profile);
-  await prisma.auditLogChain.create({ data: { organizationId: fx.organization.id, sequence: 2_147_483_647 } });
-  await assert.rejects(executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile));
-  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '1546000');
-  assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, type: 'FINANCIAL_INTEGRITY_CORRECTION' } }), 0);
-  await prisma.auditLogChain.update({ where: { organizationId: fx.organization.id }, data: { sequence: 0, lastHash: null } });
-  assert.equal((await executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile)).status, 'APPLIED');
-});
-
-financialTest('concurrent incident repair executions produce one correction', async () => {
-  const fx = await repairFixture(); const digest = expectedEvidenceDigest(fx.profile);
-  const results = await Promise.all([executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile), executePayrollWalletIncidentRepair(prisma, fx.user.id, 'PAYROLL-WALLET-ATOMICITY-2026-09-23-001', digest, fx.profile)]);
-  assert.deepEqual(new Set(results.map((row) => row.status)), new Set(['APPLIED','ALREADY_APPLIED']));
-  assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, type: 'FINANCIAL_INTEGRITY_CORRECTION' } }), 1);
-});
 
 financialTest('wallet reservation race never overspends 100k with two concurrent 80k obligations', async () => {
   for (let iteration = 0; iteration < 5; iteration++) {
@@ -186,39 +108,81 @@ financialTest('wallet reservation race never overspends 100k with two concurrent
   }
 });
 
+financialTest('Payroll unreserved debit cannot consume Accounting reservation and reservation owner still finalizes', async () => {
+  const fx = await fixture(100);
+  const prepared = await prepareProviderSettlement(source(fx, uid('reserved-owner'), 80), uid('reserved-owner-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  assert.equal(claimed.shouldInitiate, true);
+
+  const tooLarge = await prisma.payrollRun.create({ data: { organizationId: fx.organization.id, name: uid('payroll-50'), periodStart: new Date('2026-09-01'), periodEnd: new Date('2026-09-30'), status: 'APPROVED', totalNetPay: money(50) } });
+  await assert.rejects(() => payPayrollWalletObligation(fx.organization.id, `PAYROLL_RUN:${tooLarge.id}`, fx.authUser), /spendable/i);
+
+  const exactSpendable = await prisma.payrollRun.create({ data: { organizationId: fx.organization.id, name: uid('payroll-20'), periodStart: new Date('2026-10-01'), periodEnd: new Date('2026-10-31'), status: 'APPROVED', totalNetPay: money(20) } });
+  await payPayrollWalletObligation(fx.organization.id, `PAYROLL_RUN:${exactSpendable.id}`, fx.authUser);
+  const pending = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(pending.balance.toString(), '80');
+  assert.equal(pending.reservedBalance.toString(), '80');
+
+  await finalizeProviderSettlementSuccess(claimed.settlement.id, { reference: claimed.settlement.providerTransferReference!, amountMinor: 8_000, currency: 'NGN', providerStatus: 'success', state: 'SUCCESS' });
+  await finalizeProviderSettlementSuccess(claimed.settlement.id, { reference: claimed.settlement.providerTransferReference!, amountMinor: 8_000, currency: 'NGN', providerStatus: 'success', state: 'SUCCESS' });
+  const final = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(final.balance.toString(), '0');
+  assert.equal(final.reservedBalance.toString(), '0');
+  assert.equal(await prisma.walletTransaction.count({ where: { walletAccountId: fx.wallet.id, direction: 'DEBIT' } }), 2);
+});
+
 financialTest('Payroll wallet funding rolls back required audit failure and retries exactly once', async () => {
   const fx = await fixture(0);
   const transferReference = uid('post-commit-funding');
   await prisma.auditLogChain.create({ data: { organizationId: fx.organization.id, sequence: 2_147_483_647 } });
+
   let thrown: unknown;
-  try { await fundPayrollWallet(fx.organization.id, { amount: '125.50', transferReference }, fx.authUser); } catch (error) { thrown = error; }
+  try {
+    await fundPayrollWallet(fx.organization.id, { amount: '125.50', transferReference }, fx.authUser);
+  } catch (error) {
+    thrown = error;
+  }
   assert.ok(thrown);
+
   let httpStatus = 0;
-  errorMiddleware(thrown, {} as any, { status(value: number) { httpStatus = value; return this; }, json() { return this; } } as any, (() => undefined) as any);
+  let responseBody: any;
+  errorMiddleware(thrown, {} as any, {
+    status(value: number) { httpStatus = value; return this; },
+    json(value: unknown) { responseBody = value; return this; },
+  } as any, (() => undefined) as any);
   assert.equal(httpStatus, 500);
-  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '0');
-  assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference } }), 0);
+  assert.equal(responseBody.errorCode, 'INTERNAL_ERROR');
+
+  const walletAfterFirst = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  const transactionsAfterFirst = await prisma.walletTransaction.findMany({ where: { organizationId: fx.organization.id, transferReference } });
+  assert.equal(walletAfterFirst.balance.toString(), '0');
+  assert.equal(transactionsAfterFirst.length, 0);
   assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'PAYROLL_WALLET_FUNDED' } }), 0);
+
   await prisma.auditLogChain.update({ where: { organizationId: fx.organization.id }, data: { sequence: 0, lastHash: null } });
-  await fundPayrollWallet(fx.organization.id, { amount: '125.50', transferReference }, fx.authUser);
-  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '125.5');
+  const funded = await fundPayrollWallet(fx.organization.id, { amount: '125.50', transferReference }, fx.authUser);
+  assert.equal(funded.amount, 125.5);
+  const walletAfterRetry = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(walletAfterRetry.balance.toString(), '125.5');
   assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference } }), 1);
   assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'PAYROLL_WALLET_FUNDED' } }), 1);
 });
 
-financialTest('Payroll wallet funding is idempotent for sequential, concurrent and response-loss replay', async () => {
+financialTest('Payroll wallet funding retries and concurrent identical requests are idempotent', async () => {
   const fx = await fixture(0);
   const sequentialReference = uid('funding-sequential');
   const first = await fundPayrollWallet(fx.organization.id, { amount: '10.10', transferReference: sequentialReference }, fx.authUser);
   const replay = await fundPayrollWallet(fx.organization.id, { amount: '10.10', transferReference: sequentialReference }, fx.authUser);
   assert.equal(replay.id, first.id);
+
   const concurrentReference = uid('funding-concurrent');
   const concurrent = await Promise.all([
     fundPayrollWallet(fx.organization.id, { amount: '20.20', transferReference: concurrentReference }, fx.authUser),
     fundPayrollWallet(fx.organization.id, { amount: '20.20', transferReference: concurrentReference }, fx.authUser),
   ]);
   assert.equal(concurrent[0].id, concurrent[1].id);
-  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '30.3');
+  const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(wallet.balance.toString(), '30.3');
   assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference: { in: [sequentialReference, concurrentReference] } } }), 2);
   assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'PAYROLL_WALLET_FUNDED' } }), 2);
 });
@@ -233,22 +197,33 @@ financialTest('Payroll wallet funding conflicting reference reuse never changes 
   assert.equal(settled.filter((result) => result.status === 'fulfilled').length, 1);
   assert.equal(settled.filter((result) => result.status === 'rejected').length, 1);
   const transaction = await prisma.walletTransaction.findFirstOrThrow({ where: { organizationId: fx.organization.id, transferReference } });
-  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), transaction.amount.toString());
+  const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(wallet.balance.toString(), transaction.amount.toString());
   assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, transferReference } }), 1);
+  assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'PAYROLL_WALLET_FUNDED' } }), 1);
+  await assert.rejects(() => fundPayrollWallet(fx.organization.id, { amount: transaction.amount.equals(30) ? '31.00' : '30.00', transferReference }, fx.authUser), /already been recorded/i);
+  const after = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(after.balance.toString(), transaction.amount.toString());
 });
 
-financialTest('Accounting manual funding is atomic and idempotent under replay and concurrency', async () => {
+financialTest('Accounting manual funding is atomic and idempotent under sequential and concurrent replay', async () => {
   const fx = await fixture(0);
   const reference = uid('accounting-funding');
   const input = { walletAccountId: fx.wallet.id, amount: '42.42', externalReference: reference, description: 'Atomic funding test' };
   const first = await fundWalletManually(fx.organization.id, input, fx.authUser);
   const replay = await fundWalletManually(fx.organization.id, input, fx.authUser);
   assert.equal(replay.id, first.id);
+  assert.equal(replay.idempotentReplay, true);
+
   const concurrentReference = uid('accounting-funding-concurrent');
   const concurrentInput = { ...input, amount: '7.58', externalReference: concurrentReference };
-  const concurrent = await Promise.all([fundWalletManually(fx.organization.id, concurrentInput, fx.authUser), fundWalletManually(fx.organization.id, concurrentInput, fx.authUser)]);
+  const concurrent = await Promise.all([
+    fundWalletManually(fx.organization.id, concurrentInput, fx.authUser),
+    fundWalletManually(fx.organization.id, concurrentInput, fx.authUser),
+  ]);
   assert.equal(concurrent[0].id, concurrent[1].id);
-  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '50');
+  const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(wallet.balance.toString(), '50');
   assert.equal(await prisma.walletTransaction.count({ where: { organizationId: fx.organization.id, type: 'MANUAL_FUNDING' } }), 2);
   assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'ACCOUNTING_WALLET_FUNDED' } }), 2);
   await assert.rejects(() => fundWalletManually(fx.organization.id, { ...input, amount: '99.99' }, fx.authUser), /already in use/i);
@@ -277,6 +252,7 @@ financialTest('Invoice payment recording is atomic, idempotent, and rejects conf
   assert.equal(await prisma.accountingInvoicePayment.count({ where: { organizationId: fx.organization.id, reference } }), 1);
   assert.equal(await prisma.accountingInvoiceStatusHistory.count({ where: { organizationId: fx.organization.id, invoiceId: invoice.id, status: 'PARTIALLY_PAID' } }), 1);
   assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: 'ACCOUNTING_INVOICE_PAYMENT_RECORDED', resourceId: invoice.id } }), 1);
+
   const conflictInvoice = await createInvoice('conflict');
   const conflictReference = uid('invoice-conflict');
   const results = await Promise.allSettled([
@@ -298,6 +274,24 @@ financialTest('Invoice required audit failure rolls payment and invoice state ba
   assert.equal((await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } })).status, 'SENT');
   assert.equal(await prisma.accountingInvoiceStatusHistory.count({ where: { invoiceId: invoice.id } }), 0);
   assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, resourceId: invoice.id } }), 0);
+});
+
+financialTest('concurrent Payroll unreserved debits cannot overspend spendable balance', async () => {
+  const fx = await fixture(100);
+  const runs = await Promise.all([1, 2].map((index) => prisma.payrollRun.create({ data: { organizationId: fx.organization.id, name: uid(`payroll-race-${index}`), periodStart: new Date(`2026-0${index}-01`), periodEnd: new Date(`2026-0${index}-28`), status: 'APPROVED', totalNetPay: money(60) } })));
+  const results = await Promise.allSettled(runs.map((run) => payPayrollWalletObligation(fx.organization.id, `PAYROLL_RUN:${run.id}`, fx.authUser)));
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  const wallet = await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } });
+  assert.equal(wallet.balance.toString(), '40');
+  assert.equal(wallet.reservedBalance.toString(), '0');
+});
+
+financialTest('currency mismatch is rejected before settlement creation or provider access', async () => {
+  const fx = await fixture(100);
+  await prisma.walletAccount.update({ where: { id: fx.wallet.id }, data: { currency: 'USD' } });
+  await assert.rejects(() => prepareProviderSettlement(source(fx, uid('currency-mismatch'), 10), uid('currency-idem')), /currency does not match/i);
+  assert.equal(await prisma.financialSettlement.count({ where: { walletAccountId: fx.wallet.id } }), 0);
+  assert.equal(await prisma.providerTransferRecipient.count({ where: { organizationId: fx.organization.id } }), 0);
 });
 
 financialTest('high contention permits at most ten 10k debits from a 100k wallet and reconciles', async () => {
@@ -577,6 +571,141 @@ financialTest('durably accepted transfer webhook resumes after a processing cras
   assert.equal(await prisma.walletTransaction.count({ where: { sourceId: settlement.sourceId, direction: 'DEBIT' } }), 1);
 });
 
+financialTest('settlement reconciliation lease is single-claim and an expired lease is reclaimable', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('lease'), 4_000), uid('lease-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const settlement = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_LEASE', providerInitiationAttemptedAt: new Date() } });
+  const now = new Date();
+  const [a, b] = await Promise.all([claimProviderSettlementReconciliation(settlement.id, now), claimProviderSettlementReconciliation(settlement.id, now)]);
+  assert.equal([a, b].filter(Boolean).length, 1);
+  assert.equal(await claimProviderSettlementReconciliation(settlement.id, new Date(now.getTime() + 1_000)), null);
+  const reclaimed = await claimProviderSettlementReconciliation(settlement.id, new Date(now.getTime() + 10 * 60_000));
+  assert.ok(reclaimed);
+});
+
+financialTest('ambiguous prior initiation plus provider 404 never initiates another transfer or changes reference', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('ambiguous-404'), 5_000), uid('ambiguous-404-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const originalReference = claimed.settlement.providerTransferReference!;
+  await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_404', providerInitiationAttemptedAt: new Date(), status: 'UNKNOWN' } });
+  let initiated = 0;
+  const provider = {
+    resolveAccount: async () => { throw new Error('not expected'); }, createRecipient: async () => { throw new Error('not expected'); },
+    initiateTransfer: async () => { initiated += 1; throw new Error('must not initiate'); },
+    verifyTransfer: async (reference: string) => { assert.equal(reference, originalReference); throw new PaystackProviderError('not found', 404, false); },
+    finalizeTransferOtp: async () => { throw new Error('not expected'); }, getBalance: async () => [],
+  } satisfies SettlementProvider;
+  await verifyAndReconcileProviderSettlement(claimed.settlement.id, provider);
+  const current = await prisma.financialSettlement.findUniqueOrThrow({ where: { id: claimed.settlement.id } });
+  assert.equal(initiated, 0);
+  assert.equal(current.status, 'UNKNOWN');
+  assert.equal(current.providerTransferReference, originalReference);
+});
+
+financialTest('definitely never-attempted provider 404 permits one initial call under the durable lease', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('initial-404'), 6_000), uid('initial-404-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const originalReference = claimed.settlement.providerTransferReference!;
+  await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_INITIAL', providerInitiationAttemptedAt: null } });
+  let initiated = 0;
+  const provider = {
+    resolveAccount: async () => { throw new Error('not expected'); }, createRecipient: async () => { throw new Error('not expected'); },
+    initiateTransfer: async (input: { reference: string; recipientReference: string; amountMinor: number; currency: string; reason: string }) => { initiated += 1; assert.equal(input.reference, originalReference); return { reference: originalReference, amountMinor: 600_000, currency: 'NGN', providerStatus: 'pending', state: 'NON_CONCLUSIVE' as const, recipientReference: 'RCP_INITIAL' }; },
+    verifyTransfer: async () => { throw new PaystackProviderError('not found', 404, false); },
+    finalizeTransferOtp: async () => { throw new Error('not expected'); }, getBalance: async () => [],
+  } satisfies SettlementProvider;
+  const results = await Promise.allSettled([
+    verifyAndReconcileProviderSettlement(claimed.settlement.id, provider, undefined, () => undefined),
+    verifyAndReconcileProviderSettlement(claimed.settlement.id, provider, undefined, () => undefined),
+  ]);
+  assert.equal(initiated, 1);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  const current = await prisma.financialSettlement.findUniqueOrThrow({ where: { id: claimed.settlement.id } });
+  assert.ok(current.providerInitiationAttemptedAt);
+  assert.equal(current.providerTransferReference, originalReference);
+});
+
+financialTest('stale webhook PROCESSING lease is reclaimed but an active lease is not stolen', async () => {
+  const stale = await prisma.providerWebhookEvent.create({ data: { provider: 'PAYSTACK', eventFingerprint: uid('stale-hook'), eventType: 'transfer.success', providerReference: uid('hook-ref'), payload: {}, status: 'PROCESSING', processingClaimToken: uid('dead-worker'), processingClaimedAt: new Date(Date.now() - 300_000), processingLeaseExpiresAt: new Date(Date.now() - 60_000) } });
+  const now = new Date();
+  const first = await claimPaystackTransferWebhook(stale.id, now);
+  assert.ok(first);
+  assert.equal(await claimPaystackTransferWebhook(stale.id, now), null);
+  const state = await prisma.providerWebhookEvent.findUniqueOrThrow({ where: { id: stale.id } });
+  assert.equal(state.status, 'PROCESSING');
+  assert.equal(state.attempts, 1);
+});
+
+financialTest('out-of-order reversal is deferred without consuming the failure budget', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('reversal-order'), 3_000), uid('reversal-order-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const settlement = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_ORDER', providerInitiationAttemptedAt: new Date() } });
+  const event = await prisma.providerWebhookEvent.create({ data: { provider: 'PAYSTACK', eventFingerprint: uid('order-hook'), eventType: 'transfer.reversed', providerReference: settlement.providerTransferReference, payload: { reference: settlement.providerTransferReference!, amount: 300_000, currency: 'NGN', status: 'reversed', transferCode: 'TRF_ORDER', recipientReference: 'RCP_ORDER' }, status: 'RECEIVED' } });
+  const recovered = await retryPendingPaystackTransferWebhooks();
+  assert.equal(recovered.claimed, 1);
+  const deferred = await prisma.providerWebhookEvent.findUniqueOrThrow({ where: { id: event.id } });
+  assert.equal(deferred.status, 'FAILED');
+  assert.equal(deferred.attempts, 0);
+  assert.equal(deferred.deferredAttempts, 1);
+  assert.ok(deferred.nextAttemptAt);
+});
+
+financialTest('webhook retry exhaustion is retained as durable dead-letter evidence', async () => {
+  const fx = await fixture();
+  const prepared = await prepareProviderSettlement(source(fx, uid('dead-letter'), 2_000), uid('dead-letter-idem'));
+  const claimed = await reserveAndClaimProviderSettlement(fx.organization.id, prepared.id);
+  const settlement = await prisma.financialSettlement.update({ where: { id: claimed.settlement.id }, data: { providerRecipientReference: 'RCP_DEAD', providerInitiationAttemptedAt: new Date() } });
+  const event = await prisma.providerWebhookEvent.create({ data: { provider: 'PAYSTACK', eventFingerprint: uid('dead-hook'), eventType: 'transfer.success', providerReference: settlement.providerTransferReference, payload: { reference: settlement.providerTransferReference!, amount: 999, currency: 'NGN', status: 'success', transferCode: 'TRF_DEAD', recipientReference: 'RCP_DEAD' }, status: 'FAILED', attempts: 4, nextAttemptAt: new Date(0) } });
+  const recovered = await retryPendingPaystackTransferWebhooks();
+  assert.equal(recovered.errors, 1);
+  const dead = await prisma.providerWebhookEvent.findUniqueOrThrow({ where: { id: event.id } });
+  assert.equal(dead.status, 'DEAD_LETTER');
+  assert.equal(dead.attempts, 5);
+  assert.ok(dead.deadLetteredAt);
+});
+
+financialTest('bounded recovery records durable completion evidence without Redis or provider calls for an empty batch', async () => {
+  await prisma.financialSettlement.updateMany({ where: { status: { in: ['PROVIDER_PROCESSING', 'UNKNOWN'] } }, data: { providerProcessingAt: new Date() } });
+  let providerCalls = 0;
+  const provider = {
+    resolveAccount: async () => { providerCalls += 1; throw new Error('not expected'); }, createRecipient: async () => { providerCalls += 1; throw new Error('not expected'); }, initiateTransfer: async () => { providerCalls += 1; throw new Error('not expected'); }, verifyTransfer: async () => { providerCalls += 1; throw new Error('not expected'); }, finalizeTransferOtp: async () => { providerCalls += 1; throw new Error('not expected'); }, getBalance: async () => { providerCalls += 1; return []; },
+  } satisfies SettlementProvider;
+  const run = await runFinancialRecovery({ trigger: 'TEST', provider });
+  assert.equal(run.status, 'COMPLETED');
+  assert.ok(run.completedAt);
+  assert.equal(providerCalls, 0);
+});
+
+financialTest('financial recovery Cron fails closed without its server secret and accepts the configured bearer only', async () => {
+  await prisma.financialSettlement.updateMany({ where: { status: { in: ['PROVIDER_PROCESSING', 'UNKNOWN'] } }, data: { providerProcessingAt: new Date() } });
+  const previous = env.CRON_SECRET;
+  env.CRON_SECRET = uid('cron-secret');
+  const cronApp = express();
+  cronApp.use('/api/v1/internal', internalRouter);
+  cronApp.use(errorMiddleware);
+  const server = cronApp.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const url = `http://127.0.0.1:${address.port}/api/v1/internal/cron/financial-recovery?settlementId=caller-controlled`;
+  try {
+    assert.equal((await fetch(url)).status, 401);
+    assert.equal((await fetch(url, { headers: { authorization: 'Bearer invalid' } })).status, 401);
+    const valid = await fetch(url, { headers: { authorization: `Bearer ${env.CRON_SECRET}` } });
+    assert.equal(valid.status, 200);
+    const payload = await valid.json() as { data?: { status?: string; settlements?: { scanned?: number } } };
+    assert.equal(payload.data?.status, 'COMPLETED');
+    assert.equal(payload.data?.settlements?.scanned, 0);
+  } finally {
+    env.CRON_SECRET = previous;
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 financialTest('transfer failure releases once and reversal compensates once under duplicate delivery', async () => {
   const failedFx = await fixture();
   const failedPrepared = await prepareProviderSettlement(source(failedFx, uid('transfer-failed'), 10_000), uid('transfer-failed-idem'));
@@ -662,6 +791,128 @@ financialTest('subscription finalization failure rolls back verification claim a
   await assert.rejects(financialSubscriptionTestHooks.finalizeSubscriptionPayment(attempt.id, verification));
   assert.equal((await prisma.subscriptionPaymentAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).status, 'INITIALIZED');
   assert.equal(await prisma.billingHistory.count({ where: { subscriptionPaymentAttemptId: attempt.id } }), 0);
+});
+
+financialTest('Phase 3C subscription recovery claims once and applies one billing outcome using the original reference', async () => {
+  const fx = await fixture();
+  const attempt = await prisma.subscriptionPaymentAttempt.create({ data: { organizationId: fx.organization.id, operationType: 'PURCHASE', planKey: 'payroll', billingCycle: 'MONTHLY', amount: money(10_000), currency: 'NGN', reference: uid('recover-sub'), idempotencyKey: uid('recover-sub-idem'), activeKey: `${fx.organization.id}:PURCHASE`, status: 'UNKNOWN', providerInitiationAttemptedAt: new Date(), effectiveAt: new Date(), createdByUserId: fx.user.id } });
+  let verifications = 0;
+  const verifier = async (referenceValue: string) => {
+    if (referenceValue !== attempt.reference) throw new Error('Unrelated stale subscription fixture');
+    verifications += 1;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return { status: 'success', reference: attempt.reference, amount: 1_000_000, currency: 'NGN', metadata: { paymentDomain: 'SUBSCRIPTION', subscriptionPaymentAttemptId: attempt.id, organizationId: fx.organization.id } };
+  };
+  const recoveryNow = new Date(Date.now() + env.PAYSTACK_TRANSFER_STALE_MS + 1_000);
+  await Promise.all([financialSubscriptionTestHooks.reconcileStaleSubscriptionPayments(verifier, 25, recoveryNow), financialSubscriptionTestHooks.reconcileStaleSubscriptionPayments(verifier, 25, recoveryNow)]);
+  assert.equal(verifications, 1);
+  assert.equal((await prisma.subscriptionPaymentAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).status, 'COMPLETED');
+  assert.equal(await prisma.billingHistory.count({ where: { subscriptionPaymentAttemptId: attempt.id } }), 1);
+});
+
+financialTest('Phase 3C inbound recovery leases protect active claims and permit expired reclaim', async () => {
+  const fx = await fixture();
+  const subscription = await prisma.subscriptionPaymentAttempt.create({ data: { organizationId: fx.organization.id, operationType: 'PURCHASE', planKey: 'payroll', billingCycle: 'MONTHLY', amount: money(10_000), currency: 'NGN', reference: uid('lease-sub'), idempotencyKey: uid('lease-sub-idem'), activeKey: `${fx.organization.id}:PURCHASE`, status: 'UNKNOWN', effectiveAt: new Date(), createdByUserId: fx.user.id } });
+  const first = await claimSubscriptionPaymentRecovery(subscription.id, new Date(), 'subscription-first');
+  assert.ok(first);
+  assert.equal(await claimSubscriptionPaymentRecovery(subscription.id, new Date(), 'subscription-second'), null);
+  await prisma.subscriptionPaymentAttempt.update({ where: { id: subscription.id }, data: { reconciliationLeaseExpiresAt: new Date(Date.now() - 1) } });
+  assert.ok(await claimSubscriptionPaymentRecovery(subscription.id, new Date(), 'subscription-reclaimed'));
+
+  const funding = await prisma.walletFundingAttempt.create({ data: { organizationId: fx.organization.id, walletAccountId: fx.wallet.id, reference: uid('lease-funding'), amount: money(25), currency: 'NGN', status: 'UNKNOWN', createdById: fx.user.id } });
+  const fundingFirst = await claimWalletFundingRecovery(funding.id, new Date(), 'funding-first');
+  assert.ok(fundingFirst);
+  assert.equal(await claimWalletFundingRecovery(funding.id, new Date(), 'funding-second'), null);
+  await prisma.walletFundingAttempt.update({ where: { id: funding.id }, data: { reconciliationLeaseExpiresAt: new Date(Date.now() - 1) } });
+  assert.ok(await claimWalletFundingRecovery(funding.id, new Date(), 'funding-reclaimed'));
+  await releaseSubscriptionPaymentRecovery(subscription.id, 'subscription-reclaimed');
+  await releaseWalletFundingRecovery(funding.id, 'funding-reclaimed');
+});
+
+financialTest('Phase 3C wallet funding recovery credits wallet and ledger exactly once under concurrent reconcilers', async () => {
+  const fx = await fixture(0);
+  const attempt = await prisma.walletFundingAttempt.create({ data: { organizationId: fx.organization.id, walletAccountId: fx.wallet.id, reference: uid('recover-funding'), amount: money('25.10'), currency: 'NGN', status: 'UNKNOWN', providerInitiationAttemptedAt: new Date(), createdById: fx.user.id } });
+  let verifications = 0;
+  const verifier = async (referenceValue: string) => {
+    if (referenceValue !== attempt.reference) throw new Error('Unrelated stale wallet-funding fixture');
+    verifications += 1;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return { status: 'success', reference: attempt.reference, amount: 2510, currency: 'NGN', metadata: { paymentDomain: 'WALLET_FUNDING', fundingAttemptId: attempt.id, organizationId: fx.organization.id, walletAccountId: fx.wallet.id } };
+  };
+  const recoveryNow = new Date(Date.now() + env.PAYSTACK_TRANSFER_STALE_MS + 1_000);
+  await Promise.all([financialWalletFundingTestHooks.reconcileStaleWalletFundingAttempts(verifier, 25, recoveryNow), financialWalletFundingTestHooks.reconcileStaleWalletFundingAttempts(verifier, 25, recoveryNow)]);
+  assert.equal(verifications, 1);
+  assert.equal((await prisma.walletFundingAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).status, 'COMPLETED');
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '25.1');
+  assert.equal(await prisma.walletTransaction.count({ where: { sourceType: 'PAYSTACK_FUNDING', sourceId: attempt.id, direction: 'CREDIT' } }), 1);
+});
+
+financialTest('Phase 3C stale inbound charge webhook is reclaimed and replay cannot duplicate wallet value', async () => {
+  const fx = await fixture(0);
+  const attempt = await prisma.walletFundingAttempt.create({ data: { organizationId: fx.organization.id, walletAccountId: fx.wallet.id, reference: uid('webhook-funding'), amount: money(30), currency: 'NGN', status: 'INITIALIZED', createdById: fx.user.id } });
+  const event = await prisma.providerWebhookEvent.create({ data: { provider: 'PAYSTACK', eventFingerprint: uid('charge-fingerprint'), eventType: 'charge.success', providerReference: attempt.reference, payload: { reference: attempt.reference }, status: 'PROCESSING', attempts: 1, processingClaimToken: 'dead-process', processingClaimedAt: new Date(Date.now() - 120_000), processingLeaseExpiresAt: new Date(Date.now() - 60_000) } });
+  let verifications = 0;
+  const verifier = async () => { verifications += 1; return { status: 'success', reference: attempt.reference, amount: 3000, currency: 'NGN', metadata: { paymentDomain: 'WALLET_FUNDING', fundingAttemptId: attempt.id, organizationId: fx.organization.id, walletAccountId: fx.wallet.id } }; };
+  const recovered = await Promise.all([retryPendingPaystackInboundWebhooks(10, new Date(), { verifyFunding: verifier }), retryPendingPaystackInboundWebhooks(10, new Date(), { verifyFunding: verifier })]);
+  assert.equal(recovered.reduce((total, result) => total + result.processed, 0), 1);
+  assert.equal(verifications, 1);
+  assert.equal((await prisma.providerWebhookEvent.findUniqueOrThrow({ where: { id: event.id } })).status, 'PROCESSED');
+  assert.equal(await prisma.walletTransaction.count({ where: { sourceId: attempt.id, sourceType: 'PAYSTACK_FUNDING' } }), 1);
+  assert.equal((await retryPendingPaystackInboundWebhooks(10, new Date(), { verifyFunding: verifier })).processed, 0);
+  assert.equal(await prisma.walletTransaction.count({ where: { sourceId: attempt.id, sourceType: 'PAYSTACK_FUNDING' } }), 1);
+});
+
+financialTest('Phase 3C funding verification rejects tenant-wallet metadata mismatch with zero value effect', async () => {
+  const fx = await fixture(0);
+  const other = await fixture(0);
+  const attempt = await prisma.walletFundingAttempt.create({ data: { organizationId: fx.organization.id, walletAccountId: fx.wallet.id, reference: uid('mismatch-funding'), amount: money(40), currency: 'NGN', status: 'INITIALIZED', createdById: fx.user.id } });
+  await assert.rejects(financialWalletFundingTestHooks.finalizeVerifiedPaystackFunding(attempt.id, { status: 'success', reference: attempt.reference, amount: 4000, currency: 'NGN', metadata: { paymentDomain: 'WALLET_FUNDING', fundingAttemptId: attempt.id, organizationId: other.organization.id, walletAccountId: other.wallet.id } }));
+  assert.equal((await prisma.walletAccount.findUniqueOrThrow({ where: { id: fx.wallet.id } })).balance.toString(), '0');
+  assert.equal(await prisma.walletTransaction.count({ where: { sourceId: attempt.id } }), 0);
+});
+
+financialTest('Phase 3C ambiguous wallet initialization remains recoverable and preserves its original reference', async () => {
+  const fx = await fixture(0);
+  const originalFetch = globalThis.fetch;
+  const originalCallback = env.PAYSTACK_CALLBACK_URL;
+  let calls = 0;
+  env.PAYSTACK_CALLBACK_URL = 'http://localhost:3000/test/wallet/callback';
+  globalThis.fetch = async () => { calls += 1; throw new TypeError('simulated response loss'); };
+  try {
+    await assert.rejects(initializePaystackWalletFunding(fx.organization.id, { walletAccountId: fx.wallet.id, amount: '12.34', idempotencyKey: uid('funding-init-idem') }, fx.authUser));
+    const attempt = await prisma.walletFundingAttempt.findFirstOrThrow({ where: { organizationId: fx.organization.id } });
+    assert.equal(calls, 1);
+    assert.equal(attempt.status, 'UNKNOWN');
+    assert.ok(attempt.providerInitiationAttemptedAt);
+    assert.match(attempt.reference, /^PSK-/);
+    assert.equal(await prisma.walletTransaction.count({ where: { sourceId: attempt.id } }), 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    env.PAYSTACK_CALLBACK_URL = originalCallback;
+  }
+});
+
+financialTest('Phase 3C optional wallet-funding idempotency makes concurrent initialization one provider operation', async () => {
+  const fx = await fixture(0);
+  const originalFetch = globalThis.fetch;
+  const originalCallback = env.PAYSTACK_CALLBACK_URL;
+  let calls = 0;
+  env.PAYSTACK_CALLBACK_URL = 'http://localhost:3000/test/wallet/callback';
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    const body = JSON.parse(String(init?.body)) as { reference: string };
+    return new Response(JSON.stringify({ status: true, message: 'ok', data: { authorization_url: 'https://checkout.invalid/wallet', access_code: 'wallet-access', reference: body.reference } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const input = { walletAccountId: fx.wallet.id, amount: '15.25', idempotencyKey: uid('funding-concurrent-idem') };
+    const results = await Promise.all(Array.from({ length: 8 }, () => initializePaystackWalletFunding(fx.organization.id, input, fx.authUser)));
+    assert.equal(calls, 1);
+    assert.equal(new Set(results.map(result => result!.reference)).size, 1);
+    assert.equal(await prisma.walletFundingAttempt.count({ where: { organizationId: fx.organization.id } }), 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    env.PAYSTACK_CALLBACK_URL = originalCallback;
+  }
 });
 
 const payrollFixture = async (count: number) => {

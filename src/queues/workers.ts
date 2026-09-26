@@ -6,8 +6,7 @@ import { expireOrganizationExports, processPendingOrganizationExports } from "..
 import { expireAccountingExports, processPendingAccountingExports } from "../modules/accounting/accounting.service";
 import { deliverQueuedNotificationEmail } from "../core/notifications";
 import { failPayRunBatch, initializePayRunCalculation, processPayRunBatch, reconcileProcessingPayRuns } from "../modules/payroll/payroll.service";
-import { reconcileStaleProviderSettlements } from "../core/provider-settlement";
-import { retryPendingPaystackTransferWebhooks } from "../core/paystack-transfer-webhook";
+import { runFinancialRecovery } from "../core/financial-recovery";
 
 let workers: Worker[] = [];
 
@@ -29,7 +28,7 @@ export const initializeWorkers = () => {
   notificationWorker.on("failed", (job, error) => console.error(`[queue:notifications] Failed job ${job?.id ?? "unknown"}`, error));
   const lifecycleWorker = new Worker(LIFECYCLE_QUEUE_NAME, async (job) => {
     if (job.name === SCHEDULED_JOBS.subscriptionLifecycle.jobName) return processMyPlanLifecycle();
-    if (job.name === SCHEDULED_JOBS.paystackTransferReconciliation.jobName) return { settlements: await reconcileStaleProviderSettlements(), webhooks: await retryPendingPaystackTransferWebhooks() };
+    if (job.name === SCHEDULED_JOBS.paystackTransferReconciliation.jobName) return runFinancialRecovery({ trigger: "BULLMQ" });
     throw new Error(`Unsupported lifecycle job: ${job.name}`);
   }, { connection: redisConnectionOptions, concurrency: 1 });
   const exportWorker = new Worker(EXPORT_QUEUE_NAME, async (job) => {
