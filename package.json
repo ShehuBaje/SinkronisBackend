@@ -24,6 +24,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:migrations:check": "tsx src/scripts/check-production-migrations.ts",
+    "security:raw-sql": "tsx src/scripts/check-unsafe-raw-sql.ts",
     "release:verify": "npm run build && npm run lint && npm run prisma:migrations:check",
     "release:migrate": "prisma migrate deploy",
     "prisma:studio": "prisma studio",

@@ -29,6 +29,7 @@ const clean = async () => {
   const organizations = await prisma.organization.findMany({ where: { slug: { startsWith: PREFIX } }, select: { id: true } });
   for (const organization of organizations) {
     await prisma.auditLog.deleteMany({ where: { organizationId: organization.id } });
+    await prisma.auditLogChain.deleteMany({ where: { organizationId: organization.id } });
     await prisma.walletTransaction.deleteMany({ where: { organizationId: organization.id } });
     await prisma.financialSettlement.deleteMany({ where: { organizationId: organization.id } });
     await prisma.walletAccount.deleteMany({ where: { organizationId: organization.id } });

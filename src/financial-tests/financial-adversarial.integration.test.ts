@@ -54,7 +54,10 @@ const clean = async () => {
       await prisma.auditLogChain.deleteMany({ where: { organizationId: organization.id } });
       await prisma.user.deleteMany({ where: { organizationId: organization.id } });
       await prisma.role.deleteMany({ where: { organizationId: organization.id } });
-      await prisma.organization.delete({ where: { id: organization.id } });
+      // Financial evidence is retention-protected in Phase 3G. Mirror the
+      // production deletion workflow by archiving any fixture tenant whose
+      // historical evidence intentionally remains instead of hard-deleting it.
+      await prisma.organization.update({ where: { id: organization.id }, data: { status: "ARCHIVED" } });
     }));
   }
 };

@@ -11,6 +11,7 @@ export type AuthUser = {
   impersonation?: {
     sessionId: string;
     platformAdminUserId: string;
+    platformAdminSessionId: string;
   };
   permissions: PermissionKey[];
 };

@@ -309,7 +309,7 @@ model AuditLog {
   hash           String?      @db.Char(64)
   sequence       Int?
   actorUser      User?        @relation(fields: [actorUserId], references: [id], map: "AuditLog_actorUserId_fkey")
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuditLog_organizationId_fkey")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "AuditLog_organizationId_fkey")
 
   @@unique([organizationId, sequence], map: "AuditLog_organizationId_sequence_key")
   @@index([actorUserId], map: "AuditLog_actorUserId_fkey")
@@ -324,7 +324,7 @@ model AuditLogChain {
   lastHash       String?      @db.Char(64)
   sequence       Int          @default(0)
   updatedAt      DateTime     @updatedAt
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "AuditLogChain_organizationId_fkey")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "AuditLogChain_organizationId_fkey")
 
   @@map("AuditLogChain")
 }
@@ -407,7 +407,7 @@ model BillingHistory {
   metadata                     Json?
   createdAt                    DateTime                    @default(now())
   updatedAt                    DateTime                    @updatedAt
-  organization                 Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "BillingHistory_organizationId_fkey")
+  organization                 Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "BillingHistory_organizationId_fkey")
   subscriptionPaymentAttempt   SubscriptionPaymentAttempt? @relation(fields: [subscriptionPaymentAttemptId], references: [id], onDelete: SetNull, map: "BillingHistory_subscriptionPaymentAttemptId_fkey")
 
   @@index([organizationId, billedAt], map: "BillingHistory_organizationId_billedAt_idx")
@@ -1639,7 +1639,7 @@ model SubscriptionPaymentAttempt {
   createdByUserId               String?
   createdAt                     DateTime                @default(now())
   updatedAt                     DateTime                @updatedAt
-  organization                  Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "SubscriptionPaymentAttempt_organizationId_fkey")
+  organization                  Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "SubscriptionPaymentAttempt_organizationId_fkey")
   billingHistory                BillingHistory?
   planChange                    SubscriptionPlanChange?
 
@@ -2350,7 +2350,7 @@ model WalletAccount {
   purpose            String                 @default("PRIMARY") @db.VarChar(191)
   createdAt          DateTime               @default(now())
   updatedAt          DateTime               @updatedAt
-  organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletAccount_organizationId_fkey")
+  organization       Organization           @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "WalletAccount_organizationId_fkey")
   walletdisbursement WalletDisbursement[]
   transactions       WalletTransaction[]
   fundingAttempts    WalletFundingAttempt[]
@@ -2388,8 +2388,8 @@ model WalletFundingAttempt {
   createdById                   String?
   createdAt                     DateTime      @default(now())
   updatedAt                     DateTime      @updatedAt
-  organization                  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletFundingAttempt_org_fkey")
-  wallet                        WalletAccount @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletFundingAttempt_wallet_fkey")
+  organization                  Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "WalletFundingAttempt_org_fkey")
+  wallet                        WalletAccount @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "WalletFundingAttempt_wallet_fkey")
 
   @@unique([reference], map: "WalletFundingAttempt_reference_key")
   @@unique([organizationId, idempotencyKey], map: "WalletFundingAttempt_org_idempotency_key")
@@ -2439,7 +2439,7 @@ model FinancialSettlement {
   createdById                   String?
   createdAt                     DateTime                   @default(now())
   updatedAt                     DateTime                   @updatedAt
-  organization                  Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "FinancialSettlement_org_fkey")
+  organization                  Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "FinancialSettlement_org_fkey")
   wallet                        WalletAccount              @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "FinancialSettlement_wallet_fkey")
   providerRecipient             ProviderTransferRecipient? @relation(fields: [providerRecipientId], references: [id], onDelete: SetNull, map: "FinancialSettlement_provider_recipient_fkey")
 
@@ -2472,7 +2472,7 @@ model ProviderTransferRecipient {
   active                Boolean               @default(true)
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
-  organization          Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "ProviderTransferRecipient_org_fkey")
+  organization          Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "ProviderTransferRecipient_org_fkey")
   settlements           FinancialSettlement[]
 
   @@unique([provider, providerRecipientCode], map: "ProviderTransferRecipient_provider_code_key")
@@ -2619,8 +2619,8 @@ model WalletTransaction {
   reversalOfId      String?
   createdById       String?
   createdAt         DateTime              @default(now())
-  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "WalletTransaction_org_fkey")
-  wallet            WalletAccount         @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletTransaction_wallet_fkey")
+  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "WalletTransaction_org_fkey")
+  wallet            WalletAccount         @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "WalletTransaction_wallet_fkey")
   payrollRun        PayrollRun?           @relation(fields: [payrollRunId], references: [id], map: "WalletTransaction_run_fkey")
   taxRemittance     PayrollTaxRemittance? @relation(fields: [taxRemittanceId], references: [id], map: "WalletTransaction_remittance_fkey")
   reversalOf        WalletTransaction?    @relation("WalletTransactionReversal", fields: [reversalOfId], references: [id], map: "WalletTransaction_reversal_fkey")
@@ -2741,7 +2741,7 @@ model WalletDisbursement {
   reference       String?
   createdAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt
-  walletaccount   WalletAccount             @relation(fields: [walletAccountId], references: [id], onDelete: Cascade, map: "WalletDisbursement_walletAccountId_fkey")
+  walletaccount   WalletAccount             @relation(fields: [walletAccountId], references: [id], onDelete: Restrict, map: "WalletDisbursement_walletAccountId_fkey")
 
   @@index([organizationId, status], map: "WalletDisbursement_organizationId_status_idx")
   @@index([walletAccountId], map: "WalletDisbursement_walletAccountId_fkey")
