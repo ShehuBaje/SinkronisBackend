@@ -1,21 +1,3 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "crons": [
-    {
-      "path": "/api/v1/internal/cron/subscriptions",
-      "schedule": "0 0 * * *"
-    },
-    {
-      "path": "/api/v1/internal/cron/financial-recovery",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/v1/internal/cron/financial-integrity",
-      "schedule": "17 * * * *"
-    },
-    {
-      "path": "/api/v1/internal/cron/payroll-processing",
-      "schedule": "*/5 * * * *"
-    }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json"
 }

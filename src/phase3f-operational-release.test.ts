@@ -19,17 +19,19 @@ const serve = async (app: express.Express, callback: (base: string) => Promise<v
   finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
 };
 
-test("Phase 3F Vercel Cron manifest matches authenticated GET handlers", () => {
-  const manifest = JSON.parse(source("vercel.json")) as { crons: Array<{ path: string; schedule: string }> };
+test("temporary Vercel hosting leaves scheduling external while preserving authenticated GET handlers and canonical cadences", () => {
+  const manifest = JSON.parse(source("vercel.json")) as { crons?: Array<{ path: string; schedule: string }> };
   const routes = source("src/modules/internal/internal.routes.ts");
+  const runbook = source("docs/financial-release-runbook.md");
+  assert.equal(manifest.crons?.length ?? 0, 0);
   for (const expected of [
     ["/api/v1/internal/cron/subscriptions", "0 0 * * *"],
     ["/api/v1/internal/cron/financial-recovery", "*/5 * * * *"],
     ["/api/v1/internal/cron/financial-integrity", "17 * * * *"],
     ["/api/v1/internal/cron/payroll-processing", "*/5 * * * *"],
   ]) {
-    assert.deepEqual(manifest.crons.find((entry) => entry.path === expected[0]), { path: expected[0], schedule: expected[1] });
     assert.match(routes, new RegExp(`internalRouter\\.get\\(\\s*["']${expected[0]!.replace("/api/v1/internal", "").replaceAll("/", "\\/")}`));
+    assert.match(runbook, new RegExp(expected[1]!.replaceAll("*", "\\*") + ".*" + expected[0]!.replaceAll("/", "\\/")));
   }
   assert.match(routes, /timingSafeEqual/);
 });
