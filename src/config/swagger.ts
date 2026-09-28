@@ -54,6 +54,28 @@ const accountingReportResponseSchema = {
   },
 };
 
+const accountingReportQueryParameters = [
+  { in: "query", name: "search", required: false, description: "Invoice-number or client-name search.", schema: { type: "string", maxLength: 100 } },
+  { in: "query", name: "clientId", required: false, description: "Tenant client database ID.", schema: { type: "string", minLength: 1 } },
+  { in: "query", name: "agentId", required: false, description: "Assigned agent User.id. Use UNASSIGNED for invoices without an assigned agent.", schema: { type: "string", minLength: 1 } },
+  { in: "query", name: "projectId", required: false, description: "Tenant Accounting project database ID. Use UNASSIGNED for invoices without a project.", schema: { type: "string", minLength: 1 } },
+  { in: "query", name: "itemServiceId", required: false, description: "Tenant Accounting catalogue item/service ID.", schema: { type: "string", minLength: 1 } },
+  { in: "query", name: "status", required: false, schema: { type: "string", enum: ["ALL", "DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "OVERDUE", "VOID"], default: "ALL" } },
+  { in: "query", name: "fromDate", required: false, description: "Inclusive Invoice.issueDate lower bound. YYYY-MM-DD means the start of that UTC calendar date; an ISO date-time preserves its timestamp.", schema: { oneOf: [{ type: "string", format: "date" }, { type: "string", format: "date-time" }] }, examples: { calendarDate: { value: "2026-09-01" }, timestamp: { value: "2026-09-01T08:30:00.000Z" } } },
+  { in: "query", name: "toDate", required: false, description: "Inclusive Invoice.issueDate upper bound. YYYY-MM-DD means the end of that UTC calendar date; an ISO date-time preserves its timestamp. Must not precede fromDate.", schema: { oneOf: [{ type: "string", format: "date" }, { type: "string", format: "date-time" }] }, examples: { calendarDate: { value: "2026-09-30" }, timestamp: { value: "2026-09-30T17:00:00.000Z" } } },
+  { in: "query", name: "groupBy", required: false, description: "Adds groups for the approved drill-down dimension. groups[].id maps back to clientId, agentId, or projectId respectively.", schema: { type: "string", enum: ["CLIENT", "AGENT", "PROJECT"] } },
+  { in: "query", name: "page", required: false, schema: { type: "integer", minimum: 1, default: 1 } },
+  { in: "query", name: "limit", required: false, schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
+  { in: "query", name: "sortBy", required: false, schema: { type: "string", enum: ["issueDate", "dueDate", "total", "createdAt", "status"], default: "createdAt" } },
+  { in: "query", name: "sortOrder", required: false, schema: { type: "string", enum: ["asc", "desc"], default: "desc" } },
+] as const;
+
+const accountingReportExportQueryParameters = accountingReportQueryParameters.map((parameter) => {
+  if (parameter.name === "groupBy") return { ...parameter, description: "Accepted for report-query compatibility. Export files remain a flat complete filtered report; use clientId, agentId, or projectId for the selected drill-in export." };
+  if (parameter.name === "page" || parameter.name === "limit") return { ...parameter, description: "Accepted for report-query compatibility and validation, but does not limit exported rows." };
+  return parameter;
+});
+
 const options: swaggerJSDoc.Options = {
   definition: {
     openapi: "3.0.3",
@@ -1802,21 +1824,7 @@ const options: swaggerJSDoc.Options = {
           summary: "Get filtered Accounting report",
           description: "Returns a tenant-scoped summary and paginated invoices. Filters may be combined. groupBy adds complete filtered aggregates for the approved Client, Agent, or Project drill-down while invoices remain paginated. Summary and group totals cover the complete filtered result, not merely the current invoice page. Revenue is recorded payments; outstanding and overdue are unpaid balances; VAT collected is payment-proportional; net profit is revenue less attributable active expenses. Requires Accounting module access and accounting:invoices:view.",
           security: [{ bearerAuth: [] }],
-          parameters: [
-            { in: "query", name: "search", required: false, description: "Invoice-number or client-name search.", schema: { type: "string", maxLength: 100 } },
-            { in: "query", name: "clientId", required: false, description: "Tenant client database ID.", schema: { type: "string", minLength: 1 } },
-            { in: "query", name: "agentId", required: false, description: "Assigned agent User.id. Use UNASSIGNED to drill into the unassigned Agent group.", schema: { type: "string", minLength: 1 } },
-            { in: "query", name: "projectId", required: false, description: "Tenant Accounting project database ID. Use UNASSIGNED to drill into the unassigned Project group.", schema: { type: "string", minLength: 1 } },
-            { in: "query", name: "itemServiceId", required: false, description: "Tenant Accounting catalogue item/service ID.", schema: { type: "string", minLength: 1 } },
-            { in: "query", name: "status", required: false, schema: { type: "string", enum: ["ALL", "DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "OVERDUE", "VOID"], default: "ALL" } },
-            { in: "query", name: "fromDate", required: false, description: "Inclusive Invoice.issueDate lower bound. YYYY-MM-DD means the start of that UTC calendar date; an ISO date-time preserves its timestamp.", schema: { oneOf: [{ type: "string", format: "date" }, { type: "string", format: "date-time" }] }, examples: { calendarDate: { value: "2026-09-01" }, timestamp: { value: "2026-09-01T08:30:00.000Z" } } },
-            { in: "query", name: "toDate", required: false, description: "Inclusive Invoice.issueDate upper bound. YYYY-MM-DD means the end of that UTC calendar date; an ISO date-time preserves its timestamp. Must not precede fromDate.", schema: { oneOf: [{ type: "string", format: "date" }, { type: "string", format: "date-time" }] }, examples: { calendarDate: { value: "2026-09-30" }, timestamp: { value: "2026-09-30T17:00:00.000Z" } } },
-            { in: "query", name: "groupBy", required: false, description: "Adds groups for the approved drill-down dimension. groups[].id maps back to clientId, agentId, or projectId respectively.", schema: { type: "string", enum: ["CLIENT", "AGENT", "PROJECT"] } },
-            { in: "query", name: "page", required: false, schema: { type: "integer", minimum: 1, default: 1 } },
-            { in: "query", name: "limit", required: false, schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
-            { in: "query", name: "sortBy", required: false, schema: { type: "string", enum: ["issueDate", "dueDate", "total", "createdAt", "status"], default: "createdAt" } },
-            { in: "query", name: "sortOrder", required: false, schema: { type: "string", enum: ["asc", "desc"], default: "desc" } }
-          ],
+          parameters: accountingReportQueryParameters,
           responses: {
             "200": { description: "Complete filtered summary, optional grouping, paginated invoice rows, and pagination.", content: { "application/json": { schema: accountingReportResponseSchema } } },
             "400": { description: "Invalid/unknown query parameter, invalid enum, pagination, sorting, or date range." },
@@ -1825,8 +1833,8 @@ const options: swaggerJSDoc.Options = {
           }
         }
       },
-      [`${env.API_PREFIX}/accounting/reports/export.csv`]: { get: { tags: ["Accounting - Reports"], summary: "Download the filtered report as CSV", description: "Uses the same filters and financial definitions as the report endpoint.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Filtered CSV" } } } },
-      [`${env.API_PREFIX}/accounting/reports/export.pdf`]: { get: { tags: ["Accounting - Reports"], summary: "Download the filtered report as PDF", description: "Server-generated multipage PDF using the same filtered rows and totals.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Filtered PDF", content: { "application/pdf": { schema: { type: "string", format: "binary" } } } } } } },
+      [`${env.API_PREFIX}/accounting/reports/export.csv`]: { get: { tags: ["Accounting - Reports"], summary: "Download the complete filtered Accounting report as CSV", description: "Synchronous CSV attachment using the same tenant-scoped filters, invoice financial values, and canonical summary calculations as GET /accounting/reports. All matching invoices are exported; page and limit are accepted for query compatibility but never restrict the file. groupBy is accepted but does not create grouped file sections. Requires authentication, Accounting module entitlement, and accounting:invoices:view. This is separate from the asynchronous general invoice/expense export jobs.", security: [{ bearerAuth: [] }], parameters: accountingReportExportQueryParameters, responses: { "200": { description: "Complete filtered CSV attachment. Content-Disposition filename is accounting-report.csv.", headers: { "Content-Disposition": { schema: { type: "string" }, example: "attachment; filename=\"accounting-report.csv\"" } }, content: { "text/csv": { schema: { type: "string", format: "binary" } } } }, "400": { description: "Invalid or unknown report query parameter." }, "401": { description: "Authentication required." }, "403": { description: "Accounting entitlement or accounting:invoices:view unavailable." } } } },
+      [`${env.API_PREFIX}/accounting/reports/export.pdf`]: { get: { tags: ["Accounting - Reports"], summary: "Download the complete filtered Accounting report as PDF", description: "Synchronous multipage PDF attachment and the backend target for both Download Report and Download PDF. It uses the same tenant-scoped filters, complete filtered invoice set, and canonical summary calculations as GET /accounting/reports. Tenant-scoped display names are resolved for active Client, Agent, Project, and Item/Service filters. page and limit do not restrict exported rows; groupBy does not create grouped file sections. Requires authentication, Accounting module entitlement, and accounting:invoices:view. This is separate from asynchronous general Accounting exports.", security: [{ bearerAuth: [] }], parameters: accountingReportExportQueryParameters, responses: { "200": { description: "Complete filtered PDF attachment. Content-Disposition filename is accounting-report.pdf.", headers: { "Content-Disposition": { schema: { type: "string" }, example: "attachment; filename=\"accounting-report.pdf\"" } }, content: { "application/pdf": { schema: { type: "string", format: "binary" } } } }, "400": { description: "Invalid or unknown report query parameter." }, "401": { description: "Authentication required." }, "403": { description: "Accounting entitlement or accounting:invoices:view unavailable." } } } },
       [`${env.API_PREFIX}/accounting/reports/vat`]: { get: { tags: ["Accounting - Tax"], summary: "Get filtered VAT report", description: "Uses immutable invoice taxAmount snapshots; does not recalculate historic invoices.", security: [{ bearerAuth: [] }], responses: { "200": { description: "VAT summary, company grouping and invoice detail" } } } },
       [`${env.API_PREFIX}/accounting/reports/wht`]: { get: { tags: ["Accounting - Tax"], summary: "Get filtered WHT report", description: "Returns invoices where WHT was manually enabled. Rates are restricted to 5% or 10%, calculated from the invoice subtotal before VAT, and stored as invoice-time snapshots. totalWhtDeducted includes paid invoices; totalWhtConfigured includes all matching WHT invoices.", security: [{ bearerAuth: [] }], responses: { "200": { description: "WHT totals, rate grouping, invoice rows and pagination" }, "401": { description: "Unauthenticated" }, "403": { description: "Accounting entitlement or tax-view permission unavailable" } } } },
       [`${env.API_PREFIX}/accounting/wallet/summary`]: { get: { tags: ["Accounting - Wallet"], summary: "Get ledger-backed wallet summary", security: [{ bearerAuth: [] }], responses: { "200": { description: "Available balance, inflow, outflow and wallet accounts" } } } },

@@ -2588,7 +2588,7 @@ export const reportInvoiceWhere = (organizationId: string, query: AccountingRepo
   ...(query.search ? { OR: [{ invoiceNo: { contains: query.search } }, { client: { name: { contains: query.search } } }] } : {}),
 });
 
-const reportRows = async (organizationId: string, query: AccountingReportQuery) => {
+export const reportRows = async (organizationId: string, query: AccountingReportQuery) => {
   const rows: any[] = [];
   let cursor: string | undefined;
   while (true) {
@@ -2698,9 +2698,10 @@ export const getWhtReport = async (organizationId: string, query: AccountingRepo
     pagination: pagination(query.page,query.limit,total),
   };
 };
-export const exportAccountingReportCsv = async (organizationId: string, query: AccountingReportQuery) => {
-  const rows = await reportRows(organizationId, query);
-  const summary = await databaseReportSummary(organizationId, query);
+export const buildAccountingReportCsv = (
+  rows: any[],
+  summary: Awaited<ReturnType<typeof databaseReportSummary>>,
+) => {
   const table = [
     ["Invoice", "Client", "Agent", "Project", "Subtotal", "VAT", "Total", "WHT Rate", "WHT Amount", "Amount Payable", "Paid", "Outstanding", "Status", "Issue Date", "Due Date"],
     ...rows.map((row: any) => { const view = invoiceView(row); return [view.invoiceNo, view.client.name, view.assignedAgent ? `${view.assignedAgent.firstName} ${view.assignedAgent.lastName}` : "", view.project?.name ?? "", view.subtotal, view.vat, view.total, view.whtRate ?? "", view.whtAmount, view.amountPayable, view.paidAmount, view.balanceDue, view.status, view.issueDate.toISOString(), view.dueDate?.toISOString() ?? ""]; }),
@@ -2708,10 +2709,114 @@ export const exportAccountingReportCsv = async (organizationId: string, query: A
   ];
   return `\uFEFF${table.map(line => line.map(csvCell).join(",")).join("\r\n")}\r\n`;
 };
+
+export const exportAccountingReportCsv = async (organizationId: string, query: AccountingReportQuery) => {
+  const [rows, summary] = await Promise.all([
+    reportRows(organizationId, query),
+    databaseReportSummary(organizationId, query),
+  ]);
+  return buildAccountingReportCsv(rows, summary);
+};
+
+type AccountingReportPdfContext = {
+  organizationName: string;
+  currency: string;
+  filters: string[];
+};
+
+const reportDate = (value: Date | null | undefined) => value ? value.toISOString().slice(0, 10) : "Not set";
+const reportFilterDate = (value: Date | undefined, boundary: "from" | "to") => {
+  if (!value) return "Not set";
+  const iso = value.toISOString();
+  const calendarBoundary = boundary === "from" ? "T00:00:00.000Z" : "T23:59:59.999Z";
+  return iso.endsWith(calendarBoundary) ? iso.slice(0, 10) : iso;
+};
+const reportName = (firstName: string, lastName: string) => `${firstName} ${lastName}`.trim();
+const reportPdfText = (value: unknown, maximum = 42) => {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > maximum ? `${normalized.slice(0, maximum - 3)}...` : normalized;
+};
+
+export const resolveAccountingReportPdfContext = async (
+  organizationId: string,
+  query: AccountingReportQuery,
+): Promise<AccountingReportPdfContext> => {
+  const [organization, client, agent, project, item] = await Promise.all([
+    prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true, currency: true } }),
+    query.clientId
+      ? prisma.client.findFirst({ where: { id: query.clientId, organizationId }, select: { name: true } })
+      : null,
+    query.agentId && query.agentId !== "UNASSIGNED"
+      ? prisma.user.findFirst({ where: { id: query.agentId, organizationId }, select: { firstName: true, lastName: true } })
+      : null,
+    query.projectId && query.projectId !== "UNASSIGNED"
+      ? prisma.accountingProject.findFirst({ where: { id: query.projectId, organizationId }, select: { name: true } })
+      : null,
+    query.itemServiceId
+      ? prisma.accountingCatalogueItem.findFirst({ where: { id: query.itemServiceId, organizationId }, select: { name: true } })
+      : null,
+  ]);
+  const filters: string[] = [];
+  if (query.clientId) filters.push(`Client: ${client?.name ?? "Not found in current organization"}`);
+  if (query.agentId) filters.push(`Agent: ${query.agentId === "UNASSIGNED" ? "Unassigned" : agent ? reportName(agent.firstName, agent.lastName) : "Not found in current organization"}`);
+  if (query.projectId) filters.push(`Project: ${query.projectId === "UNASSIGNED" ? "Unassigned" : project?.name ?? "Not found in current organization"}`);
+  if (query.itemServiceId) filters.push(`Item/Service: ${item?.name ?? "Not found in current organization"}`);
+  if (query.status && query.status !== "ALL") filters.push(`Status: ${query.status}`);
+  if (query.fromDate || query.toDate) filters.push(`Date range: ${reportFilterDate(query.fromDate, "from")} to ${reportFilterDate(query.toDate, "to")}`);
+  if (query.search) filters.push(`Search: ${reportPdfText(query.search, 60)}`);
+  return {
+    organizationName: organization?.name ?? "Current organization",
+    currency: organization?.currency ?? "NGN",
+    filters,
+  };
+};
+
+export const buildAccountingReportPdfLines = (
+  context: AccountingReportPdfContext,
+  summary: Awaited<ReturnType<typeof databaseReportSummary>>,
+  rows: any[],
+  generatedAt = new Date(),
+) => {
+  const money = (value: unknown) => `${context.currency} ${Number(value ?? 0).toFixed(2)}`;
+  const invoiceLines = rows.flatMap((row) => {
+    const view = invoiceView(row, generatedAt);
+    const agent = view.assignedAgent ? reportName(view.assignedAgent.firstName, view.assignedAgent.lastName) : "Unassigned";
+    return [
+      `Invoice ${reportPdfText(view.invoiceNo, 28)} | Status: ${view.status}`,
+      `Client: ${reportPdfText(view.client.name)} | Agent: ${reportPdfText(agent)}`,
+      `Project: ${reportPdfText(view.project?.name ?? "Unassigned")} | Issue: ${reportDate(view.issueDate)} | Due: ${reportDate(view.dueDate)}`,
+      `Subtotal: ${money(view.subtotal)} | VAT: ${money(view.vat)} | Total: ${money(view.total)}`,
+      `WHT: ${money(view.whtAmount)} | Payable: ${money(view.amountPayable)} | Paid: ${money(view.paidAmount)}`,
+      `Outstanding: ${money(view.balanceDue)}`,
+      "",
+    ];
+  });
+  return [
+    "SINKRONIS ACCOUNTING REPORT",
+    `Organization: ${reportPdfText(context.organizationName, 60)}`,
+    `Generated: ${generatedAt.toISOString()}`,
+    `Currency: ${context.currency}`,
+    ...(context.filters.length ? ["APPLIED FILTERS", ...context.filters.map((filter) => reportPdfText(filter, 90))] : []),
+    "SUMMARY",
+    `Total revenue: ${money(summary.totalRevenue)}`,
+    `Outstanding: ${money(summary.outstanding)}`,
+    `Overdue: ${money(summary.overdue)}`,
+    `VAT collected: ${money(summary.vatCollected)}`,
+    `Total expenses: ${money(summary.totalExpenses)}`,
+    `Net profit: ${money(summary.netProfit)}`,
+    `Invoices: ${rows.length}`,
+    "INVOICE DETAILS",
+    ...invoiceLines,
+  ];
+};
+
 export const exportAccountingReportPdf = async (organizationId: string, query: AccountingReportQuery) => {
-  const rows = await reportRows(organizationId, query);
-  const summary = await databaseReportSummary(organizationId, query);
-  return createPayslipPdf(["SINKRONIS ACCOUNTING REPORT", `Total revenue: ${summary.totalRevenue}`, `Outstanding: ${summary.outstanding}`, `Overdue: ${summary.overdue}`, `VAT collected: ${summary.vatCollected}`, `Expenses: ${summary.totalExpenses}`, `Net profit: ${summary.netProfit}`, "INVOICES", ...rows.map((row: any) => `${row.invoiceNo} | ${row.client.name} | Total ${amount(row.total)} | WHT ${amount(row.whtAmount)} | Payable ${amount(invoiceReceivable(row))} | ${accountingInvoiceDisplayStatus(row.status,row.dueDate)}`)]);
+  const [rows, summary, context] = await Promise.all([
+    reportRows(organizationId, query),
+    databaseReportSummary(organizationId, query),
+    resolveAccountingReportPdfContext(organizationId, query),
+  ]);
+  return createPayslipPdf(buildAccountingReportPdfLines(context, summary, rows));
 };
 export const downloadAccountingInvoicePdf = async (organizationId: string, id: string, user: AuthUser) => {
   const invoice = await getInvoiceById(organizationId,id) as any;
