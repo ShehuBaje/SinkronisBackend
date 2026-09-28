@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
+import { z } from "zod";
 import { badRequest, conflict, forbidden, notFound } from "../../core/http-error";
 import { prisma } from "../../core/prisma";
 import { createAuditLog } from "../admin/admin.audit";
@@ -679,18 +680,77 @@ export const exportAttendanceCsv = async (organizationId: string, query: any) =>
   const logs = await listAttendanceLogs(organizationId, { ...query, page: 1, limit: 10_000 }); const header = ["Employee ID", "Name", "Department", "Date", "Clock In", "Clock Out", "Hours", "Overtime", "Status"];
   return { filename: `attendance-${logs.selectedRange.from}-${logs.selectedRange.to}.csv`, csv: `\uFEFF${[header, ...logs.records.map((row) => [row.employeeId, row.name, row.department, row.date, row.clockIn, row.clockOut, row.hours, row.overtime, [row.status, ...row.flags].join("|")])].map((row) => row.map(sanitizeCsv).join(",")).join("\r\n")}` };
 };
-export const employeeImportTemplate = () => `employeeId,firstName,lastName,phoneNumber,email,department,position,lifecycleStatus,workMode,dateJoined,monthlyEarning\r\n`;
+export const employeeImportHeaders = ["employeeId", "firstName", "lastName", "phoneNumber", "email", "department", "position", "lifecycleStatus", "workMode", "dateJoined", "monthlyEarning"] as const;
+export const employeeImportTemplate = () => `${employeeImportHeaders.join(",")}\r\n`;
 const parseCsvLine = (line: string) => { const cells: string[] = []; let value = ""; let quoted = false; for (let index = 0; index < line.length; index += 1) { const char = line[index]; if (char === '"' && quoted && line[index + 1] === '"') { value += '"'; index += 1; } else if (char === '"') quoted = !quoted; else if (char === "," && !quoted) { cells.push(value.trim()); value = ""; } else value += char; } cells.push(value.trim()); return cells; };
-export const importEmployeesCsv = async (organizationId: string, buffer: Buffer, user: AuthUser) => {
-  const text = buffer.toString("utf8").replace(/^\uFEFF/, ""); const lines = text.split(/\r?\n/).filter((line) => line.trim());
+export type EmployeeImportValidationError = { row: number; field: string; code: string; message: string };
+type EmployeeImportRow = { row: number; employeeId: string; firstName: string; lastName: string; phoneNumber: string; email: string; department: string; position: string; lifecycleStatus: "PROBATION" | "CONFIRMED" | "EXITED"; workMode: string; dateJoined: string; monthlyEarning: string };
+type EmployeeImportDependencies = { db?: typeof prisma; audit?: typeof createAuditLog };
+const requiredEmployeeImportHeaders = ["employeeId", "firstName", "lastName", "email"] as const;
+const employeeImportEmail = z.string().email();
+const employeeLifecycleStatuses = new Set(["PROBATION", "CONFIRMED", "EXITED"]);
+const importValidationError = (validationErrors: EmployeeImportValidationError[]) => badRequest("Employee import validation failed", { errorCode: "EMPLOYEE_IMPORT_VALIDATION_FAILED", validationErrors });
+const validImportDate = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number); const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+};
+const validMonthlyEarning = (value: string) => /^\d{1,12}(?:\.\d{1,2})?$/.test(value) && new Prisma.Decimal(value).isFinite() && new Prisma.Decimal(value).gte(0);
+const duplicateImportErrors = (rows: EmployeeImportRow[]) => {
+  const errors: EmployeeImportValidationError[] = []; const employeeIds = new Map<string, number>(); const emails = new Map<string, number>();
+  for (const row of rows) {
+    const employeeKey = row.employeeId.toLowerCase(); const emailKey = row.email.toLowerCase();
+    if (employeeKey && employeeIds.has(employeeKey)) errors.push({ row: row.row, field: "employeeId", code: "DUPLICATE_IN_FILE", message: `Employee ID duplicates CSV row ${employeeIds.get(employeeKey)}` }); else if (employeeKey) employeeIds.set(employeeKey, row.row);
+    if (emailKey && emails.has(emailKey)) errors.push({ row: row.row, field: "email", code: "DUPLICATE_IN_FILE", message: `Email duplicates CSV row ${emails.get(emailKey)}` }); else if (emailKey) emails.set(emailKey, row.row);
+  }
+  return errors;
+};
+const existingEmployeeImportErrors = async (db: typeof prisma, organizationId: string, rows: EmployeeImportRow[]) => {
+  const employeeIds = [...new Set(rows.map((row) => row.employeeId).filter(Boolean))]; const emails = [...new Set(rows.map((row) => row.email).filter((email) => employeeImportEmail.safeParse(email).success))];
+  const existing: Array<{ employeeNo: string; email: string }> = [];
+  for (let offset = 0; offset < Math.max(employeeIds.length, emails.length); offset += 500) {
+    const idBatch = employeeIds.slice(offset, offset + 500); const emailBatch = emails.slice(offset, offset + 500); if (!idBatch.length && !emailBatch.length) continue;
+    existing.push(...await db.employee.findMany({ where: { organizationId, OR: [...(idBatch.length ? [{ employeeNo: { in: idBatch } }] : []), ...(emailBatch.length ? [{ email: { in: emailBatch } }] : [])] }, select: { employeeNo: true, email: true } }));
+  }
+  const existingIds = new Set(existing.map((row) => row.employeeNo.toLowerCase())); const existingEmails = new Set(existing.map((row) => row.email.toLowerCase())); const errors: EmployeeImportValidationError[] = [];
+  for (const row of rows) {
+    if (existingIds.has(row.employeeId.toLowerCase())) errors.push({ row: row.row, field: "employeeId", code: "ALREADY_EXISTS", message: "Employee ID already exists" });
+    if (existingEmails.has(row.email.toLowerCase())) errors.push({ row: row.row, field: "email", code: "ALREADY_EXISTS", message: "Employee email already exists" });
+  }
+  return errors;
+};
+export const importEmployeesCsv = async (organizationId: string, buffer: Buffer, user: AuthUser, dependencies: EmployeeImportDependencies = {}) => {
+  const db = dependencies.db ?? prisma; const audit = dependencies.audit ?? createAuditLog;
+  const text = buffer.toString("utf8").replace(/^\uFEFF/, ""); const physicalLines = text.split(/\r?\n/); const lines = physicalLines.map((line, index) => ({ text: line, row: index + 1 })).filter((line) => line.text.trim());
   if (lines.length < 2) throw badRequest("CSV must contain a header and at least one employee row");
   if (lines.length > 5001) throw badRequest("CSV import is limited to 5,000 employees per request");
-  const headers = parseCsvLine(lines[0]); const required = ["employeeId", "firstName", "lastName", "email"];
-  if (required.some((field) => !headers.includes(field))) throw badRequest(`CSV requires columns: ${required.join(", ")}`);
-  const departments = await prisma.department.findMany({ where: { organizationId }, select: { id: true, name: true } }); const departmentMap = new Map(departments.map((row) => [row.name.toLowerCase(), row.id]));
-  const rows = lines.slice(1).map((line, rowIndex) => { const cells = parseCsvLine(line); const raw = Object.fromEntries(headers.map((header, index) => [header, cells[index] ?? ""])); const departmentId = raw.department ? departmentMap.get(raw.department.toLowerCase()) : undefined; if (raw.department && !departmentId) throw badRequest(`Unknown department on CSV row ${rowIndex + 2}`); return { organizationId, employeeNo: raw.employeeId, firstName: raw.firstName, lastName: raw.lastName, phone: raw.phoneNumber || null, email: raw.email, departmentId, jobTitle: raw.position || null, lifecycleStatus: raw.lifecycleStatus || "PROBATION", workMode: raw.workMode || null, hireDate: raw.dateJoined ? new Date(`${raw.dateJoined}T00:00:00.000Z`) : null, baseSalary: raw.monthlyEarning || null }; });
-  try { await prisma.$transaction(rows.map((data) => prisma.employee.create({ data: data as any }))); } catch { throw conflict("Employee import contains duplicate or invalid employee records"); }
-  await createAuditLog({ organizationId, actorUserId: user.id, action: "HRIS_EMPLOYEES_IMPORTED", resource: "EMPLOYEE", summary: `Imported ${rows.length} employees from CSV`, metadata: { count: rows.length } });
+  const headers = parseCsvLine(lines[0].text); const headerErrors: EmployeeImportValidationError[] = requiredEmployeeImportHeaders.filter((field) => !headers.includes(field)).map((field) => ({ row: 1, field, code: "MISSING_HEADER", message: `Required CSV header '${field}' is missing` }));
+  if (headerErrors.length) throw importValidationError(headerErrors);
+  const rows: EmployeeImportRow[] = []; const errors: EmployeeImportValidationError[] = [];
+  for (const line of lines.slice(1)) {
+    const cells = parseCsvLine(line.text); const raw = Object.fromEntries(headers.map((header, index) => [header, (cells[index] ?? "").trim()])); const email = String(raw.email ?? "").toLowerCase(); const lifecycleStatus = String(raw.lifecycleStatus || "PROBATION");
+    const row: EmployeeImportRow = { row: line.row, employeeId: String(raw.employeeId ?? ""), firstName: String(raw.firstName ?? ""), lastName: String(raw.lastName ?? ""), phoneNumber: String(raw.phoneNumber ?? ""), email, department: String(raw.department ?? ""), position: String(raw.position ?? ""), lifecycleStatus: lifecycleStatus as EmployeeImportRow["lifecycleStatus"], workMode: String(raw.workMode ?? ""), dateJoined: String(raw.dateJoined ?? ""), monthlyEarning: String(raw.monthlyEarning ?? "") };
+    for (const [field, label] of [["employeeId", "Employee ID"], ["firstName", "First name"], ["lastName", "Last name"], ["email", "Email"]] as const) if (!row[field]) errors.push({ row: line.row, field, code: "REQUIRED", message: `${label} is required` });
+    if (row.email && !employeeImportEmail.safeParse(row.email).success) errors.push({ row: line.row, field: "email", code: "INVALID_EMAIL", message: "Email address is invalid" });
+    if (!employeeLifecycleStatuses.has(lifecycleStatus)) errors.push({ row: line.row, field: "lifecycleStatus", code: "INVALID_ENUM", message: "lifecycleStatus must be PROBATION, CONFIRMED, or EXITED" });
+    if (row.dateJoined && !validImportDate(row.dateJoined)) errors.push({ row: line.row, field: "dateJoined", code: "INVALID_DATE", message: "dateJoined must be a valid date in YYYY-MM-DD format" });
+    if (row.monthlyEarning && !validMonthlyEarning(row.monthlyEarning)) errors.push({ row: line.row, field: "monthlyEarning", code: "INVALID_DECIMAL", message: "monthlyEarning must be a non-negative decimal with at most 12 integer digits and 2 decimal places" });
+    rows.push(row);
+  }
+  errors.push(...duplicateImportErrors(rows));
+  const departments = await db.department.findMany({ where: { organizationId }, select: { id: true, name: true } }); const departmentMap = new Map(departments.map((row) => [row.name.toLowerCase(), row.id]));
+  for (const row of rows) if (row.department && !departmentMap.has(row.department.toLowerCase())) errors.push({ row: row.row, field: "department", code: "UNKNOWN_DEPARTMENT", message: `Department '${row.department}' does not exist` });
+  errors.push(...await existingEmployeeImportErrors(db, organizationId, rows));
+  if (errors.length) throw importValidationError(errors);
+  const data = rows.map((row) => ({ organizationId, employeeNo: row.employeeId, firstName: row.firstName, lastName: row.lastName, phone: row.phoneNumber || null, email: row.email, departmentId: row.department ? departmentMap.get(row.department.toLowerCase()) : null, jobTitle: row.position || null, lifecycleStatus: row.lifecycleStatus, workMode: row.workMode || null, hireDate: row.dateJoined ? new Date(`${row.dateJoined}T00:00:00.000Z`) : null, baseSalary: row.monthlyEarning ? new Prisma.Decimal(row.monthlyEarning) : null }));
+  try { await db.$transaction(data.map((employee) => db.employee.create({ data: employee as any }))); } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const conflicts = await existingEmployeeImportErrors(db, organizationId, rows);
+      throw conflict("Employee data changed during import; resolve the conflicts and retry", { errorCode: "EMPLOYEE_IMPORT_CONFLICT", validationErrors: conflicts.length ? conflicts : null });
+    }
+    throw conflict("Employee import could not be completed atomically; no employees were created", { errorCode: "EMPLOYEE_IMPORT_CONFLICT" });
+  }
+  await audit({ organizationId, actorUserId: user.id, action: "HRIS_EMPLOYEES_IMPORTED", resource: "EMPLOYEE", summary: `Imported ${rows.length} employees from CSV`, metadata: { count: rows.length } });
   return { imported: rows.length, failed: 0 };
 };
 
