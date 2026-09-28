@@ -2573,11 +2573,11 @@ export const fulfillAccountingExport = async (id: string, publicBaseUrl?: string
 export const processPendingAccountingExports = async (publicBaseUrl?: string) => { const jobs = await prisma.accountingExportJob.findMany({ where: { status: "PENDING" }, orderBy: { requestedAt: "asc" }, take: 10, select: { id: true } }); const results = []; for (const job of jobs) { try { results.push({ id: job.id, status: (await fulfillAccountingExport(job.id, publicBaseUrl))?.status }); } catch { results.push({ id: job.id, status: "FAILED" }); } } return results; };
 export const expireAccountingExports = async (now = new Date()) => { const jobs = await prisma.accountingExportJob.findMany({ where: { status: "COMPLETED", expiresAt: { lte: now } }, orderBy: { expiresAt: "asc" }, take: 25, select: { id: true, fileReference: true } }); for (let offset = 0; offset < jobs.length; offset += 5) await Promise.all(jobs.slice(offset, offset + 5).map(async (job) => { await deleteObject(job.fileReference).catch(() => undefined); await prisma.accountingExportJob.update({ where: { id: job.id }, data: { status: "EXPIRED", fileReference: null } }); })); return { expired: jobs.length }; };
 
-const reportInvoiceWhere = (organizationId: string, query: AccountingReportQuery): Prisma.InvoiceWhereInput => ({
+export const reportInvoiceWhere = (organizationId: string, query: AccountingReportQuery): Prisma.InvoiceWhereInput => ({
   organizationId,
   ...(query.clientId ? { clientId: query.clientId } : {}),
-  ...(query.agentId ? { assignedAgentId: query.agentId } : {}),
-  ...(query.projectId ? { projectId: query.projectId } : {}),
+  ...(query.agentId ? { assignedAgentId: query.agentId === "UNASSIGNED" ? null : query.agentId } : {}),
+  ...(query.projectId ? { projectId: query.projectId === "UNASSIGNED" ? null : query.projectId } : {}),
   ...(query.itemServiceId ? { items: { some: { catalogueItemId: query.itemServiceId } } } : {}),
   ...(query.status && query.status !== "ALL" ? query.status === "OVERDUE"
     ? { status: { in: ["SENT", "PARTIALLY_PAID", "OVERDUE"] }, dueDate: { lt: new Date() } }
@@ -2605,8 +2605,8 @@ const reportRows = async (organizationId: string, query: AccountingReportQuery) 
 const reportSqlWhere = (organizationId: string, query: AccountingReportQuery) => {
   const clauses: Prisma.Sql[] = [Prisma.sql`i.organizationId = ${organizationId}`];
   if (query.clientId) clauses.push(Prisma.sql`i.clientId = ${query.clientId}`);
-  if (query.agentId) clauses.push(Prisma.sql`i.assignedAgentId = ${query.agentId}`);
-  if (query.projectId) clauses.push(Prisma.sql`i.projectId = ${query.projectId}`);
+  if (query.agentId) clauses.push(query.agentId === "UNASSIGNED" ? Prisma.sql`i.assignedAgentId IS NULL` : Prisma.sql`i.assignedAgentId = ${query.agentId}`);
+  if (query.projectId) clauses.push(query.projectId === "UNASSIGNED" ? Prisma.sql`i.projectId IS NULL` : Prisma.sql`i.projectId = ${query.projectId}`);
   if (query.itemServiceId) clauses.push(Prisma.sql`EXISTS (SELECT 1 FROM InvoiceItem ii WHERE ii.invoiceId = i.id AND ii.catalogueItemId = ${query.itemServiceId})`);
   if (query.fromDate) clauses.push(Prisma.sql`i.issueDate >= ${query.fromDate}`);
   if (query.toDate) clauses.push(Prisma.sql`i.issueDate <= ${query.toDate}`);

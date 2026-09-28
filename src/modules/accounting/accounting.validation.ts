@@ -15,6 +15,23 @@ import {
 const page = z.coerce.number().int().min(1).default(1);
 const limit = z.coerce.number().int().min(1).max(100).default(20);
 const sortOrder = z.enum(["asc", "desc"]).default("desc");
+const utcCalendarDate = /^\d{4}-\d{2}-\d{2}$/;
+const normalizeReportDate = (value: unknown, endOfDay: boolean) => {
+  if (typeof value !== "string" || !utcCalendarDate.test(value)) return value;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`);
+  return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month && date.getUTCDate() === day
+    ? date
+    : new Date(Number.NaN);
+};
+const reportFromDate = z.preprocess(
+  (value) => normalizeReportDate(value, false),
+  z.coerce.date(),
+).optional();
+const reportToDate = z.preprocess(
+  (value) => normalizeReportDate(value, true),
+  z.coerce.date(),
+).optional();
 const idParams = z.object({ id: z.string().trim().min(1).max(191) }).strict();
 const optionalText = z.string().trim().min(1).max(2000).optional();
 const money = z
@@ -391,7 +408,7 @@ export const accountingReportQuerySchema = ranged({
   agentId: z.string().trim().min(1).optional(),
   projectId: z.string().trim().min(1).optional(),
   status: z.enum(["ALL", "DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "OVERDUE", "VOID"]).default("ALL"),
-  fromDate: z.coerce.date().optional(), toDate: z.coerce.date().optional(),
+  fromDate: reportFromDate, toDate: reportToDate,
   page, limit,
   sortBy: z.enum(["issueDate", "dueDate", "total", "createdAt", "status"]).default("createdAt"),
   sortOrder,

@@ -9,6 +9,51 @@ const subscriptionsBase = `${env.API_PREFIX}/subscriptions`;
 const hrisBase = `${env.API_PREFIX}/hris`;
 const internalBase = `${env.API_PREFIX}/internal`;
 
+const accountingReportResponseSchema = {
+  type: "object",
+  required: ["success", "message", "data"],
+  properties: {
+    success: { type: "boolean", example: true },
+    message: { type: "string", example: "Accounting report retrieved" },
+    data: {
+      type: "object",
+      required: ["appliedFilters", "summary", "invoices", "pagination"],
+      properties: {
+        appliedFilters: { type: "object", description: "Normalized query, including defaults and ISO-serialized date bounds.", additionalProperties: true },
+        summary: {
+          type: "object",
+          required: ["totalRevenue", "outstanding", "overdue", "vatCollected", "totalExpenses", "netProfit"],
+          properties: {
+            totalRevenue: { type: "number" }, outstanding: { type: "number" }, overdue: { type: "number" },
+            vatCollected: { type: "number" }, totalExpenses: { type: "number" }, netProfit: { type: "number" },
+          },
+        },
+        groups: {
+          type: "array",
+          description: "Present only when groupBy is supplied. Covers the complete filtered result. AGENT and PROJECT may return id UNASSIGNED, which is accepted by the corresponding drill-in filter.",
+          items: {
+            type: "object",
+            required: ["id", "name", "invoiceCount", "invoiceValue", "revenuePaid", "outstanding", "vatCharged"],
+            properties: {
+              id: { type: "string" }, name: { type: "string" }, invoiceCount: { type: "integer" },
+              invoiceValue: { type: "number" }, revenuePaid: { type: "number" }, outstanding: { type: "number" }, vatCharged: { type: "number" },
+            },
+          },
+        },
+        invoices: { type: "array", description: "Current page of the existing Accounting invoice response, including client, optional assignedAgent/project, items, payments, status history, computed paidAmount/balanceDue, and allowedActions.", items: { type: "object", additionalProperties: true } },
+        pagination: {
+          type: "object",
+          required: ["page", "limit", "total", "totalPages", "hasNextPage", "hasPreviousPage"],
+          properties: {
+            page: { type: "integer" }, limit: { type: "integer" }, total: { type: "integer" }, totalPages: { type: "integer" },
+            hasNextPage: { type: "boolean" }, hasPreviousPage: { type: "boolean" },
+          },
+        },
+      },
+    },
+  },
+};
+
 const options: swaggerJSDoc.Options = {
   definition: {
     openapi: "3.0.3",
@@ -1751,7 +1796,35 @@ const options: swaggerJSDoc.Options = {
       [`${env.API_PREFIX}/accounting/exports/expenses`]: { post: { tags: ["Accounting - Expenses"], summary: "Queue a complete filtered expense CSV export", security: [{ bearerAuth: [] }], responses: { "202": { description: "Export queued" }, "409": { description: "Matching export already active" } } } },
       [`${env.API_PREFIX}/accounting/exports/{id}`]: { get: { tags: ["Accounting - Invoices", "Accounting - Expenses"], summary: "Get tenant-owned Accounting export status", security: [{ bearerAuth: [] }], responses: { "200": { description: "Export status and download path" }, "404": { description: "Export not found" } } } },
       [`${env.API_PREFIX}/accounting/exports/{id}/download`]: { get: { tags: ["Accounting - Invoices", "Accounting - Expenses"], summary: "Download completed unexpired Accounting CSV export", security: [{ bearerAuth: [] }], responses: { "200": { description: "CSV file" }, "404": { description: "Not found, incomplete, or expired" } } } },
-      [`${env.API_PREFIX}/accounting/reports`]: { get: { tags: ["Accounting - Reports"], summary: "Get filtered Accounting report", description: "All invoice metrics and rows use the same client, agent, project, item/service, status and date filters. Revenue is recorded payments; outstanding and overdue are unpaid balances; VAT collected is payment-proportional; net profit is revenue less active expenses in the date period.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Summary, optional grouping, invoice rows and pagination" }, "403": { description: "Accounting invoice view permission required" } } } },
+      [`${env.API_PREFIX}/accounting/reports`]: {
+        get: {
+          tags: ["Accounting - Reports"],
+          summary: "Get filtered Accounting report",
+          description: "Returns a tenant-scoped summary and paginated invoices. Filters may be combined. groupBy adds complete filtered aggregates for the approved Client, Agent, or Project drill-down while invoices remain paginated. Summary and group totals cover the complete filtered result, not merely the current invoice page. Revenue is recorded payments; outstanding and overdue are unpaid balances; VAT collected is payment-proportional; net profit is revenue less attributable active expenses. Requires Accounting module access and accounting:invoices:view.",
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { in: "query", name: "search", required: false, description: "Invoice-number or client-name search.", schema: { type: "string", maxLength: 100 } },
+            { in: "query", name: "clientId", required: false, description: "Tenant client database ID.", schema: { type: "string", minLength: 1 } },
+            { in: "query", name: "agentId", required: false, description: "Assigned agent User.id. Use UNASSIGNED to drill into the unassigned Agent group.", schema: { type: "string", minLength: 1 } },
+            { in: "query", name: "projectId", required: false, description: "Tenant Accounting project database ID. Use UNASSIGNED to drill into the unassigned Project group.", schema: { type: "string", minLength: 1 } },
+            { in: "query", name: "itemServiceId", required: false, description: "Tenant Accounting catalogue item/service ID.", schema: { type: "string", minLength: 1 } },
+            { in: "query", name: "status", required: false, schema: { type: "string", enum: ["ALL", "DRAFT", "SENT", "PARTIALLY_PAID", "PAID", "OVERDUE", "VOID"], default: "ALL" } },
+            { in: "query", name: "fromDate", required: false, description: "Inclusive Invoice.issueDate lower bound. YYYY-MM-DD means the start of that UTC calendar date; an ISO date-time preserves its timestamp.", schema: { oneOf: [{ type: "string", format: "date" }, { type: "string", format: "date-time" }] }, examples: { calendarDate: { value: "2026-09-01" }, timestamp: { value: "2026-09-01T08:30:00.000Z" } } },
+            { in: "query", name: "toDate", required: false, description: "Inclusive Invoice.issueDate upper bound. YYYY-MM-DD means the end of that UTC calendar date; an ISO date-time preserves its timestamp. Must not precede fromDate.", schema: { oneOf: [{ type: "string", format: "date" }, { type: "string", format: "date-time" }] }, examples: { calendarDate: { value: "2026-09-30" }, timestamp: { value: "2026-09-30T17:00:00.000Z" } } },
+            { in: "query", name: "groupBy", required: false, description: "Adds groups for the approved drill-down dimension. groups[].id maps back to clientId, agentId, or projectId respectively.", schema: { type: "string", enum: ["CLIENT", "AGENT", "PROJECT"] } },
+            { in: "query", name: "page", required: false, schema: { type: "integer", minimum: 1, default: 1 } },
+            { in: "query", name: "limit", required: false, schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
+            { in: "query", name: "sortBy", required: false, schema: { type: "string", enum: ["issueDate", "dueDate", "total", "createdAt", "status"], default: "createdAt" } },
+            { in: "query", name: "sortOrder", required: false, schema: { type: "string", enum: ["asc", "desc"], default: "desc" } }
+          ],
+          responses: {
+            "200": { description: "Complete filtered summary, optional grouping, paginated invoice rows, and pagination.", content: { "application/json": { schema: accountingReportResponseSchema } } },
+            "400": { description: "Invalid/unknown query parameter, invalid enum, pagination, sorting, or date range." },
+            "401": { description: "Authentication required." },
+            "403": { description: "Accounting module access or accounting:invoices:view permission unavailable." }
+          }
+        }
+      },
       [`${env.API_PREFIX}/accounting/reports/export.csv`]: { get: { tags: ["Accounting - Reports"], summary: "Download the filtered report as CSV", description: "Uses the same filters and financial definitions as the report endpoint.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Filtered CSV" } } } },
       [`${env.API_PREFIX}/accounting/reports/export.pdf`]: { get: { tags: ["Accounting - Reports"], summary: "Download the filtered report as PDF", description: "Server-generated multipage PDF using the same filtered rows and totals.", security: [{ bearerAuth: [] }], responses: { "200": { description: "Filtered PDF", content: { "application/pdf": { schema: { type: "string", format: "binary" } } } } } } },
       [`${env.API_PREFIX}/accounting/reports/vat`]: { get: { tags: ["Accounting - Tax"], summary: "Get filtered VAT report", description: "Uses immutable invoice taxAmount snapshots; does not recalculate historic invoices.", security: [{ bearerAuth: [] }], responses: { "200": { description: "VAT summary, company grouping and invoice detail" } } } },
