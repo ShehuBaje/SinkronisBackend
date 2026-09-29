@@ -66,9 +66,21 @@ test("employee import validates email and lifecycle status", async () => {
   const { errors } = await validationErrors(`${header}\nEMP-1,Amina,Yusuf,,not-an-email,,,ACTIVE,,,`); assert.equal(errors.some((error) => error.field === "email" && error.code === "INVALID_EMAIL"), true); assert.equal(errors.some((error) => error.field === "lifecycleStatus" && error.code === "INVALID_ENUM"), true);
 });
 
-test("employee import rejects invalid date formats and impossible dates", async () => {
-  const csv = `${header}\nEMP-1,Amina,Yusuf,,a@example.test,,,PROBATION,,28/09/2026,\nEMP-2,Ada,Okafor,,b@example.test,,,PROBATION,,2026-02-30,`;
-  const { errors } = await validationErrors(csv); assert.deepEqual(errors.filter((error) => error.code === "INVALID_DATE").map((error) => error.row), [2, 3]);
+test("employee import accepts canonical and unambiguous Excel dates at UTC midnight", async () => {
+  const csv = `${header}\nEMP-1,Amina,Yusuf,,a@example.test,,,PROBATION,,2026-09-23,\nEMP-2,Ada,Okafor,,b@example.test,,,PROBATION,,23/09/2026,\nEMP-3,Chidi,Eze,,c@example.test,,,PROBATION,,09/23/2026,`;
+  const { state } = await run(csv);
+  assert.deepEqual(state.committed.map((employee) => employee.hireDate.toISOString()), ["2026-09-23T00:00:00.000Z", "2026-09-23T00:00:00.000Z", "2026-09-23T00:00:00.000Z"]);
+});
+
+test("employee import rejects ambiguous Excel dates without guessing and remains atomic", async () => {
+  const csv = `${header}\nEMP-1,Amina,Yusuf,,a@example.test,,,PROBATION,,05/06/2026,\nEMP-2,Ada,Okafor,,b@example.test,,,PROBATION,,01/02/2026,`;
+  const { errors, state } = await validationErrors(csv); const dateErrors = errors.filter((error) => error.code === "AMBIGUOUS_DATE");
+  assert.deepEqual(dateErrors.map((error) => error.row), [2, 3]); assert.match(dateErrors[0].message, /ambiguous.*YYYY-MM-DD/i); assert.equal(state.transactionCalls, 0); assert.equal(state.committed.length, 0);
+});
+
+test("employee import rejects impossible slash and ISO dates with physical row numbers", async () => {
+  const csv = `${header}\nEMP-1,Amina,Yusuf,,a@example.test,,,PROBATION,,31/02/2026,\n\nEMP-2,Ada,Okafor,,b@example.test,,,PROBATION,,02/31/2026,\nEMP-3,Chidi,Eze,,c@example.test,,,PROBATION,,2026-02-30,`;
+  const { errors } = await validationErrors(csv); assert.deepEqual(errors.filter((error) => error.code === "INVALID_DATE").map((error) => error.row), [2, 4, 5]);
 });
 
 test("employee import validates Decimal(14,2)-compatible non-negative monthly earnings", async () => {

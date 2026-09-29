@@ -690,10 +690,29 @@ const requiredEmployeeImportHeaders = ["employeeId", "firstName", "lastName", "e
 const employeeImportEmail = z.string().email();
 const employeeLifecycleStatuses = new Set(["PROBATION", "CONFIRMED", "EXITED"]);
 const importValidationError = (validationErrors: EmployeeImportValidationError[]) => badRequest("Employee import validation failed", { errorCode: "EMPLOYEE_IMPORT_VALIDATION_FAILED", validationErrors });
-const validImportDate = (value: string) => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [year, month, day] = value.split("-").map(Number); const date = new Date(Date.UTC(year, month - 1, day));
+type ImportDateResult = { ok: true; value: string } | { ok: false; code: "INVALID_DATE" | "AMBIGUOUS_DATE"; message: string };
+const validCalendarDate = (year: number, month: number, day: number) => {
+  const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+};
+const canonicalCalendarDate = (year: number, month: number, day: number) => `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+const parseImportDate = (value: string): ImportDateResult => {
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (iso) {
+    const [, yearText, monthText, dayText] = iso; const year = Number(yearText); const month = Number(monthText); const day = Number(dayText);
+    return validCalendarDate(year, month, day)
+      ? { ok: true, value: canonicalCalendarDate(year, month, day) }
+      : { ok: false, code: "INVALID_DATE", message: "dateJoined must be a valid calendar date; use YYYY-MM-DD, for example 2026-09-23" };
+  }
+  const slash = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(value);
+  if (slash) {
+    const [, firstText, secondText, yearText] = slash; const first = Number(firstText); const second = Number(secondText); const year = Number(yearText);
+    const dayFirstValid = validCalendarDate(year, second, first); const monthFirstValid = validCalendarDate(year, first, second);
+    if (dayFirstValid && monthFirstValid && first !== second) return { ok: false, code: "AMBIGUOUS_DATE", message: `dateJoined '${value}' is ambiguous. Use YYYY-MM-DD, for example ${canonicalCalendarDate(year, second, first)}.` };
+    if (dayFirstValid) return { ok: true, value: canonicalCalendarDate(year, second, first) };
+    if (monthFirstValid) return { ok: true, value: canonicalCalendarDate(year, first, second) };
+  }
+  return { ok: false, code: "INVALID_DATE", message: "dateJoined must be a valid calendar date in YYYY-MM-DD format or an unambiguous DD/MM/YYYY or MM/DD/YYYY value" };
 };
 const validMonthlyEarning = (value: string) => /^\d{1,12}(?:\.\d{1,2})?$/.test(value) && new Prisma.Decimal(value).isFinite() && new Prisma.Decimal(value).gte(0);
 const duplicateImportErrors = (rows: EmployeeImportRow[]) => {
@@ -729,11 +748,12 @@ export const importEmployeesCsv = async (organizationId: string, buffer: Buffer,
   const rows: EmployeeImportRow[] = []; const errors: EmployeeImportValidationError[] = [];
   for (const line of lines.slice(1)) {
     const cells = parseCsvLine(line.text); const raw = Object.fromEntries(headers.map((header, index) => [header, (cells[index] ?? "").trim()])); const email = String(raw.email ?? "").toLowerCase(); const lifecycleStatus = String(raw.lifecycleStatus || "PROBATION");
-    const row: EmployeeImportRow = { row: line.row, employeeId: String(raw.employeeId ?? ""), firstName: String(raw.firstName ?? ""), lastName: String(raw.lastName ?? ""), phoneNumber: String(raw.phoneNumber ?? ""), email, department: String(raw.department ?? ""), position: String(raw.position ?? ""), lifecycleStatus: lifecycleStatus as EmployeeImportRow["lifecycleStatus"], workMode: String(raw.workMode ?? ""), dateJoined: String(raw.dateJoined ?? ""), monthlyEarning: String(raw.monthlyEarning ?? "") };
+    const dateJoined = String(raw.dateJoined ?? ""); const parsedDate = dateJoined ? parseImportDate(dateJoined) : null;
+    const row: EmployeeImportRow = { row: line.row, employeeId: String(raw.employeeId ?? ""), firstName: String(raw.firstName ?? ""), lastName: String(raw.lastName ?? ""), phoneNumber: String(raw.phoneNumber ?? ""), email, department: String(raw.department ?? ""), position: String(raw.position ?? ""), lifecycleStatus: lifecycleStatus as EmployeeImportRow["lifecycleStatus"], workMode: String(raw.workMode ?? ""), dateJoined: parsedDate?.ok ? parsedDate.value : dateJoined, monthlyEarning: String(raw.monthlyEarning ?? "") };
     for (const [field, label] of [["employeeId", "Employee ID"], ["firstName", "First name"], ["lastName", "Last name"], ["email", "Email"]] as const) if (!row[field]) errors.push({ row: line.row, field, code: "REQUIRED", message: `${label} is required` });
     if (row.email && !employeeImportEmail.safeParse(row.email).success) errors.push({ row: line.row, field: "email", code: "INVALID_EMAIL", message: "Email address is invalid" });
     if (!employeeLifecycleStatuses.has(lifecycleStatus)) errors.push({ row: line.row, field: "lifecycleStatus", code: "INVALID_ENUM", message: "lifecycleStatus must be PROBATION, CONFIRMED, or EXITED" });
-    if (row.dateJoined && !validImportDate(row.dateJoined)) errors.push({ row: line.row, field: "dateJoined", code: "INVALID_DATE", message: "dateJoined must be a valid date in YYYY-MM-DD format" });
+    if (parsedDate && !parsedDate.ok) errors.push({ row: line.row, field: "dateJoined", code: parsedDate.code, message: parsedDate.message });
     if (row.monthlyEarning && !validMonthlyEarning(row.monthlyEarning)) errors.push({ row: line.row, field: "monthlyEarning", code: "INVALID_DECIMAL", message: "monthlyEarning must be a non-negative decimal with at most 12 integer digits and 2 decimal places" });
     rows.push(row);
   }
