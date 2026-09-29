@@ -11,6 +11,7 @@ import { finalizeProviderSettlementOtp, initiateProviderSettlement } from "../..
 import { acceptAndProcessPaystackTransferWebhook } from "../../core/paystack-transfer-webhook";
 import { assertProviderTransfersEnabled } from "../../core/settlement-provider";
 import { deliverUserNotification } from "../../core/notifications";
+import { safeEmailDeliveryError } from "../../core/email-security";
 import { createAuditLog } from "../admin/admin.audit";
 import {
   sendWorkspaceInvitationEmail,
@@ -1720,16 +1721,14 @@ export const inviteAccountingAgent = async (
       },
     });
   } catch (error) {
+    const deliveryError = safeEmailDeliveryError(error);
     await prisma.agentInvitation.update({
       where: { id: created.invitation.id },
       data: {
         deliveryStatus: "FAILED",
         deliveryAttemptedAt: new Date(),
-        deliveryErrorCode: "EMAIL_DELIVERY_FAILED",
-        deliveryErrorMessage:
-          error instanceof Error
-            ? error.message.slice(0, 500)
-            : "Email delivery failed",
+        deliveryErrorCode: deliveryError.code,
+        deliveryErrorMessage: deliveryError.message,
       },
     });
     throw error;

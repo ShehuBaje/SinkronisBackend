@@ -312,7 +312,7 @@ export const logout = async (userId: string, organizationId: string, sessionId?:
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
-const generateSixDigitOtp = () => String(Math.floor(100000 + Math.random() * 900000));
+export const generateSixDigitOtp = () => String(crypto.randomInt(100_000, 1_000_000));
 
 const slugify = (value: string) =>
   value
@@ -881,12 +881,7 @@ export const login = async (
 
     const challengeToken = signLoginChallengeToken({ userId: user.id, challengeId: challenge.id });
 
-    if (env.NODE_ENV !== "production") {
-      const otpLogPart = selectedMethod === "AUTHENTICATOR_APP" ? "" : ` otp=${otp}`;
-      console.log(
-        `[dev-auth] login-2fa user=${user.email} method=${selectedMethod} challengeToken=${challengeToken}${otpLogPart} expiresInSeconds=${LOGIN_2FA_OTP_TTL_MINUTES * 60}`
-      );
-    }
+    if (env.NODE_ENV !== "production") console.log(`[dev-auth] login-2fa challenge-created method=${selectedMethod} expiresInSeconds=${LOGIN_2FA_OTP_TTL_MINUTES * 60}`);
 
     return {
       requiresTwoFactor: true,
@@ -973,7 +968,7 @@ export const resendPasswordOtp = async (input: z.infer<typeof forgotPasswordSche
 export const verifyResetOtp = async (input: z.infer<typeof verifyResetOtpSchema>) => {
   const user = await resolveUserByEmailAndOrganization(input.email, input.organizationSlug);
   if (!user || !user.isActive || user.organization.status !== "ACTIVE") {
-    throw badRequest("No active account found for the supplied email");
+    throw badRequest("OTP is invalid or has expired");
   }
 
   const otpRecord = await prisma.passwordResetOtp.findFirst({
@@ -989,7 +984,7 @@ export const verifyResetOtp = async (input: z.infer<typeof verifyResetOtpSchema>
   }
 
   if (otpRecord.attempts >= RESET_OTP_MAX_ATTEMPTS) {
-    throw badRequest("Maximum OTP attempts exceeded. Request a new OTP.");
+    throw badRequest("OTP is invalid or has expired");
   }
 
   const isMatch = await bcrypt.compare(input.otp, otpRecord.codeHash);

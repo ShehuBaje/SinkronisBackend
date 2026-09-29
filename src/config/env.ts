@@ -21,7 +21,7 @@ export const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default("30m"),
   JWT_REFRESH_EXPIRES_IN: z.string().default("7d"),
   APP_NAME: z.string().default("Sinkronis"),
-  EMAIL_FROM: z.string().email().default("no-reply@sinkronis.app"),
+  EMAIL_FROM: z.string().email().optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_SECURE: z
@@ -90,6 +90,9 @@ export const envSchema = z.object({
   if (!value.CRON_SECRET) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["CRON_SECRET"], message: "CRON_SECRET is required in production" });
   }
+  for (const key of ["SMTP_HOST", "SMTP_USER", "SMTP_PASS", "EMAIL_FROM"] as const) {
+    if (!value[key]?.trim()) context.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is required in production` });
+  }
   if (value.DEPLOYMENT_RUNTIME === "serverless" && value.BACKGROUND_JOBS_MODE === "queue") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["BACKGROUND_JOBS_MODE"], message: "Serverless production must use inline background delivery; durable Cron paths handle correctness-critical recovery" });
   }
@@ -111,6 +114,6 @@ export const envSchema = z.object({
   if (value.RATE_LIMIT_STORE === "redis" && !value.REDIS_URL && value.REDIS_HOST === "127.0.0.1") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["REDIS_URL"], message: "A remote Redis connection is required for distributed rate limiting" });
   }
-});
+}).transform((value) => ({ ...value, EMAIL_FROM: value.EMAIL_FROM ?? "no-reply@sinkronis.app" }));
 
 export const env = envSchema.parse(process.env);

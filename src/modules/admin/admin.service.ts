@@ -16,6 +16,7 @@ import { getEffectivePlanCatalogue, resolveRecurringPrices } from "../billing/pr
 import { sendSubscriptionRenewalEmail, sendWorkspaceInvitationEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
 import { isIpAllowed } from "../auth/auth.service";
 import { formatLocation } from "../../core/request-metadata";
+import { safeEmailDeliveryError } from "../../core/email-security";
 import {
   initializePaystackTransaction,
   paystackMinorUnits,
@@ -3632,8 +3633,7 @@ export const inviteUser = async (req: Request) => {
     const delivery = await sendWorkspaceInvitationEmail({ to: invitation.email, organizationName: organization.name, roleName: invitation.role?.name ?? role.name, setupUrl: workspaceInvitationSetupUrl(invitation.token), expiresAt: invitation.expiresAt });
     await prisma.agentInvitation.update({ where: { id: invitation.id }, data: { deliveryStatus: "SENT", deliveryAttemptedAt: new Date(), deliveredAt: new Date(), deliveryProvider: "SMTP", providerMessageId: delivery.messageId, deliveryErrorCode: null, deliveryErrorMessage: null } });
   } catch (error) {
-    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "EMAIL_DELIVERY_FAILED";
-    const message = error instanceof Error ? error.message.slice(0, 500) : "Email delivery failed";
+    const { code, message } = safeEmailDeliveryError(error);
     await prisma.agentInvitation.update({ where: { id: invitation.id }, data: { deliveryStatus: "FAILED", deliveryAttemptedAt: new Date(), deliveryProvider: "SMTP", deliveryErrorCode: code, deliveryErrorMessage: message } });
     console.error("[invitation-email] delivery failed", { invitationId: invitation.id, organizationId: invitation.organizationId, recipient: invitation.email, provider: "SMTP", code, message });
     throw error;
@@ -3769,8 +3769,7 @@ export const resendInvitation = async (req: Request) => {
     const delivery = await sendWorkspaceInvitationEmail({ to: updated.email, organizationName: organization.name, roleName: existing.role?.name ?? "Workspace user", setupUrl: workspaceInvitationSetupUrl(updated.token), expiresAt: updated.expiresAt });
     await prisma.agentInvitation.update({ where: { id: updated.id }, data: { deliveryStatus: "SENT", deliveryAttemptedAt: new Date(), deliveredAt: new Date(), deliveryProvider: "SMTP", providerMessageId: delivery.messageId } });
   } catch (error) {
-    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "EMAIL_DELIVERY_FAILED";
-    const message = error instanceof Error ? error.message.slice(0, 500) : "Email delivery failed";
+    const { code, message } = safeEmailDeliveryError(error);
     await prisma.agentInvitation.update({ where: { id: updated.id }, data: { deliveryStatus: "FAILED", deliveryAttemptedAt: new Date(), deliveryProvider: "SMTP", deliveryErrorCode: code, deliveryErrorMessage: message } });
     console.error("[invitation-email] resend failed", { invitationId: updated.id, organizationId: updated.organizationId, recipient: updated.email, provider: "SMTP", code, message });
     if (createdUserId) await prisma.user.delete({ where: { id: createdUserId } });

@@ -63,6 +63,7 @@ test("Phase 3F dangerous serverless queue and transfer configurations fail close
     NODE_ENV: "production", DATABASE_URL: "mysql://example.invalid/db", JWT_ACCESS_SECRET: "a".repeat(24), JWT_REFRESH_SECRET: "b".repeat(24),
     CORS_ORIGIN: "https://app.example.test", PUBLIC_BASE_URL: "https://api.example.test", RATE_LIMIT_STORE: "redis", REDIS_URL: "redis://cache.example.test:6379",
     CRON_SECRET: "c".repeat(24), BACKGROUND_JOBS_MODE: "inline", DEPLOYMENT_RUNTIME: "serverless", PAYSTACK_TRANSFERS_ENABLED: "false",
+    SMTP_HOST: "smtp.example.test", SMTP_USER: "mailer", SMTP_PASS: "secret-value", EMAIL_FROM: "no-reply@example.test",
   };
   assert.equal(envSchema.safeParse(productionBase).success, true);
   assert.equal(envSchema.safeParse({ ...productionBase, BACKGROUND_JOBS_MODE: "queue" }).success, false);

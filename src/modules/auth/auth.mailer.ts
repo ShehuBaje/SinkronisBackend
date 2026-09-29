@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import { renderPlatformEmailTemplate } from "../platform-admin/platform-admin.service";
 import { env } from "../../config/env";
+import { escapeEmailHtml, smtpTransportOptions } from "../../core/email-security";
 
 type SendPasswordResetOtpInput = {
   to: string;
@@ -27,15 +28,7 @@ let transporter: nodemailer.Transporter | null = null;
 const getTransporter = () => {
   if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS) return null;
   if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: env.SMTP_HOST,
-      port: env.SMTP_PORT,
-      secure: env.SMTP_SECURE,
-      auth: {
-        user: env.SMTP_USER,
-        pass: env.SMTP_PASS
-      }
-    });
+    transporter = nodemailer.createTransport(smtpTransportOptions({ host: env.SMTP_HOST, port: env.SMTP_PORT, secure: env.SMTP_SECURE, user: env.SMTP_USER, pass: env.SMTP_PASS }));
   }
   return transporter;
 };
@@ -54,8 +47,8 @@ export const sendPasswordResetOtpEmail = async (input: SendPasswordResetOtpInput
   ].join("\n");
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-      <h2 style="margin-bottom: 8px;">${env.APP_NAME} password reset</h2>
-      <p style="margin-top: 0; color: #555;">Organization: ${input.organizationName}</p>
+      <h2 style="margin-bottom: 8px;">${escapeEmailHtml(env.APP_NAME)} password reset</h2>
+      <p style="margin-top: 0; color: #555;">Organization: ${escapeEmailHtml(input.organizationName)}</p>
       <p>Use the code below to reset your password:</p>
       <div style="font-size: 28px; letter-spacing: 6px; font-weight: bold; margin: 16px 0;">${input.otp}</div>
       <p>This code expires in ${input.expiresInMinutes} minutes.</p>
@@ -68,7 +61,7 @@ export const sendPasswordResetOtpEmail = async (input: SendPasswordResetOtpInput
       throw new Error("SMTP credentials are not configured");
     }
 
-    console.log(`[dev-email] to=${input.to} otp=${input.otp}`);
+    console.log("[dev-email] password-reset delivery skipped: SMTP is not configured");
     return;
   }
 
@@ -95,8 +88,8 @@ export const sendLoginOtpEmail = async (input: SendLoginOtpInput) => {
   ].join("\n");
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-      <h2 style="margin-bottom: 8px;">${env.APP_NAME} login verification</h2>
-      <p style="margin-top: 0; color: #555;">Organization: ${input.organizationName}</p>
+      <h2 style="margin-bottom: 8px;">${escapeEmailHtml(env.APP_NAME)} login verification</h2>
+      <p style="margin-top: 0; color: #555;">Organization: ${escapeEmailHtml(input.organizationName)}</p>
       <p>Use the code below to complete your login:</p>
       <div style="font-size: 28px; letter-spacing: 6px; font-weight: bold; margin: 16px 0;">${input.otp}</div>
       <p>This code expires in ${input.expiresInMinutes} minutes.</p>
@@ -109,7 +102,7 @@ export const sendLoginOtpEmail = async (input: SendLoginOtpInput) => {
       throw new Error("SMTP credentials are not configured");
     }
 
-    console.log(`[dev-email] to=${input.to} login-otp=${input.otp}`);
+    console.log("[dev-email] login-otp delivery skipped: SMTP is not configured");
     return;
   }
 
@@ -130,7 +123,7 @@ export const sendLoginSmsOtp = async (input: SendLoginSmsOtpInput) => {
       throw new Error("SMS webhook is not configured");
     }
 
-    console.log(`[dev-sms] to=${input.to} login-otp=${input.otp}`);
+    console.log("[dev-sms] login-otp delivery skipped: SMS webhook is not configured");
     return;
   }
 
@@ -157,8 +150,8 @@ export const sendTenantAdminInvitationEmail = async (input: { to: string; organi
   const subject = `Your ${env.APP_NAME} workspace is ready`;
   const expiry = input.expiresAt.toISOString();
   const text = [`Hello,`, "", `Your ${env.APP_NAME} workspace for ${input.organizationName} is ready.`, `Create your Tenant Admin password using this secure link: ${input.setupUrl}`, `This invitation expires at ${expiry}.`, "", "If you were not expecting this invitation, ignore this email."].join("\n");
-  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto"><h2>Your ${env.APP_NAME} workspace is ready</h2><p>You have been invited as the Tenant Admin for <strong>${input.organizationName}</strong>.</p><p><a href="${input.setupUrl}" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Create your password</a></p><p>This one-time invitation expires at ${expiry}.</p><p>If you were not expecting this invitation, ignore this email.</p></div>`;
-  if (!transport) { if (env.NODE_ENV === "production") throw new Error("SMTP credentials are not configured"); console.log(`[dev-email] to=${input.to} tenant-admin-setup=${input.setupUrl}`); return; }
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto"><h2>Your ${escapeEmailHtml(env.APP_NAME)} workspace is ready</h2><p>You have been invited as the Tenant Admin for <strong>${escapeEmailHtml(input.organizationName)}</strong>.</p><p><a href="${escapeEmailHtml(input.setupUrl)}" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Create your password</a></p><p>This one-time invitation expires at ${expiry}.</p><p>If you were not expecting this invitation, ignore this email.</p></div>`;
+  if (!transport) { if (env.NODE_ENV === "production") throw new Error("SMTP credentials are not configured"); console.log("[dev-email] tenant-admin invitation delivery skipped: SMTP is not configured"); return; }
   await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html });
 };
 
@@ -173,8 +166,8 @@ export const sendWorkspaceInvitationEmail = async (input: { to: string; organiza
   const subject = `You're invited to ${input.organizationName} on ${env.APP_NAME}`;
   const expiry = input.expiresAt.toISOString();
   const text = ["Hello,", "", `You have been invited to ${input.organizationName} as ${input.roleName}.`, `Create your password and join the workspace: ${input.setupUrl}`, `This one-time invitation expires at ${expiry}.`, "", "If you were not expecting this invitation, ignore this email."].join("\n");
-  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto"><h2>You're invited to ${input.organizationName}</h2><p>You have been invited as <strong>${input.roleName}</strong>.</p><p><a href="${input.setupUrl}" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Create password and join</a></p><p>This one-time invitation expires at ${expiry}.</p><p>If you were not expecting this invitation, ignore this email.</p></div>`;
-  if (!transport) { if ((options?.nodeEnv ?? env.NODE_ENV) === "production") throw new Error("SMTP credentials are not configured"); console.log(`[dev-email] to=${input.to} workspace-invitation=${input.setupUrl}`); return { messageId: "development-console", accepted: [input.to] }; }
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto"><h2>You're invited to ${escapeEmailHtml(input.organizationName)}</h2><p>You have been invited as <strong>${escapeEmailHtml(input.roleName)}</strong>.</p><p><a href="${escapeEmailHtml(input.setupUrl)}" style="display:inline-block;padding:12px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Create password and join</a></p><p>This one-time invitation expires at ${expiry}.</p><p>If you were not expecting this invitation, ignore this email.</p></div>`;
+  if (!transport) { if ((options?.nodeEnv ?? env.NODE_ENV) === "production") throw new Error("SMTP credentials are not configured"); console.log("[dev-email] workspace invitation delivery skipped: SMTP is not configured"); return { messageId: "development-console", accepted: [input.to] }; }
   const result = await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html });
   if (!result.accepted.map(String).some((address: string) => address.toLowerCase() === input.to.toLowerCase())) throw new Error(`SMTP provider did not accept invitation recipient ${input.to}`);
   return { messageId: result.messageId ?? "smtp-accepted", accepted: result.accepted.map(String) };
@@ -208,10 +201,8 @@ export const sendTenantCheckInEmail = async (input: { to: string; contactName: s
     console.log(`[dev-email] to=${input.to} tenant-check-in=${input.organizationName}`);
     return;
   }
-  await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html: `<p>${text}</p>` });
+  await transport.sendMail({ from: `"${env.APP_NAME}" <${env.EMAIL_FROM}>`, to: input.to, subject, text, html: `<p>${escapeEmailHtml(text)}</p>` });
 };
-
-const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
 
 export const sendTransactionalNotificationEmail = async (input: { to: string; recipientName: string; subject: string; message: string }) => {
   const transport = getTransporter();
@@ -226,6 +217,6 @@ export const sendTransactionalNotificationEmail = async (input: { to: string; re
     to: input.to,
     subject: input.subject,
     text,
-    html: `<p>Hello ${escapeHtml(input.recipientName)},</p><p>${escapeHtml(input.message)}</p>`
+    html: `<p>Hello ${escapeEmailHtml(input.recipientName)},</p><p>${escapeEmailHtml(input.message)}</p>`
   });
 };
