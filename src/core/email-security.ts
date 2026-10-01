@@ -17,10 +17,15 @@ export const smtpTransportOptions = (config: { host: string; port: number; secur
   ...SMTP_TIMEOUTS
 });
 
-const SAFE_EMAIL_ERROR_CODES = new Set(["EAUTH", "ECONNECTION", "ECONNREFUSED", "ECONNRESET", "EDNS", "EENVELOPE", "EMESSAGE", "ESOCKET", "ETIMEDOUT"]);
+const SAFE_EMAIL_ERROR_CODES = new Set(["EAUTH", "ECONNECTION", "ECONNREFUSED", "ECONNRESET", "EDNS", "EENVELOPE", "EMAIL_CONFIGURATION", "EMESSAGE", "ESOCKET", "ETIMEDOUT"]);
 
 export const safeEmailDeliveryError = (error: unknown) => {
   const candidate = error && typeof error === "object" && "code" in error ? String(error.code).toUpperCase() : "";
   const code = SAFE_EMAIL_ERROR_CODES.has(candidate) ? candidate : "EMAIL_DELIVERY_FAILED";
   return { code, message: `Email delivery failed (${code})` };
 };
+
+const DEFINITE_PRE_ACCEPTANCE_CODES = new Set(["EAUTH", "EDNS", "EENVELOPE", "EMAIL_CONFIGURATION", "EMESSAGE"]);
+
+export const classifyEmailDeliveryFailure = (error: unknown): "FAILED" | "UNKNOWN" =>
+  DEFINITE_PRE_ACCEPTANCE_CODES.has(safeEmailDeliveryError(error).code) ? "FAILED" : "UNKNOWN";

@@ -25,6 +25,7 @@ import {
   impersonatePlatformTenantAdminController,
   overridePlatformTenantPlanController,
   resetPlatformTenantUserPasswordController,
+  resendPlatformTenantOnboardingInvitationController,
   suspendPlatformTenantController,
   togglePlatformTenantModuleController,
   updatePlatformModulePriceController
@@ -136,6 +137,7 @@ platformAdminRouter.get("/privacy/deletion-requests/:requestId", authorize("plat
 platformAdminRouter.post("/privacy/deletion-requests/:requestId/decision", authorize("platform:tenants:suspend"), validate({ params: organizationDeletionParamsSchema, body: organizationDeletionDecisionSchema }), asyncHandler(decideOrganizationDeletionRequestController));
 platformAdminRouter.post("/privacy/deletion-requests/:requestId/complete", authorize("platform:tenants:suspend"), validate({ params: organizationDeletionParamsSchema, body: organizationDeletionCompletionSchema }), asyncHandler(completeOrganizationDeletionRequestController));
 platformAdminRouter.post("/tenants", authorize("platform:tenants:create"), validate({ body: createPlatformTenantSchema }), asyncHandler(createPlatformTenantController));
+platformAdminRouter.post("/tenants/:tenantId/onboarding-invitation/resend", authorize("platform:tenants:users:manage"), validate({ params: platformTenantParamsSchema }), asyncHandler(resendPlatformTenantOnboardingInvitationController));
 platformAdminRouter.get("/tenants", authorize("platform:tenants:view"), validate({ query: platformTenantListQuerySchema }), asyncHandler(getPlatformTenantsController));
 platformAdminRouter.get("/tenants/:tenantId", authorize("platform:tenants:view"), validate({ params: platformTenantParamsSchema }), asyncHandler(getPlatformTenantDetailsController));
 platformAdminRouter.get("/tenants/:tenantId/overview", authorize("platform:tenants:view"), validate({ params: platformTenantParamsSchema }), asyncHandler(getPlatformTenantOverviewController));

@@ -85,7 +85,7 @@ test("only the consolidated dashboard plus Platform Tenant management routes are
     "/settings/email-templates", "/settings/email-templates/:key", "/settings/email-templates/:key",
     "/settings/maintenance", "/settings/maintenance",
     "/privacy/deletion-requests", "/privacy/deletion-requests/:requestId", "/privacy/deletion-requests/:requestId/decision", "/privacy/deletion-requests/:requestId/complete",
-    "/tenants", "/tenants", "/tenants/:tenantId",
+    "/tenants", "/tenants/:tenantId/onboarding-invitation/resend", "/tenants", "/tenants/:tenantId",
     "/tenants/:tenantId/overview", "/tenants/:tenantId/users",
     "/tenants/:tenantId/users/:userId/deactivate", "/tenants/:tenantId/users/:userId/reset-password",
     "/tenants/:tenantId/modules", "/tenants/:tenantId/modules/:moduleId",

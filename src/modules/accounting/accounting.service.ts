@@ -11,7 +11,7 @@ import { finalizeProviderSettlementOtp, initiateProviderSettlement } from "../..
 import { acceptAndProcessPaystackTransferWebhook } from "../../core/paystack-transfer-webhook";
 import { assertProviderTransfersEnabled } from "../../core/settlement-provider";
 import { deliverUserNotification } from "../../core/notifications";
-import { safeEmailDeliveryError } from "../../core/email-security";
+import { classifyEmailDeliveryFailure, safeEmailDeliveryError } from "../../core/email-security";
 import { createAuditLog } from "../admin/admin.audit";
 import {
   sendWorkspaceInvitationEmail,
@@ -1306,44 +1306,61 @@ export const sendInvoice = async (
   user: AuthUser,
 ) => {
   const current = await invoiceOwned(organizationId, id);
+  if (current.status === "SENT" && current.emailDeliveryStatus === "SENT")
+    return getInvoiceById(organizationId, id);
   if (current.status !== "DRAFT")
     throw conflict("Only draft invoices can be sent");
+  if (["SENDING", "UNKNOWN"].includes(current.emailDeliveryStatus))
+    throw conflict("Invoice delivery requires reconciliation before it can be sent again", { errorCode: "INVOICE_DELIVERY_RECONCILIATION_REQUIRED", deliveryStatus: current.emailDeliveryStatus });
   if (!current.client.email)
     throw conflict("Customer email is required before sending an invoice");
   const organization = await prisma.organization.findUnique({
     where: { id: organizationId },
     select: { name: true },
   });
-  await sendTransactionalNotificationEmail({
-    to: current.client.email,
-    recipientName: current.client.name,
-    subject: `Invoice ${current.invoiceNo} from ${organization?.name ?? "Sinkronis"}`,
-    message: `Invoice ${current.invoiceNo} for ${invoiceReceivable(current).toFixed(2)} is due ${current.dueDate?.toISOString().slice(0, 10) ?? "on receipt"}.`,
+  const attemptedAt = new Date();
+  const claim = await prisma.invoice.updateMany({
+    where: { id, organizationId, status: "DRAFT", emailDeliveryStatus: { in: ["NOT_STARTED", "FAILED"] } },
+    data: { emailDeliveryStatus: "SENDING", emailDeliveryAttemptedAt: attemptedAt, emailDeliveredAt: null, emailDeliveryProvider: "SMTP", emailProviderMessageId: null, emailDeliveryErrorCode: null, emailDeliveryErrorMessage: null }
   });
+  if (claim.count !== 1) {
+    const latest = await prisma.invoice.findFirst({ where: { id, organizationId }, select: { status: true, emailDeliveryStatus: true } });
+    if (!latest) throw notFound("Invoice not found");
+    if (latest.status === "SENT" && latest.emailDeliveryStatus === "SENT") return getInvoiceById(organizationId, id);
+    if (["SENDING", "UNKNOWN"].includes(latest.emailDeliveryStatus)) throw conflict("Invoice delivery is already in progress or requires reconciliation", { errorCode: "INVOICE_DELIVERY_RECONCILIATION_REQUIRED", deliveryStatus: latest.emailDeliveryStatus });
+    throw conflict("Invoice is not eligible for delivery", { errorCode: "INVOICE_DELIVERY_NOT_ELIGIBLE", deliveryStatus: latest.emailDeliveryStatus });
+  }
+  let delivery: Awaited<ReturnType<typeof sendTransactionalNotificationEmail>>;
+  try {
+    delivery = await sendTransactionalNotificationEmail({
+      to: current.client.email,
+      recipientName: current.client.name,
+      subject: `Invoice ${current.invoiceNo} from ${organization?.name ?? "Sinkronis"}`,
+      message: `Invoice ${current.invoiceNo} for ${invoiceReceivable(current).toFixed(2)} is due ${current.dueDate?.toISOString().slice(0, 10) ?? "on receipt"}.`,
+    });
+  } catch (error) {
+    const safe = safeEmailDeliveryError(error);
+    const outcome = classifyEmailDeliveryFailure(error);
+    await prisma.invoice.updateMany({ where: { id, organizationId, status: "DRAFT", emailDeliveryStatus: "SENDING" }, data: { emailDeliveryStatus: outcome, emailDeliveryErrorCode: safe.code, emailDeliveryErrorMessage: safe.message } });
+    if (outcome === "UNKNOWN") throw conflict("Invoice delivery outcome is unknown and requires reconciliation", { errorCode: "INVOICE_DELIVERY_OUTCOME_UNKNOWN" });
+    throw serviceUnavailable("Invoice delivery failed before provider acceptance", { errorCode: "INVOICE_DELIVERY_FAILED" });
+  }
   const now = new Date();
-  await prisma.$transaction([
-    prisma.invoice.update({
-      where: { id },
-      data: { status: "SENT", sentAt: now },
-    }),
-    prisma.accountingInvoiceStatusHistory.create({
-      data: {
-        organizationId,
-        invoiceId: id,
-        status: "SENT",
-        actorUserId: user.id,
-        description: "Invoice sent to customer",
-      },
-    }),
-  ]);
-  await audit(
-    organizationId,
-    user,
-    "ACCOUNTING_INVOICE_SENT",
-    "INVOICE",
-    id,
-    `Sent invoice ${current.invoiceNo}`,
-  );
+  try {
+    await prisma.$transaction(async (tx) => {
+      const finalized = await tx.invoice.updateMany({
+        where: { id, organizationId, status: "DRAFT", emailDeliveryStatus: "SENDING" },
+        data: { status: "SENT", sentAt: now, emailDeliveryStatus: "SENT", emailDeliveredAt: now, emailDeliveryProvider: "SMTP", emailProviderMessageId: delivery.messageId, emailDeliveryErrorCode: null, emailDeliveryErrorMessage: null }
+      });
+      if (finalized.count !== 1) throw conflict("Invoice delivery finalization requires reconciliation", { errorCode: "INVOICE_DELIVERY_FINALIZATION_CONFLICT" });
+      await tx.accountingInvoiceStatusHistory.create({ data: { organizationId, invoiceId: id, status: "SENT", actorUserId: user.id, description: "Invoice sent to customer" } });
+      await audit(organizationId, user, "ACCOUNTING_INVOICE_SENT", "INVOICE", id, `Sent invoice ${current.invoiceNo}`, { deliveryProvider: "SMTP", deliveryAttemptedAt: attemptedAt.toISOString() }, tx);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
+  } catch (error) {
+    const safe = safeEmailDeliveryError(error);
+    await prisma.invoice.updateMany({ where: { id, organizationId, status: "DRAFT", emailDeliveryStatus: "SENDING" }, data: { emailDeliveryStatus: "UNKNOWN", emailDeliveryErrorCode: "FINALIZATION_FAILED", emailDeliveryErrorMessage: safe.message } });
+    throw serviceUnavailable("Invoice email was accepted but finalization requires reconciliation", { errorCode: "INVOICE_DELIVERY_FINALIZATION_FAILED" });
+  }
   return getInvoiceById(organizationId, id);
 };
 export const recordInvoicePayment = async (

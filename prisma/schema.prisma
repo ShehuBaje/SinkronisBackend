@@ -801,43 +801,51 @@ model EmployeeStatusHistory {
 }
 
 model Invoice {
-  id               String                           @id @default(cuid())
-  organizationId   String
-  clientId         String
-  invoiceNo        String
-  issueDate        DateTime
-  dueDate          DateTime?
-  status           invoice_status                   @default(DRAFT)
-  subtotal         Decimal                          @db.Decimal(14, 2)
-  taxAmount        Decimal                          @default(0.00) @db.Decimal(14, 2)
-  total            Decimal                          @db.Decimal(14, 2)
-  whtApplicable    Boolean                          @default(false)
-  whtRate          Decimal?                         @db.Decimal(5, 2)
-  whtAmount        Decimal                          @default(0.00) @db.Decimal(14, 2)
-  amountPayable    Decimal                          @default(0.00) @db.Decimal(14, 2)
-  notes            String?                          @db.Text
-  templateSnapshot Json?
-  projectId        String?
-  assignedAgentId  String?
-  sentAt           DateTime?
-  paidAt           DateTime?
-  voidedAt         DateTime?
-  paymentReference String?
-  createdAt        DateTime                         @default(now())
-  updatedAt        DateTime                         @updatedAt
-  client           Client                           @relation(fields: [clientId], references: [id], map: "Invoice_clientId_fkey")
-  organization     Organization                     @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Invoice_organizationId_fkey")
-  items            InvoiceItem[]
-  project          AccountingProject?               @relation(fields: [projectId], references: [id], map: "Invoice_project_fkey")
-  assignedAgent    User?                            @relation("InvoiceAssignedAgent", fields: [assignedAgentId], references: [id], map: "Invoice_agent_fkey")
-  paymentRequests  PaymentRequest[]
-  statusHistory    AccountingInvoiceStatusHistory[]
-  payments         AccountingInvoicePayment[]
+  id                        String                           @id @default(cuid())
+  organizationId            String
+  clientId                  String
+  invoiceNo                 String
+  issueDate                 DateTime
+  dueDate                   DateTime?
+  status                    invoice_status                   @default(DRAFT)
+  subtotal                  Decimal                          @db.Decimal(14, 2)
+  taxAmount                 Decimal                          @default(0.00) @db.Decimal(14, 2)
+  total                     Decimal                          @db.Decimal(14, 2)
+  whtApplicable             Boolean                          @default(false)
+  whtRate                   Decimal?                         @db.Decimal(5, 2)
+  whtAmount                 Decimal                          @default(0.00) @db.Decimal(14, 2)
+  amountPayable             Decimal                          @default(0.00) @db.Decimal(14, 2)
+  notes                     String?                          @db.Text
+  templateSnapshot          Json?
+  projectId                 String?
+  assignedAgentId           String?
+  sentAt                    DateTime?
+  emailDeliveryStatus       invoice_email_delivery_status    @default(NOT_STARTED)
+  emailDeliveryAttemptedAt  DateTime?
+  emailDeliveredAt          DateTime?
+  emailDeliveryProvider     String?
+  emailProviderMessageId    String?
+  emailDeliveryErrorCode    String?
+  emailDeliveryErrorMessage String?                          @db.VarChar(500)
+  paidAt                    DateTime?
+  voidedAt                  DateTime?
+  paymentReference          String?
+  createdAt                 DateTime                         @default(now())
+  updatedAt                 DateTime                         @updatedAt
+  client                    Client                           @relation(fields: [clientId], references: [id], map: "Invoice_clientId_fkey")
+  organization              Organization                     @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Invoice_organizationId_fkey")
+  items                     InvoiceItem[]
+  project                   AccountingProject?               @relation(fields: [projectId], references: [id], map: "Invoice_project_fkey")
+  assignedAgent             User?                            @relation("InvoiceAssignedAgent", fields: [assignedAgentId], references: [id], map: "Invoice_agent_fkey")
+  paymentRequests           PaymentRequest[]
+  statusHistory             AccountingInvoiceStatusHistory[]
+  payments                  AccountingInvoicePayment[]
 
   @@unique([organizationId, invoiceNo], map: "Invoice_organizationId_invoiceNo_key")
   @@unique([organizationId, paymentReference], map: "Invoice_org_payment_reference_key")
   @@index([clientId], map: "Invoice_clientId_fkey")
   @@index([organizationId, status], map: "Invoice_organizationId_status_idx")
+  @@index([organizationId, emailDeliveryStatus, updatedAt], map: "Invoice_org_email_delivery_idx")
   @@index([organizationId, projectId], map: "Invoice_org_project_idx")
   @@index([assignedAgentId], map: "Invoice_agent_idx")
   @@map("Invoice")
@@ -2863,6 +2871,14 @@ enum invoice_status {
   PAID
   VOID
   OVERDUE
+}
+
+enum invoice_email_delivery_status {
+  NOT_STARTED
+  SENDING
+  SENT
+  FAILED
+  UNKNOWN
 }
 
 enum platforminvoice_status {

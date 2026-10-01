@@ -20,6 +20,7 @@ import {
   getPlatformPricingOverview,
   overridePlatformTenantPlan,
   resetPlatformTenantUserPassword,
+  resendPlatformTenantOnboardingInvitation,
   suspendPlatformTenant,
   togglePlatformTenantModule,
   updatePlatformModulePrice
@@ -137,6 +138,9 @@ export const getPlatformTenantsController = async (req: Request, res: Response) 
 
 export const createPlatformTenantController = async (req: Request, res: Response) =>
   sendSuccess(res, "Tenant created", await createPlatformTenant(req.body, req.user!), { status: 201 });
+
+export const resendPlatformTenantOnboardingInvitationController = async (req: Request, res: Response) =>
+  sendSuccess(res, "Tenant onboarding invitation delivery attempted", await resendPlatformTenantOnboardingInvitation(String(req.params.tenantId), req.user!));
 
 export const getPlatformTenantDetailsController = async (req: Request, res: Response) =>
   sendSuccess(res, "Tenant details retrieved", await getPlatformTenantCompleteDetails(String(req.params.tenantId), req.user!));

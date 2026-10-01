@@ -45,7 +45,7 @@ test("new Accounting DTOs reject tenant injection and unsafe financial/settings 
 });
 
 test("invoice input is snapshot-oriented and rejects client-calculated totals", () => {
-  const valid = { clientId: "client", dueDate: "2026-09-30", items: [{ catalogueItemId: "item", quantity: "2" }, { description: "Custom work", quantity: "1.5", unitPrice: "1000", vatApplicable: false }] };
+  const valid = { clientId: "client", issueDate: "2026-09-01", dueDate: "2026-09-30", items: [{ catalogueItemId: "item", quantity: "2" }, { description: "Custom work", quantity: "1.5", unitPrice: "1000", vatApplicable: false }] };
   assert.equal(invoiceCreateSchema.safeParse(valid).success, true);
   assert.equal(invoiceCreateSchema.safeParse({ ...valid, total: 5000 }).success, false);
   assert.equal(invoiceCreateSchema.safeParse({ ...valid, items: [{ description: "Bad", quantity: 0, unitPrice: 1 }] }).success, false);
@@ -53,7 +53,7 @@ test("invoice input is snapshot-oriented and rejects client-calculated totals", 
 });
 
 test("invoice WHT is manual, restricted to 5% or 10%, and based on subtotal before VAT", () => {
-  const base = { clientId: "client", dueDate: "2026-09-30", items: [{ description: "Professional service", quantity: "1", unitPrice: "100000", vatApplicable: true }] };
+  const base = { clientId: "client", issueDate: "2026-09-01", dueDate: "2026-09-30", items: [{ description: "Professional service", quantity: "1", unitPrice: "100000", vatApplicable: true }] };
   assert.equal(invoiceCreateSchema.safeParse({ ...base, whtApplicable: true, whtRate: 5 }).success, true);
   assert.equal(invoiceCreateSchema.safeParse({ ...base, whtApplicable: true }).success, false);
   assert.equal(invoiceCreateSchema.safeParse({ ...base, whtRate: 10 }).success, false);

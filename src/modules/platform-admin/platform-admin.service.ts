@@ -6,6 +6,7 @@ import jwt from "jsonwebtoken";
 import { env } from "../../config/env";
 import { badRequest, conflict, forbidden, notFound, serviceUnavailable } from "../../core/http-error";
 import { prisma } from "../../core/prisma";
+import { safeEmailDeliveryError } from "../../core/email-security";
 import { createAuditLog } from "../admin/admin.audit";
 import { forgotPassword } from "../auth/auth.service";
 import { sendTenantAdminInvitationEmail, sendTenantCheckInEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
@@ -770,23 +771,72 @@ export const createPlatformTenant = async (body: unknown, platformAdmin: AuthUse
     await tx.rolePermission.createMany({ data: tenantPermissions.map((permission) => ({ roleId: role.id, permissionId: permission.id })), skipDuplicates: true });
     const [firstName, ...lastParts] = payload.adminEmail.split("@")[0].split(/[._-]+/).filter(Boolean);
     const admin = await tx.user.create({ data: { organizationId: organization.id, roleId: role.id, email: payload.adminEmail, firstName: firstName || "Tenant", lastName: lastParts.join(" ") || "Admin", passwordHash: temporaryPasswordHash, isActive: true } });
-    const invitation = await tx.agentInvitation.create({ data: { organizationId: organization.id, roleId: role.id, invitedByUserId: platformAdmin.id, email: admin.email, token: crypto.randomBytes(32).toString("hex"), moduleAccess: plan.includedModules, status: "PENDING", expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) } });
+    const invitation = await tx.agentInvitation.create({ data: { organizationId: organization.id, roleId: role.id, invitedByUserId: platformAdmin.id, email: admin.email, token: crypto.randomBytes(32).toString("hex"), moduleAccess: plan.includedModules, purpose: "TENANT_ADMIN", status: "PENDING", expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) } });
     await tx.organizationGeneralSettings.create({ data: { organizationId: organization.id, currency: "NGN", timeZone: "Africa/Lagos", language: "en", dateFormat: "DD/MM/YYYY" } });
     await tx.systemConfig.create({ data: { organizationId: organization.id, key: subscriptionKey, value: { planKey: plan.key, status: "ACTIVE", billingCycle: "MONTHLY", currency: "NGN", renewalDate: renewalDate.toISOString(), activatedAt: now.toISOString(), paymentVerifiedAt: now.toISOString(), automaticRenewal: true, cancelAtPeriodEnd: false } } });
     await tx.systemConfig.createMany({ data: billingModuleKeys.map((moduleKey) => ({ organizationId: organization.id, key: `module.${moduleKey}.status`, value: plan.includedModules.includes(moduleKey) ? "ACTIVE" : "INACTIVE" })) });
+    await createAuditLog({ organizationId: organization.id, actorUserId: platformAdmin.id, action: "PLATFORM_TENANT_CREATED", resource: "ORGANIZATION", resourceId: organization.id, summary: `Created tenant ${organization.name}`, metadata: { planKey: plan.key, adminEmail: admin.email, country: payload.country } }, tx);
     return { organization, admin, invitation };
-  });
-  await createAuditLog({ organizationId: created.organization.id, actorUserId: platformAdmin.id, action: "PLATFORM_TENANT_CREATED", resource: "ORGANIZATION", resourceId: created.organization.id, summary: `Created tenant ${created.organization.name}`, metadata: { planKey: plan.key, adminEmail: created.admin.email, country: payload.country } });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
   const setupUrl = workspaceInvitationSetupUrl(created.invitation.token);
-  await sendTenantAdminInvitationEmail({ to: created.admin.email, organizationName: created.organization.name, setupUrl, expiresAt: created.invitation.expiresAt });
+  let deliveryStatus: "SENT" | "FAILED" = "FAILED";
+  let deliveryError: ReturnType<typeof safeEmailDeliveryError> | null = null;
+  let providerMessageId: string | null = null;
+  try {
+    const delivery = await sendTenantAdminInvitationEmail({ to: created.admin.email, organizationName: created.organization.name, setupUrl, expiresAt: created.invitation.expiresAt });
+    providerMessageId = delivery.messageId;
+    deliveryStatus = "SENT";
+  } catch (error) {
+    deliveryError = safeEmailDeliveryError(error);
+  }
+  const deliveryAttemptedAt = new Date();
+  let deliveryMetadataPersisted = true;
+  try {
+    await prisma.agentInvitation.update({ where: { id: created.invitation.id }, data: { deliveryStatus, deliveryAttemptedAt, deliveredAt: deliveryStatus === "SENT" ? deliveryAttemptedAt : null, deliveryProvider: "SMTP", providerMessageId, deliveryErrorCode: deliveryError?.code ?? null, deliveryErrorMessage: deliveryError?.message ?? null } });
+  } catch {
+    deliveryMetadataPersisted = false;
+  }
   return {
     organizationId: created.organization.id, companyName: created.organization.name, slug: created.organization.slug,
-    admin: { userId: created.admin.id, email: created.admin.email, invitationStatus: "TENANT_ADMIN_INVITATION_SENT" },
+    admin: { userId: created.admin.id, email: created.admin.email, invitationId: created.invitation.id, invitationStatus: deliveryStatus === "SENT" ? "TENANT_ADMIN_INVITATION_SENT" : "TENANT_ADMIN_INVITATION_DELIVERY_FAILED" },
     subscription: { planKey: plan.key, planName: plan.name, status: "ACTIVE", monthlyCost: currentPlanPrice, renewalDate },
     activeModules: plan.includedModules.map((key) => ({ id: key, name: moduleLabels[key] })),
     country: created.organization.country, createdAt: created.organization.createdAt,
-    onboarding: { delivery: "TENANT_ADMIN_INVITATION_EMAIL", expiresAt: created.invitation.expiresAt }
+    onboarding: { delivery: "TENANT_ADMIN_INVITATION_EMAIL", deliveryStatus, deliveryMetadataPersisted, deliveryErrorCode: deliveryError?.code ?? null, expiresAt: created.invitation.expiresAt }
   };
+};
+
+export const resendPlatformTenantOnboardingInvitation = async (tenantId: string, platformAdmin: AuthUser) => {
+  assertPlatformAdmin(platformAdmin);
+  const tenant = await prisma.organization.findFirst({ where: { id: tenantId, ...managedTenantWhere }, select: { id: true, name: true, email: true } });
+  if (!tenant) throw notFound("Tenant not found");
+  const invitation = await prisma.agentInvitation.findFirst({
+    where: { organizationId: tenant.id, status: "PENDING", OR: [{ purpose: "TENANT_ADMIN" }, ...(tenant.email ? [{ purpose: "WORKSPACE", email: tenant.email, role: { name: "Owner", isSystem: true } }] : [])] },
+    include: { role: { select: { name: true, isSystem: true } } },
+    orderBy: { createdAt: "desc" }
+  });
+  if (!invitation) throw notFound("Pending tenant onboarding invitation not found");
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.agentInvitation.updateMany({ where: { id: invitation.id, organizationId: tenant.id, status: "PENDING", token: invitation.token }, data: { token, expiresAt, purpose: "TENANT_ADMIN", deliveryStatus: "PENDING", deliveryAttemptedAt: null, deliveredAt: null, deliveryProvider: null, providerMessageId: null, deliveryErrorCode: null, deliveryErrorMessage: null } });
+    if (claimed.count !== 1) throw conflict("Onboarding invitation changed; retry the request", { errorCode: "INVITATION_CONCURRENTLY_UPDATED" });
+    await createAuditLog({ organizationId: tenant.id, actorUserId: platformAdmin.id, action: "PLATFORM_TENANT_INVITATION_RESEND_REQUESTED", resource: "INVITATION", resourceId: invitation.id, summary: "Rotated and requested tenant onboarding invitation delivery", metadata: { expiresAt: expiresAt.toISOString() } }, tx);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
+  try {
+    const delivery = await sendTenantAdminInvitationEmail({ to: invitation.email, organizationName: tenant.name, setupUrl: workspaceInvitationSetupUrl(token), expiresAt });
+    const deliveredAt = new Date();
+    let deliveryMetadataPersisted = true;
+    try { await prisma.agentInvitation.update({ where: { id: invitation.id }, data: { deliveryStatus: "SENT", deliveryAttemptedAt: deliveredAt, deliveredAt, deliveryProvider: "SMTP", providerMessageId: delivery.messageId, deliveryErrorCode: null, deliveryErrorMessage: null } }); }
+    catch { deliveryMetadataPersisted = false; }
+    return { organizationId: tenant.id, invitationId: invitation.id, deliveryStatus: "SENT" as const, deliveryMetadataPersisted, expiresAt };
+  } catch (error) {
+    const safe = safeEmailDeliveryError(error);
+    let deliveryMetadataPersisted = true;
+    try { await prisma.agentInvitation.update({ where: { id: invitation.id }, data: { deliveryStatus: "FAILED", deliveryAttemptedAt: new Date(), deliveredAt: null, deliveryProvider: "SMTP", providerMessageId: null, deliveryErrorCode: safe.code, deliveryErrorMessage: safe.message } }); }
+    catch { deliveryMetadataPersisted = false; }
+    return { organizationId: tenant.id, invitationId: invitation.id, deliveryStatus: "FAILED" as const, deliveryMetadataPersisted, deliveryErrorCode: safe.code, expiresAt };
+  }
 };
 
 export const activatePlatformTenant = async (tenantId: string, platformAdmin: AuthUser) => {
