@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import { payrollRouter } from "./payroll.routes";
-import { buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, inspectPayrollPayeeDocument, parsePayrollCsv, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
+import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
 import { effectiveMonthlyPayDate } from "./payroll.service";
 import { payrollAllowanceTypeSchema, payrollDeductionTypeSchema, payrollPayPeriodSettingsSchema } from "./payroll.validation";
 import { payrollAdjustLoanSchema, payrollAvcCreateSchema, payrollBikSchema, payrollCreateCustomDeductionSchema, payrollCreateEmployeeSchema, payrollCreateLoanSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollLoansQuerySchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema, payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunsQuerySchema, payrollPayslipsQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema, payrollSalaryStructureSchema, payrollSettlementSchema, payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
@@ -145,13 +145,17 @@ test("Payroll CSV template is data-free, parser validates quoted values, and exp
 
 test("Payroll Payee routes remain inside the shared Payroll module", () => {
   const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
-  for (const route of ["GET /payees", "POST /payees", "GET /payees/export", "GET /payees/:payeeId", "PATCH /payees/:payeeId", "DELETE /payees/:payeeId", "GET /payees/:payeeId/payment-history", "GET /payees/:payeeId/payment-history/export", "GET /payees/:payeeId/documents", "POST /payees/:payeeId/documents", "GET /payees/:payeeId/documents/:documentId/download"]) assert.ok(routes.includes(route), route);
+  for (const route of ["GET /payees", "POST /payees", "POST /payees/bulk", "GET /payees/export", "GET /payees/:payeeId", "PATCH /payees/:payeeId", "PATCH /payees/:payeeId/toggle-payroll", "DELETE /payees/:payeeId", "GET /payees/:payeeId/payment-history", "GET /payees/:payeeId/payment-history/export", "GET /payees/:payeeId/documents", "POST /payees/:payeeId/documents", "GET /payees/:payeeId/documents/:documentId/download"]) assert.ok(routes.includes(route), route);
 });
 
-test("Payee creation supports only the four UI types and explicit taxability", () => {
-  for (const type of ["CONTRACTOR", "VENDOR", "DIRECTOR", "BOARD_MEMBER"]) assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type, monthlyAmount: "100000.25", isTaxable: type === "DIRECTOR" }).success, true, type);
-  assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type: "EMPLOYEE", monthlyAmount: 100 }).success, false);
-  assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type: "VENDOR" }).success, false);
+test("new Payee creation accepts only explicit unified type and tax combinations", () => {
+  assert.equal(payrollPayeeSchema.safeParse({ type: "PERMANENT", employeeId: "cllllllllllllllllllllllll", taxRegime: "PAYE" }).success, true);
+  assert.equal(payrollPayeeSchema.safeParse({ type: "CONTRACT", name: "Example Contractor", monthlyAmount: "100000.25", taxRegime: "WHT" }).success, true);
+  assert.equal(payrollPayeeSchema.safeParse({ type: "CONSULTANT", name: "Example Consultant", monthlyAmount: "100000.25", taxRegime: "EXEMPT" }).success, true);
+  for (const type of ["CONTRACTOR", "VENDOR", "DIRECTOR", "BOARD_MEMBER"]) assert.equal(payrollPayeeSchema.safeParse({ name: "Legacy Payee", type, monthlyAmount: 100 }).success, false, type);
+  assert.equal(payrollPayeeSchema.safeParse({ type: "PERMANENT", employeeId: "cllllllllllllllllllllllll", taxRegime: "WHT" }).success, false);
+  assert.equal(payrollPayeeSchema.safeParse({ type: "CONTRACT", name: "Example", monthlyAmount: 100, taxRegime: "EXEMPT" }).success, false);
+  assert.equal(payrollPayeeSchema.safeParse({ type: "CONSULTANT", name: "Example", monthlyAmount: 100, taxRegime: "PAYE" }).success, false);
   assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type: "VENDOR", monthlyAmount: "₦100,000" }).success, false);
   assert.equal(payrollPayeeSchema.safeParse({ name: "Example Payee", type: "VENDOR", monthlyAmount: -1 }).success, false);
   assert.equal(payrollPayeeUpdateSchema.safeParse({ isTaxable: false }).success, true);
@@ -162,6 +166,31 @@ test("Payee list filters combine safely and reject tenant or unsafe sort input",
   assert.equal(payrollPayeesQuerySchema.safeParse({ tenantId: "another-tenant" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ sortBy: "accountNumber" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ limit: 101 }).success, false);
+});
+
+test("unified external Payee calculations are Decimal-safe and exclude pension and NHF", () => {
+  const contract = calculateUnifiedExternalPayee("CONTRACT", "100000.25");
+  assert.equal(contract.taxRegime, "WHT");
+  assert.equal(contract.taxAmount.toString(), "5000.01");
+  assert.equal(contract.netAmount.toString(), "95000.24");
+  assert.equal(contract.employeePension.toString(), "0");
+  assert.equal(contract.employerPension.toString(), "0");
+  assert.equal(contract.nhf.toString(), "0");
+  const consultant = calculateUnifiedExternalPayee("CONSULTANT", "100000.25");
+  assert.equal(consultant.taxAmount.toString(), "0");
+  assert.equal(consultant.netAmount.toString(), "100000.25");
+  assert.doesNotThrow(() => assertUnifiedPayeeTypeTax("CONTRACT", "WHT"));
+  assert.throws(() => assertUnifiedPayeeTypeTax("CONTRACT", "EXEMPT"));
+});
+
+test("Payee CSV parsing preserves the exact P1 contract and structured values", () => {
+  const header = "type,employeeId,name,externalRole,dateOnboarded,status,onPayroll,taxRegime,email,phone,bankName,bankCode,accountNumber,accountName,tin,monthlyAmount";
+  const rows = parsePayrollPayeeCsv(Buffer.from(`${header}\r\nCONTRACT,,"Consultant, One",Adviser,2026-10-01,ACTIVE,true,WHT,person@example.com,,Example Bank,058,0123456789,Person One,,100000.25`));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, "Consultant, One");
+  assert.equal(rows[0].onPayroll, true);
+  assert.equal(rows[0].monthlyAmount, 100000.25);
+  assert.throws(() => parsePayrollPayeeCsv(Buffer.from("name,type\r\nWrong,CONTRACT")));
 });
 
 test("Payee payroll uses Decimal snapshots and taxability without mutating configuration", () => {

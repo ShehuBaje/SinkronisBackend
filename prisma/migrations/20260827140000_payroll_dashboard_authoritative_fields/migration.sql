@@ -10,6 +10,10 @@ ALTER TABLE `Payslip`
   ADD COLUMN `departmentNameSnapshot` VARCHAR(191) NULL,
   ADD INDEX `Payslip_organizationId_payrollRunId_idx`(`organizationId`, `payrollRunId`);
 
+-- Keep the column and dependent index in separate statements. TiDB resolves
+-- index columns against the pre-ALTER schema when both clauses share one ALTER.
 ALTER TABLE `TaxReport`
-  ADD COLUMN `dueDate` DATETIME(3) NULL,
-  ADD INDEX `TaxReport_org_period_due_idx`(`organizationId`, `periodEnd`, `dueDate`);
+  ADD COLUMN `dueDate` DATETIME(3) NULL;
+
+CREATE INDEX `TaxReport_org_period_due_idx`
+  ON `TaxReport`(`organizationId`, `periodEnd`, `dueDate`);

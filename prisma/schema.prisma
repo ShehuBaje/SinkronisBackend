@@ -721,9 +721,11 @@ model Employee {
   payrollBik              EmployeeBenefitInKind?
   payrollAvcs             PayrollAvcContribution[]
   pfaTransfers            PayrollPfaTransfer[]
+  payrollPayee            Payee?                     @relation("EmployeePayrollPayee")
 
   @@unique([organizationId, email], map: "Employee_organizationId_email_key")
   @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
+  @@unique([organizationId, id], map: "Employee_organizationId_id_key")
   @@index([departmentId], map: "Employee_departmentId_fkey")
   @@index([organizationId], map: "Employee_organizationId_idx")
   @@index([organizationId, status, hireDate], map: "Employee_organizationId_status_hireDate_idx")
@@ -1813,31 +1815,39 @@ model Payslip {
 }
 
 model Payee {
-  id              String          @id @default(cuid())
-  organizationId  String
-  name            String
-  type            String
-  status          String          @default("ACTIVE")
-  email           String?
-  phone           String?
-  bankName        String?
-  bankCode        String?
-  accountNumber   String?
-  accountName     String?
-  tin             String?
-  monthlyAmount   Decimal         @db.Decimal(14, 2)
-  isTaxable       Boolean         @default(false)
-  deletedAt       DateTime?
-  removedByUserId String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Payee_organizationId_fkey")
-  payments        PayeePayment[]
-  documents       PayeeDocument[]
+  id                String           @id @default(cuid())
+  organizationId    String
+  employeeId        String?          @unique(map: "Payee_employeeId_key")
+  name              String?
+  type              String
+  status            String           @default("ACTIVE")
+  taxRegime         payee_tax_regime @default(LEGACY_UNSPECIFIED)
+  externalRole      String?
+  dateOnboarded     DateTime?
+  externalOnPayroll Boolean?
+  email             String?
+  phone             String?
+  bankName          String?
+  bankCode          String?
+  accountNumber     String?
+  accountName       String?
+  tin               String?
+  monthlyAmount     Decimal?         @db.Decimal(14, 2)
+  isTaxable         Boolean          @default(false)
+  deletedAt         DateTime?
+  removedByUserId   String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Payee_organizationId_fkey")
+  employee          Employee?        @relation("EmployeePayrollPayee", fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "Payee_organizationId_employeeId_fkey")
+  payments          PayeePayment[]
+  documents         PayeeDocument[]
 
+  @@unique([organizationId, employeeId], map: "Payee_organizationId_employeeId_key")
   @@index([organizationId, deletedAt, status], map: "Payee_org_deleted_status_idx")
   @@index([organizationId, type, status], map: "Payee_org_type_status_idx")
   @@index([organizationId, name], map: "Payee_org_name_idx")
+  @@index([organizationId, taxRegime, externalOnPayroll], map: "Payee_org_tax_payroll_idx")
   @@map("Payee")
 }
 
@@ -2906,6 +2916,13 @@ enum payrollrun_status {
   FAILED
   PAID
   CANCELLED
+}
+
+enum payee_tax_regime {
+  PAYE
+  WHT
+  EXEMPT
+  LEGACY_UNSPECIFIED
 }
 
 enum systemalert_status {
