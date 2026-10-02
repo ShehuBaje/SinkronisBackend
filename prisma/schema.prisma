@@ -722,6 +722,7 @@ model Employee {
   payrollAvcs             PayrollAvcContribution[]
   pfaTransfers            PayrollPfaTransfer[]
   payrollPayee            Payee?                     @relation("EmployeePayrollPayee")
+  payrollRunParticipants  PayrollRunParticipant[]
 
   @@unique([organizationId, email], map: "Employee_organizationId_email_key")
   @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
@@ -1709,6 +1710,7 @@ model PayrollRun {
   periodEnd              DateTime
   payDate                DateTime?
   status                 payrollrun_status          @default(DRAFT)
+  membershipVersion      payroll_membership_version @default(LEGACY_EMPLOYEE)
   employeeCount          Int                        @default(0)
   expectedEmployeeCount  Int                        @default(0)
   processedEmployeeCount Int                        @default(0)
@@ -1738,7 +1740,9 @@ model PayrollRun {
   taxRemittances         PayrollTaxRemittance[]
   pensionRemittances     PayrollPensionRemittance[]
   calculationBatches     PayrollCalculationBatch[]
+  participants           PayrollRunParticipant[]
 
+  @@unique([organizationId, id], map: "PayrollRun_organizationId_id_key")
   @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
   @@index([organizationId, periodEnd], map: "PayrollRun_organizationId_periodEnd_idx")
   @@map("PayrollRun")
@@ -1815,40 +1819,68 @@ model Payslip {
 }
 
 model Payee {
-  id                String           @id @default(cuid())
-  organizationId    String
-  employeeId        String?          @unique(map: "Payee_employeeId_key")
-  name              String?
-  type              String
-  status            String           @default("ACTIVE")
-  taxRegime         payee_tax_regime @default(LEGACY_UNSPECIFIED)
-  externalRole      String?
-  dateOnboarded     DateTime?
-  externalOnPayroll Boolean?
-  email             String?
-  phone             String?
-  bankName          String?
-  bankCode          String?
-  accountNumber     String?
-  accountName       String?
-  tin               String?
-  monthlyAmount     Decimal?         @db.Decimal(14, 2)
-  isTaxable         Boolean          @default(false)
-  deletedAt         DateTime?
-  removedByUserId   String?
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
-  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Payee_organizationId_fkey")
-  employee          Employee?        @relation("EmployeePayrollPayee", fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "Payee_organizationId_employeeId_fkey")
-  payments          PayeePayment[]
-  documents         PayeeDocument[]
+  id                     String                  @id @default(cuid())
+  organizationId         String
+  employeeId             String?                 @unique(map: "Payee_employeeId_key")
+  name                   String?
+  type                   String
+  status                 String                  @default("ACTIVE")
+  taxRegime              payee_tax_regime        @default(LEGACY_UNSPECIFIED)
+  externalRole           String?
+  dateOnboarded          DateTime?
+  externalOnPayroll      Boolean?
+  email                  String?
+  phone                  String?
+  bankName               String?
+  bankCode               String?
+  accountNumber          String?
+  accountName            String?
+  tin                    String?
+  monthlyAmount          Decimal?                @db.Decimal(14, 2)
+  isTaxable              Boolean                 @default(false)
+  deletedAt              DateTime?
+  removedByUserId        String?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  organization           Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Payee_organizationId_fkey")
+  employee               Employee?               @relation("EmployeePayrollPayee", fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "Payee_organizationId_employeeId_fkey")
+  payments               PayeePayment[]
+  documents              PayeeDocument[]
+  payrollRunParticipants PayrollRunParticipant[]
 
+  @@unique([organizationId, id], map: "Payee_organizationId_id_key")
   @@unique([organizationId, employeeId], map: "Payee_organizationId_employeeId_key")
   @@index([organizationId, deletedAt, status], map: "Payee_org_deleted_status_idx")
   @@index([organizationId, type, status], map: "Payee_org_type_status_idx")
   @@index([organizationId, name], map: "Payee_org_name_idx")
   @@index([organizationId, taxRegime, externalOnPayroll], map: "Payee_org_tax_payroll_idx")
   @@map("Payee")
+}
+
+model PayrollRunParticipant {
+  id                  String                               @id @default(cuid())
+  organizationId      String
+  payrollRunId        String
+  payeeId             String
+  employeeId          String?
+  participantType     payroll_participant_type
+  selectionSource     payroll_participant_selection_source
+  selectedById        String?
+  selectedAt          DateTime                             @default(now())
+  frozenAt            DateTime?
+  calculationSnapshot Json?
+  createdAt           DateTime                             @default(now())
+  updatedAt           DateTime                             @updatedAt
+  payrollRun          PayrollRun                           @relation(fields: [organizationId, payrollRunId], references: [organizationId, id], onDelete: Cascade, map: "PayrollRunParticipant_org_run_fkey")
+  payee               Payee                                @relation(fields: [organizationId, payeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollRunParticipant_org_payee_fkey")
+  employee            Employee?                            @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "PayrollRunParticipant_org_employee_fkey")
+
+  @@unique([payrollRunId, payeeId], map: "PayrollRunParticipant_run_payee_key")
+  @@unique([payrollRunId, employeeId], map: "PayrollRunParticipant_run_employee_key")
+  @@index([organizationId, payrollRunId], map: "PayrollRunParticipant_org_run_idx")
+  @@index([organizationId, payeeId], map: "PayrollRunParticipant_org_payee_idx")
+  @@index([organizationId, participantType], map: "PayrollRunParticipant_org_type_idx")
+  @@map("PayrollRunParticipant")
 }
 
 model PayeePayment {
@@ -2916,6 +2948,22 @@ enum payrollrun_status {
   FAILED
   PAID
   CANCELLED
+}
+
+enum payroll_membership_version {
+  LEGACY_EMPLOYEE
+  UNIFIED_PAYEE_V1
+}
+
+enum payroll_participant_type {
+  PERMANENT
+  CONTRACT
+  CONSULTANT
+}
+
+enum payroll_participant_selection_source {
+  AUTO
+  MANUAL
 }
 
 enum payee_tax_regime {
