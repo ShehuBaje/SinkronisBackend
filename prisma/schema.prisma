@@ -1744,6 +1744,12 @@ model PayrollRun {
   computedAt                DateTime?
   approvedAt                DateTime?
   approvedById              String?
+  rejectedAt                DateTime?
+  rejectedById              String?
+  rejectionReason           String?                        @db.Text
+  replacesPayrollRunId      String?
+  revisionRootRunId         String?
+  revisionNumber            Int                            @default(1)
   disbursedAt               DateTime?
   createdAt                 DateTime                       @default(now())
   updatedAt                 DateTime                       @updatedAt
@@ -1757,10 +1763,14 @@ model PayrollRun {
   calculationBatches        PayrollCalculationBatch[]
   participants              PayrollRunParticipant[]
   adjustmentApplications    PayrollAdjustmentApplication[]
+  replacesPayrollRun        PayrollRun?                    @relation("PayrollRunRevision", fields: [organizationId, replacesPayrollRunId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "PayrollRun_org_replaces_fkey")
+  replacementPayrollRun     PayrollRun?                    @relation("PayrollRunRevision")
 
   @@unique([organizationId, id], map: "PayrollRun_organizationId_id_key")
+  @@unique([organizationId, replacesPayrollRunId], map: "PayrollRun_org_replaces_key")
   @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
   @@index([organizationId, periodEnd], map: "PayrollRun_organizationId_periodEnd_idx")
+  @@index([organizationId, revisionRootRunId, revisionNumber], map: "PayrollRun_org_revision_idx")
   @@map("PayrollRun")
 }
 
@@ -1958,6 +1968,7 @@ model PayrollAdjustmentApplication {
   adjustmentType      payroll_adjustment_application_type
   bonusId             String?
   employeeDeductionId String?
+  revisionRootRunId   String
   status              payroll_adjustment_application_status @default(FROZEN)
   amountSnapshot      Decimal                               @db.Decimal(14, 2)
   frozenAt            DateTime                              @default(now())
@@ -1970,8 +1981,9 @@ model PayrollAdjustmentApplication {
   bonus               PayrollBonus?                         @relation(fields: [bonusId], references: [id], onDelete: Restrict, map: "PayrollAdjustmentApplication_bonus_fkey")
   employeeDeduction   EmployeeDeduction?                    @relation(fields: [employeeDeductionId], references: [id], onDelete: Restrict, map: "PayrollAdjustmentApplication_deduction_fkey")
 
-  @@unique([bonusId], map: "PayrollAdjustmentApplication_bonus_key")
-  @@unique([employeeDeductionId], map: "PayrollAdjustmentApplication_deduction_key")
+  @@unique([payrollRunId, bonusId], map: "PayrollAdjustmentApplication_run_bonus_key")
+  @@unique([payrollRunId, employeeDeductionId], map: "PayrollAdjustmentApplication_run_deduction_key")
+  @@index([organizationId, revisionRootRunId, status], map: "PayrollAdjustmentApplication_org_revision_status_idx")
   @@index([organizationId, payrollRunId, status], map: "PayrollAdjustmentApplication_org_run_status_idx")
   @@index([participantId, adjustmentType], map: "PayrollAdjustmentApplication_participant_type_idx")
   @@map("PayrollAdjustmentApplication")
@@ -3074,6 +3086,7 @@ enum payrollrun_status {
   PROCESSING
   PENDING_APPROVAL
   APPROVED
+  REJECTED_FOR_REWORK
   PENDING_DISBURSEMENT
   DISBURSING
   DISBURSED
@@ -3116,6 +3129,8 @@ enum payroll_adjustment_application_type {
 enum payroll_adjustment_application_status {
   FROZEN
   APPLIED
+  SUPERSEDED
+  ACCEPTED
 }
 
 enum payee_tax_regime {

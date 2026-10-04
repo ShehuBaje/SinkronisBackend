@@ -222,9 +222,10 @@ test("Pay Run input validates dates, filters, sorting, and rejects tenant manipu
   assert.equal(payrollPayRunsQuerySchema.safeParse({ sortBy: "approvedById" }).success, false);
 });
 
-test("Review is deterministic only for pending approval Pay Runs", () => {
+test("Review and rework actions follow immutable run states", () => {
   assert.deepEqual(payRunAvailableActions("PENDING_APPROVAL", false), ["REVIEW"]);
-  assert.deepEqual(payRunAvailableActions("PENDING_APPROVAL", true), ["REVIEW", "APPROVE"]);
+  assert.deepEqual(payRunAvailableActions("PENDING_APPROVAL", true), ["REVIEW", "APPROVE", "REJECT_FOR_REWORK"]);
+  assert.deepEqual(payRunAvailableActions("REJECTED_FOR_REWORK", true), ["VIEW", "CREATE_REPLACEMENT"]);
   for (const status of ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSED", "PAID", "CANCELLED"]) assert.deepEqual(payRunAvailableActions(status, true), ["VIEW"]);
 });
 

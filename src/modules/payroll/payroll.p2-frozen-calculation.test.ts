@@ -72,10 +72,11 @@ test("batch completion uses conditional exactly-once aggregation and reconciles 
   assert.match(source, /Frozen payroll processing result reconciliation failed/);
 });
 
-test("mixed approval fails closed until P2.3", () => {
-  const body = source.slice(source.indexOf("export const approvePayRun"), source.indexOf("export const exportPayRun"));
-  assert.match(body, /externalPayeeCount > 0/);
-  assert.match(body, /MIXED_PAYROLL_APPROVAL_NOT_AVAILABLE/);
+test("mixed approval is run-level and remains financially inert after P2.3", () => {
+  const body = source.slice(source.indexOf("export const approvePayRun"), source.indexOf("export const rejectPayRunForRework"));
+  assert.match(body, /status: "PENDING_APPROVAL"/);
+  assert.match(body, /status: "APPROVED"/);
+  assert.doesNotMatch(body, /FinancialSettlement|wallet|Paystack|paymentStatus/);
 });
 
 test("process route requires the existing payroll:runs:update permission", () => {

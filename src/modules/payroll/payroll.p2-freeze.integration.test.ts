@@ -41,7 +41,7 @@ test("process atomically freezes, revalidates and makes membership immutable", {
     const compensation = result.compensationSnapshot as any;
     assert.equal(compensation.group.name, "Original Contract Group");
     assert.equal(compensation.bonusTotal, "10000.00");
-    assert.equal((await prisma.payrollAdjustmentApplication.findUniqueOrThrow({ where: { bonusId: bonus.id } })).status, "APPLIED");
+    assert.equal((await prisma.payrollAdjustmentApplication.findFirstOrThrow({ where: { bonusId: bonus.id, payrollRunId: run.id } })).status, "APPLIED");
     assert.equal((await prisma.payrollRun.findUniqueOrThrow({ where: { id: run.id } })).status, "PENDING_APPROVAL");
     assert.equal(await prisma.payrollCalculationBatch.count({ where: { payrollRunId: run.id } }), 1);
   } finally {
