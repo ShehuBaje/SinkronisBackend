@@ -124,6 +124,40 @@ test("Payroll mixed-run schemas preserve participant and financial compatibility
   assert.equal(detailSchema.properties.data.properties.payRun.$ref, "#/components/schemas/PayrollPayRun");
 });
 
+test("P2.3 payroll history and mixed export document the runtime contracts", () => {
+  const spec = openApiSpec as any;
+  const history = spec.paths["/api/v1/payroll/pay-runs"].get;
+  const parameters = Object.fromEntries(history.parameters.map((parameter: any) => [parameter.name, parameter]));
+  assert.deepEqual(Object.keys(parameters), ["page", "limit", "search", "status", "from", "to", "sortBy", "sortOrder"]);
+  assert.equal(parameters.page.schema.default, 1);
+  assert.equal(parameters.limit.schema.default, 20);
+  assert.equal(parameters.limit.schema.maximum, 100);
+  assert.equal(parameters.status.schema.$ref, "#/components/schemas/PayrollPayRunStatus");
+  assert.deepEqual(parameters.sortBy.schema.enum, ["period", "createdAt", "employees", "gross", "netPay", "paye", "status"]);
+  assert.equal(parameters.sortBy.schema.default, "createdAt");
+  assert.deepEqual(parameters.sortOrder.schema.enum, ["asc", "desc"]);
+  assert.equal(parameters.sortOrder.schema.default, "desc");
+  assert.match(parameters.from.description, /inclusive/i);
+  assert.match(parameters.to.description, /inclusive/i);
+  const statusValues = spec.components.schemas.PayrollPayRunStatus.enum;
+  for (const status of ["DRAFT", "PROCESSING", "PENDING_APPROVAL", "APPROVED", "REJECTED_FOR_REWORK", "PENDING_DISBURSEMENT", "DISBURSING", "DISBURSED", "FAILED", "PAID", "CANCELLED"]) assert.ok(statusValues.includes(status));
+  const historyResponse = history.responses["200"].content["application/json"].schema;
+  assert.equal(historyResponse.properties.data.items.$ref, "#/components/schemas/PayrollPayRun");
+  assert.deepEqual(historyResponse.properties.pagination.required, ["page", "limit", "total", "totalPages"]);
+
+  const exported = spec.paths["/api/v1/payroll/pay-runs/{payRunId}/export"].get;
+  assert.match(exported.summary, /mixed payroll results/i);
+  assert.match(exported.description, /PERMANENT.*Payslip/s);
+  assert.match(exported.description, /CONTRACT and CONSULTANT.*PayeePayment/s);
+  assert.match(exported.description, /never reconstructed from current mutable/i);
+  assert.match(exported.description, /PAYE is Permanent payroll tax/i);
+  assert.match(exported.description, /WHT is Contract withholding tax/i);
+  assert.match(exported.description, /Consultant.*EXEMPT/i);
+  assert.match(exported.description, /formula-injection/i);
+  assert.ok(exported.responses["200"].content["text/csv"]);
+  assert.match(exported.responses["200"].description, /ParticipantType.*ResultType.*BaseCompensation.*Bonus.*PAYE.*WHT.*NetPay/s);
+});
+
 test("Accounting create contracts publish runtime-valid bodies and the invoice catalogue dependency", () => {
   const paths = (openApiSpec as any).paths;
   const catalogue = paths["/api/v1/accounting/items-services"].post;
