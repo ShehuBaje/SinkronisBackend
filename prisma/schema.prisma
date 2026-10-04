@@ -648,81 +648,82 @@ model Department {
 }
 
 model Employee {
-  id                      String                     @id @default(cuid())
-  organizationId          String
-  departmentId            String?
-  teamId                  String?
-  employeeNo              String
-  firstName               String
-  lastName                String
-  email                   String
-  phone                   String?
-  jobTitle                String?
-  hireDate                DateTime?
-  status                  employee_status            @default(ACTIVE)
-  baseSalary              Decimal?                   @db.Decimal(14, 2)
-  payrollPreviewGross     Decimal?                   @db.Decimal(14, 2)
-  payrollPreviewNet       Decimal?                   @db.Decimal(14, 2)
-  payrollPreviewUpdatedAt DateTime?
-  bankName                String?
-  bankAccountNumber       String?
-  bankAccountName         String?
-  bankAccountType         String?
-  pensionPin              String?
-  lifecycleStatus         employee_lifecycle_status  @default(PROBATION)
-  lifecycleEffectiveAt    DateTime?
-  gender                  String?
-  employmentType          String?
-  dateOfBirth             DateTime?
-  address                 String?                    @db.Text
-  city                    String?
-  nationality             String?
-  state                   String?
-  workMode                String?
-  maritalStatus           String?
-  taxId                   String?
-  bankCode                String?
-  profileImageUrl         String?
-  nextOfKinName           String?
-  nextOfKinPhone          String?
-  nextOfKinAddress        String?                    @db.Text
-  nextOfKinRelationship   String?
-  guarantorFirstName      String?
-  guarantorLastName       String?
-  guarantorRelationship   String?
-  guarantorPhone          String?
-  guarantorAddress        String?                    @db.Text
-  managerId               String?
-  createdAt               DateTime                   @default(now())
-  updatedAt               DateTime                   @updatedAt
-  attendance              Attendance[]
-  attendanceDisputes      AttendanceDispute[]
-  conductlog              ConductLog[]
-  headedDepartments       Department[]               @relation("department_headEmployeeIdToemployee")
-  department              Department?                @relation("employee_departmentIdTodepartment", fields: [departmentId], references: [id], map: "Employee_departmentId_fkey")
-  organization            Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Employee_organizationId_fkey")
-  team                    Team?                      @relation(fields: [teamId], references: [id], map: "Employee_teamId_fkey")
-  leaverequest            LeaveRequest[]             @relation("LeaveRequestEmployee")
-  leaveRequestsAsReliever LeaveRequest[]             @relation("LeaveRequestReliever")
-  loans                   LoanAdvance[]
-  payslip                 Payslip[]
-  salaryStructures        SalaryStructure[]
-  user                    User?
-  documents               EmployeeDocument[]
-  statusHistory           EmployeeStatusHistory[]
-  manager                 Employee?                  @relation("EmployeeManager", fields: [managerId], references: [id], map: "Employee_managerId_fkey")
-  directReports           Employee[]                 @relation("EmployeeManager")
-  employeeAppraisals      EmployeeAppraisal[]        @relation("EmployeeAppraisalEmployee")
-  managedAppraisals       EmployeeAppraisal[]        @relation("EmployeeAppraisalManager")
-  bankUpdateRequests      BankDetailsUpdateRequest[]
-  payrollEnrollment       PayrollEnrollment?
-  payrollStatutoryProfile PayrollStatutoryProfile?
-  payrollDeductions       EmployeeDeduction[]
-  payrollBik              EmployeeBenefitInKind?
-  payrollAvcs             PayrollAvcContribution[]
-  pfaTransfers            PayrollPfaTransfer[]
-  payrollPayee            Payee?                     @relation("EmployeePayrollPayee")
-  payrollRunParticipants  PayrollRunParticipant[]
+  id                        String                     @id @default(cuid())
+  organizationId            String
+  departmentId              String?
+  teamId                    String?
+  employeeNo                String
+  firstName                 String
+  lastName                  String
+  email                     String
+  phone                     String?
+  jobTitle                  String?
+  hireDate                  DateTime?
+  status                    employee_status            @default(ACTIVE)
+  baseSalary                Decimal?                   @db.Decimal(14, 2)
+  payrollPreviewGross       Decimal?                   @db.Decimal(14, 2)
+  payrollPreviewNet         Decimal?                   @db.Decimal(14, 2)
+  payrollPreviewUpdatedAt   DateTime?
+  bankName                  String?
+  bankAccountNumber         String?
+  bankAccountName           String?
+  bankAccountType           String?
+  pensionPin                String?
+  lifecycleStatus           employee_lifecycle_status  @default(PROBATION)
+  lifecycleEffectiveAt      DateTime?
+  gender                    String?
+  employmentType            String?
+  dateOfBirth               DateTime?
+  address                   String?                    @db.Text
+  city                      String?
+  nationality               String?
+  state                     String?
+  workMode                  String?
+  maritalStatus             String?
+  taxId                     String?
+  bankCode                  String?
+  profileImageUrl           String?
+  nextOfKinName             String?
+  nextOfKinPhone            String?
+  nextOfKinAddress          String?                    @db.Text
+  nextOfKinRelationship     String?
+  guarantorFirstName        String?
+  guarantorLastName         String?
+  guarantorRelationship     String?
+  guarantorPhone            String?
+  guarantorAddress          String?                    @db.Text
+  managerId                 String?
+  createdAt                 DateTime                   @default(now())
+  updatedAt                 DateTime                   @updatedAt
+  attendance                Attendance[]
+  attendanceDisputes        AttendanceDispute[]
+  conductlog                ConductLog[]
+  headedDepartments         Department[]               @relation("department_headEmployeeIdToemployee")
+  department                Department?                @relation("employee_departmentIdTodepartment", fields: [departmentId], references: [id], map: "Employee_departmentId_fkey")
+  organization              Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Employee_organizationId_fkey")
+  team                      Team?                      @relation(fields: [teamId], references: [id], map: "Employee_teamId_fkey")
+  leaverequest              LeaveRequest[]             @relation("LeaveRequestEmployee")
+  leaveRequestsAsReliever   LeaveRequest[]             @relation("LeaveRequestReliever")
+  loans                     LoanAdvance[]
+  payslip                   Payslip[]
+  salaryStructures          SalaryStructure[]
+  user                      User?
+  documents                 EmployeeDocument[]
+  statusHistory             EmployeeStatusHistory[]
+  manager                   Employee?                  @relation("EmployeeManager", fields: [managerId], references: [id], map: "Employee_managerId_fkey")
+  directReports             Employee[]                 @relation("EmployeeManager")
+  employeeAppraisals        EmployeeAppraisal[]        @relation("EmployeeAppraisalEmployee")
+  managedAppraisals         EmployeeAppraisal[]        @relation("EmployeeAppraisalManager")
+  bankUpdateRequests        BankDetailsUpdateRequest[]
+  payrollEnrollment         PayrollEnrollment?
+  payrollStatutoryProfile   PayrollStatutoryProfile?
+  payrollDeductions         EmployeeDeduction[]
+  payrollBik                EmployeeBenefitInKind?
+  payrollAvcs               PayrollAvcContribution[]
+  pfaTransfers              PayrollPfaTransfer[]
+  payrollPayee              Payee?                     @relation("EmployeePayrollPayee")
+  payrollRunParticipants    PayrollRunParticipant[]
+  payrollProrationOverrides PayrollProrationOverride[]
 
   @@unique([organizationId, email], map: "Employee_organizationId_email_key")
   @@unique([organizationId, employeeNo], map: "Employee_organizationId_employeeNo_key")
@@ -1195,19 +1196,20 @@ model PayrollStatutoryProfile {
 }
 
 model EmployeeDeduction {
-  id              String    @id @default(cuid())
+  id              String                         @id @default(cuid())
   deductionTypeId String?
   organizationId  String
   employeeId      String
   name            String
-  amount          Decimal   @db.Decimal(14, 2)
-  frequency       String    @default("MONTHLY")
-  active          Boolean   @default(true)
-  effectiveFrom   DateTime  @default(now())
+  amount          Decimal                        @db.Decimal(14, 2)
+  frequency       String                         @default("MONTHLY")
+  active          Boolean                        @default(true)
+  effectiveFrom   DateTime                       @default(now())
   effectiveTo     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  employee        Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDeduction_employeeId_fkey")
+  createdAt       DateTime                       @default(now())
+  updatedAt       DateTime                       @updatedAt
+  employee        Employee                       @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "EmployeeDeduction_employeeId_fkey")
+  applications    PayrollAdjustmentApplication[]
 
   @@index([organizationId, employeeId, active], map: "EmployeeDeduction_org_employee_active_idx")
   @@index([organizationId, deductionTypeId], map: "EmployeeDeduction_org_type_idx")
@@ -1293,102 +1295,106 @@ model UserNotification {
 }
 
 model Organization {
-  id                           String                           @id @default(cuid())
-  name                         String
-  slug                         String                           @unique(map: "Organization_slug_key")
-  email                        String?
-  phone                        String?
-  address                      String?                          @db.Text
-  country                      String?
-  currency                     String                           @default("NGN")
-  taxId                        String?
-  status                       organization_status              @default(ACTIVE)
-  classification               organization_classification      @default(CUSTOMER)
-  createdAt                    DateTime                         @default(now())
-  updatedAt                    DateTime                         @updatedAt
-  profileImageUrl              String?
-  industry                     String?
-  cacNumber                    String?
-  cacVerificationStatus        String                           @default("UNVERIFIED")
-  cacVerificationCheckedAt     DateTime?
-  cacVerifiedAt                DateTime?
-  cacVerifiedName              String?
-  cacVerificationProvider      String?
-  cacVerificationReference     String?
-  cacRegistryStatus            String?
-  registrationAddress          String?                          @db.Text
-  website                      String?
-  fiscalYearStart              String?
-  companySize                  String?
-  suspendedAt                  DateTime?
-  suspensionReason             String?                          @db.Text
-  suspendedByUserId            String?
-  agentinvitation              AgentInvitation[]
-  announcementReadStatuses     AnnouncementReadStatus[]
-  auditLogs                    AuditLog[]
-  auditlogchain                AuditLogChain?
-  authchallenge                AuthChallenge[]
-  authevent                    AuthEvent[]
-  billinghistory               BillingHistory[]
-  bankDetailsUpdateRequests    BankDetailsUpdateRequest[]
-  billingnotification          BillingNotification[]
-  branches                     Branch[]
-  accountingCatalogueItems     AccountingCatalogueItem[]
-  accountingProjects           AccountingProject[]
-  accountingAgentProfiles      AccountingAgentProfile[]
-  accountingExpenses           AccountingExpense[]
-  accountingInvoicePayments    AccountingInvoicePayment[]
-  accountingReminderConfig     AccountingReminderConfiguration?
-  accountingExportJobs         AccountingExportJob[]
-  accountingInvoiceTemplates   AccountingInvoiceTemplate[]
-  accountingExpenseCategories  AccountingExpenseCategory[]
-  client                       Client[]
-  departments                  Department[]
-  employees                    Employee[]
-  invoice                      Invoice[]
-  ipallowlistentry             IpAllowlistEntry[]
-  organizationdataexport       OrganizationDataExport[]
-  deletionRequests             OrganizationDeletionRequest[]
-  generalSettings              OrganizationGeneralSettings?
-  paymentcard                  PaymentCard[]
-  paymentrequest               PaymentRequest[]
-  platformInvoices             PlatformInvoice[]
-  usageDaily                   TenantUsageDaily[]
-  checkIns                     TenantCheckIn[]
-  moduleSnapshots              TenantModuleDailySnapshot[]
-  payrollrun                   PayrollRun[]
-  payees                       Payee[]
-  payeePayments                PayeePayment[]
-  payeeDocuments               PayeeDocument[]
-  loanRepayments               LoanRepayment[]
-  platformimpersonationsession PlatformImpersonationSession[]
-  role                         Role[]
-  salarystructure              SalaryStructure[]
-  securitypolicy               SecurityPolicy?
-  subscriptionplanchange       SubscriptionPlanChange[]
-  subscriptionPaymentAttempts  SubscriptionPaymentAttempt[]
-  testModuleEntitlements       TestModuleEntitlement[]
-  financialSettlements         FinancialSettlement[]
-  providerTransferRecipients   ProviderTransferRecipient[]
-  subscriptionpriceagreement   SubscriptionPriceAgreement[]
-  supportticket                SupportTicket[]
-  systemalert                  SystemAlert[]
-  systemconfig                 SystemConfig[]
-  taxreport                    TaxReport[]
-  team                         Team[]
-  tenantnotificationpreference TenantNotificationPreference[]
-  users                        User[]
-  userNotifications            UserNotification[]
-  usersession                  UserSession[]
-  walletaccount                WalletAccount[]
-  walletTransactions           WalletTransaction[]
-  walletFundingAttempts        WalletFundingAttempt[]
-  payrollTaxRemittances        PayrollTaxRemittance[]
-  payrollAvcs                  PayrollAvcContribution[]
-  payrollPfaTransfers          PayrollPfaTransfer[]
-  payrollPensionRemittances    PayrollPensionRemittance[]
-  workschedule                 WorkSchedule?
-  AppraisalSetting             AppraisalSetting?
+  id                            String                           @id @default(cuid())
+  name                          String
+  slug                          String                           @unique(map: "Organization_slug_key")
+  email                         String?
+  phone                         String?
+  address                       String?                          @db.Text
+  country                       String?
+  currency                      String                           @default("NGN")
+  taxId                         String?
+  status                        organization_status              @default(ACTIVE)
+  classification                organization_classification      @default(CUSTOMER)
+  createdAt                     DateTime                         @default(now())
+  updatedAt                     DateTime                         @updatedAt
+  profileImageUrl               String?
+  industry                      String?
+  cacNumber                     String?
+  cacVerificationStatus         String                           @default("UNVERIFIED")
+  cacVerificationCheckedAt      DateTime?
+  cacVerifiedAt                 DateTime?
+  cacVerifiedName               String?
+  cacVerificationProvider       String?
+  cacVerificationReference      String?
+  cacRegistryStatus             String?
+  registrationAddress           String?                          @db.Text
+  website                       String?
+  fiscalYearStart               String?
+  companySize                   String?
+  suspendedAt                   DateTime?
+  suspensionReason              String?                          @db.Text
+  suspendedByUserId             String?
+  agentinvitation               AgentInvitation[]
+  announcementReadStatuses      AnnouncementReadStatus[]
+  auditLogs                     AuditLog[]
+  auditlogchain                 AuditLogChain?
+  authchallenge                 AuthChallenge[]
+  authevent                     AuthEvent[]
+  billinghistory                BillingHistory[]
+  bankDetailsUpdateRequests     BankDetailsUpdateRequest[]
+  billingnotification           BillingNotification[]
+  branches                      Branch[]
+  accountingCatalogueItems      AccountingCatalogueItem[]
+  accountingProjects            AccountingProject[]
+  accountingAgentProfiles       AccountingAgentProfile[]
+  accountingExpenses            AccountingExpense[]
+  accountingInvoicePayments     AccountingInvoicePayment[]
+  accountingReminderConfig      AccountingReminderConfiguration?
+  accountingExportJobs          AccountingExportJob[]
+  accountingInvoiceTemplates    AccountingInvoiceTemplate[]
+  accountingExpenseCategories   AccountingExpenseCategory[]
+  client                        Client[]
+  departments                   Department[]
+  employees                     Employee[]
+  invoice                       Invoice[]
+  ipallowlistentry              IpAllowlistEntry[]
+  organizationdataexport        OrganizationDataExport[]
+  deletionRequests              OrganizationDeletionRequest[]
+  generalSettings               OrganizationGeneralSettings?
+  paymentcard                   PaymentCard[]
+  paymentrequest                PaymentRequest[]
+  platformInvoices              PlatformInvoice[]
+  usageDaily                    TenantUsageDaily[]
+  checkIns                      TenantCheckIn[]
+  moduleSnapshots               TenantModuleDailySnapshot[]
+  payrollrun                    PayrollRun[]
+  payees                        Payee[]
+  payeePayments                 PayeePayment[]
+  payeeDocuments                PayeeDocument[]
+  loanRepayments                LoanRepayment[]
+  platformimpersonationsession  PlatformImpersonationSession[]
+  role                          Role[]
+  salarystructure               SalaryStructure[]
+  securitypolicy                SecurityPolicy?
+  subscriptionplanchange        SubscriptionPlanChange[]
+  subscriptionPaymentAttempts   SubscriptionPaymentAttempt[]
+  testModuleEntitlements        TestModuleEntitlement[]
+  financialSettlements          FinancialSettlement[]
+  providerTransferRecipients    ProviderTransferRecipient[]
+  subscriptionpriceagreement    SubscriptionPriceAgreement[]
+  supportticket                 SupportTicket[]
+  systemalert                   SystemAlert[]
+  systemconfig                  SystemConfig[]
+  taxreport                     TaxReport[]
+  team                          Team[]
+  tenantnotificationpreference  TenantNotificationPreference[]
+  users                         User[]
+  userNotifications             UserNotification[]
+  usersession                   UserSession[]
+  walletaccount                 WalletAccount[]
+  walletTransactions            WalletTransaction[]
+  walletFundingAttempts         WalletFundingAttempt[]
+  payrollTaxRemittances         PayrollTaxRemittance[]
+  payrollAvcs                   PayrollAvcContribution[]
+  payrollPfaTransfers           PayrollPfaTransfer[]
+  payrollPensionRemittances     PayrollPensionRemittance[]
+  payrollPayeeGroups            PayrollPayeeGroup[]
+  payrollBonuses                PayrollBonus[]
+  payrollProrationOverrides     PayrollProrationOverride[]
+  payrollAdjustmentApplications PayrollAdjustmentApplication[]
+  workschedule                  WorkSchedule?
+  AppraisalSetting              AppraisalSetting?
 
   @@index([status, createdAt], map: "Organization_status_createdAt_idx")
   @@map("Organization")
@@ -1703,45 +1709,45 @@ model PaymentRequest {
 }
 
 model PayrollRun {
-  id                        String                     @id @default(cuid())
+  id                        String                         @id @default(cuid())
   organizationId            String
   name                      String
   periodStart               DateTime
   periodEnd                 DateTime
   payDate                   DateTime?
-  status                    payrollrun_status          @default(DRAFT)
-  membershipVersion         payroll_membership_version @default(LEGACY_EMPLOYEE)
+  status                    payrollrun_status              @default(DRAFT)
+  membershipVersion         payroll_membership_version     @default(LEGACY_EMPLOYEE)
   participantsFrozenAt      DateTime?
-  participantCount          Int                        @default(0)
-  permanentEmployeeCount    Int                        @default(0)
-  externalPayeeCount        Int                        @default(0)
-  processedParticipantCount Int                        @default(0)
-  failedParticipantCount    Int                        @default(0)
-  employeeCount             Int                        @default(0)
-  expectedEmployeeCount     Int                        @default(0)
-  processedEmployeeCount    Int                        @default(0)
-  failedEmployeeCount       Int                        @default(0)
+  participantCount          Int                            @default(0)
+  permanentEmployeeCount    Int                            @default(0)
+  externalPayeeCount        Int                            @default(0)
+  processedParticipantCount Int                            @default(0)
+  failedParticipantCount    Int                            @default(0)
+  employeeCount             Int                            @default(0)
+  expectedEmployeeCount     Int                            @default(0)
+  processedEmployeeCount    Int                            @default(0)
+  failedEmployeeCount       Int                            @default(0)
   calculationInput          Json?
-  failureReason             String?                    @db.Text
+  failureReason             String?                        @db.Text
   processingHeartbeatAt     DateTime?
-  totalGross                Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalPaye                 Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalPension              Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalEmployerPension      Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalNhf                  Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalLoans                Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalOtherDeductions      Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalNetPay               Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalWht                  Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalPermanentNetPay      Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalExternalNetPay       Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalGross                Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalPaye                 Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalPension              Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalEmployerPension      Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalNhf                  Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalLoans                Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalOtherDeductions      Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalNetPay               Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalWht                  Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalPermanentNetPay      Decimal                        @default(0.00) @db.Decimal(14, 2)
+  totalExternalNetPay       Decimal                        @default(0.00) @db.Decimal(14, 2)
   computedAt                DateTime?
   approvedAt                DateTime?
   approvedById              String?
   disbursedAt               DateTime?
-  createdAt                 DateTime                   @default(now())
-  updatedAt                 DateTime                   @updatedAt
-  organization              Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollRun_organizationId_fkey")
+  createdAt                 DateTime                       @default(now())
+  updatedAt                 DateTime                       @updatedAt
+  organization              Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollRun_organizationId_fkey")
   payslip                   Payslip[]
   payeePayments             PayeePayment[]
   loanRepayments            LoanRepayment[]
@@ -1750,6 +1756,7 @@ model PayrollRun {
   pensionRemittances        PayrollPensionRemittance[]
   calculationBatches        PayrollCalculationBatch[]
   participants              PayrollRunParticipant[]
+  adjustmentApplications    PayrollAdjustmentApplication[]
 
   @@unique([organizationId, id], map: "PayrollRun_organizationId_id_key")
   @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
@@ -1784,42 +1791,43 @@ model PayrollCalculationBatch {
 }
 
 model Payslip {
-  id                     String     @id @default(cuid())
-  organizationId         String
-  payrollRunId           String
-  employeeId             String
-  grossPay               Decimal    @db.Decimal(14, 2)
-  payeTax                Decimal    @default(0.00) @db.Decimal(14, 2)
-  pension                Decimal    @default(0.00) @db.Decimal(14, 2)
-  employerPension        Decimal    @default(0.00) @db.Decimal(14, 2)
-  nhf                    Decimal    @default(0.00) @db.Decimal(14, 2)
-  nsitf                  Decimal    @default(0.00) @db.Decimal(14, 2)
-  deductions             Decimal    @default(0.00) @db.Decimal(14, 2)
-  netPay                 Decimal    @db.Decimal(14, 2)
-  currency               String?
-  earningsSnapshot       Json?
-  deductionsSnapshot     Json?
-  statutoryRuleSnapshot  Json?
-  pdfFileReference       String?
-  departmentIdSnapshot   String?
-  departmentNameSnapshot String?
-  employeeNoSnapshot     String?
-  employeeNameSnapshot   String?
-  roleSnapshot           String?
-  bankSnapshot           Json?
-  taxStateSnapshot       String?
-  taxAuthoritySnapshot   Json?
-  tinSnapshot            String?
-  pfaNameSnapshot        String?
-  pensionPinSnapshot     String?
-  avcContribution        Decimal    @default(0.00) @db.Decimal(14, 2)
-  loanDeduction          Decimal    @default(0.00) @db.Decimal(14, 2)
-  customDeduction        Decimal    @default(0.00) @db.Decimal(14, 2)
-  paymentStatus          String     @default("PENDING")
-  createdAt              DateTime   @default(now())
-  updatedAt              DateTime   @updatedAt
-  employee               Employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
-  payrollrun             PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
+  id                       String     @id @default(cuid())
+  organizationId           String
+  payrollRunId             String
+  employeeId               String
+  grossPay                 Decimal    @db.Decimal(14, 2)
+  payeTax                  Decimal    @default(0.00) @db.Decimal(14, 2)
+  pension                  Decimal    @default(0.00) @db.Decimal(14, 2)
+  employerPension          Decimal    @default(0.00) @db.Decimal(14, 2)
+  nhf                      Decimal    @default(0.00) @db.Decimal(14, 2)
+  nsitf                    Decimal    @default(0.00) @db.Decimal(14, 2)
+  deductions               Decimal    @default(0.00) @db.Decimal(14, 2)
+  netPay                   Decimal    @db.Decimal(14, 2)
+  currency                 String?
+  earningsSnapshot         Json?
+  deductionsSnapshot       Json?
+  statutoryRuleSnapshot    Json?
+  calculationInputSnapshot Json?
+  pdfFileReference         String?
+  departmentIdSnapshot     String?
+  departmentNameSnapshot   String?
+  employeeNoSnapshot       String?
+  employeeNameSnapshot     String?
+  roleSnapshot             String?
+  bankSnapshot             Json?
+  taxStateSnapshot         String?
+  taxAuthoritySnapshot     Json?
+  tinSnapshot              String?
+  pfaNameSnapshot          String?
+  pensionPinSnapshot       String?
+  avcContribution          Decimal    @default(0.00) @db.Decimal(14, 2)
+  loanDeduction            Decimal    @default(0.00) @db.Decimal(14, 2)
+  customDeduction          Decimal    @default(0.00) @db.Decimal(14, 2)
+  paymentStatus            String     @default("PENDING")
+  createdAt                DateTime   @default(now())
+  updatedAt                DateTime   @updatedAt
+  employee                 Employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
+  payrollrun               PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
 
   @@unique([payrollRunId, employeeId], map: "Payslip_payrollRunId_employeeId_key")
   @@index([employeeId], map: "Payslip_employeeId_fkey")
@@ -1829,13 +1837,14 @@ model Payslip {
 }
 
 model Payee {
-  id                     String                  @id @default(cuid())
+  id                     String                     @id @default(cuid())
   organizationId         String
-  employeeId             String?                 @unique(map: "Payee_employeeId_key")
+  employeeId             String?                    @unique(map: "Payee_employeeId_key")
+  payrollGroupId         String?
   name                   String?
   type                   String
-  status                 String                  @default("ACTIVE")
-  taxRegime              payee_tax_regime        @default(LEGACY_UNSPECIFIED)
+  status                 String                     @default("ACTIVE")
+  taxRegime              payee_tax_regime           @default(LEGACY_UNSPECIFIED)
   externalRole           String?
   dateOnboarded          DateTime?
   externalOnPayroll      Boolean?
@@ -1846,17 +1855,20 @@ model Payee {
   accountNumber          String?
   accountName            String?
   tin                    String?
-  monthlyAmount          Decimal?                @db.Decimal(14, 2)
-  isTaxable              Boolean                 @default(false)
+  monthlyAmount          Decimal?                   @db.Decimal(14, 2)
+  isTaxable              Boolean                    @default(false)
   deletedAt              DateTime?
   removedByUserId        String?
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
-  organization           Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Payee_organizationId_fkey")
-  employee               Employee?               @relation("EmployeePayrollPayee", fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "Payee_organizationId_employeeId_fkey")
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+  organization           Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "Payee_organizationId_fkey")
+  employee               Employee?                  @relation("EmployeePayrollPayee", fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "Payee_organizationId_employeeId_fkey")
   payments               PayeePayment[]
   documents              PayeeDocument[]
   payrollRunParticipants PayrollRunParticipant[]
+  payrollGroup           PayrollPayeeGroup?         @relation(fields: [organizationId, payrollGroupId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "Payee_org_group_fkey")
+  bonuses                PayrollBonus[]
+  prorationOverrides     PayrollProrationOverride[]
 
   @@unique([organizationId, id], map: "Payee_organizationId_id_key")
   @@unique([organizationId, employeeId], map: "Payee_organizationId_employeeId_key")
@@ -1864,27 +1876,126 @@ model Payee {
   @@index([organizationId, type, status], map: "Payee_org_type_status_idx")
   @@index([organizationId, name], map: "Payee_org_name_idx")
   @@index([organizationId, taxRegime, externalOnPayroll], map: "Payee_org_tax_payroll_idx")
+  @@index([organizationId, payrollGroupId], map: "Payee_org_group_idx")
   @@map("Payee")
 }
 
-model PayrollRunParticipant {
-  id                  String                               @id @default(cuid())
+model PayrollPayeeGroup {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?      @db.Text
+  displayColor   String?      @db.VarChar(24)
+  active         Boolean      @default(true)
+  archivedAt     DateTime?
+  createdById    String?
+  updatedById    String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollPayeeGroup_org_fkey")
+  payees         Payee[]
+
+  @@unique([organizationId, id], map: "PayrollPayeeGroup_org_id_key")
+  @@unique([organizationId, name], map: "PayrollPayeeGroup_org_name_key")
+  @@index([organizationId, active, archivedAt], map: "PayrollPayeeGroup_org_active_idx")
+  @@map("PayrollPayeeGroup")
+}
+
+model PayrollBonus {
+  id             String                         @id @default(cuid())
+  organizationId String
+  payeeId        String
+  amount         Decimal                        @db.Decimal(14, 2)
+  frequency      payroll_adjustment_frequency
+  justification  String                         @db.VarChar(500)
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  active         Boolean                        @default(true)
+  archivedAt     DateTime?
+  createdById    String?
+  updatedById    String?
+  createdAt      DateTime                       @default(now())
+  updatedAt      DateTime                       @updatedAt
+  organization   Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollBonus_org_fkey")
+  payee          Payee                          @relation(fields: [organizationId, payeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollBonus_org_payee_fkey")
+  applications   PayrollAdjustmentApplication[]
+
+  @@unique([organizationId, id], map: "PayrollBonus_org_id_key")
+  @@index([organizationId, payeeId, active, effectiveFrom, effectiveTo], map: "PayrollBonus_org_payee_effective_idx")
+  @@map("PayrollBonus")
+}
+
+model PayrollProrationOverride {
+  id             String                  @id @default(cuid())
+  organizationId String
+  payeeId        String
+  employeeId     String
+  payFrom        DateTime
+  payUntil       DateTime
+  basis          payroll_proration_basis
+  justification  String                  @db.VarChar(500)
+  active         Boolean                 @default(true)
+  archivedAt     DateTime?
+  createdById    String?
+  updatedById    String?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollProrationOverride_org_fkey")
+  payee          Payee                   @relation(fields: [organizationId, payeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollProrationOverride_org_payee_fkey")
+  employee       Employee                @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollProrationOverride_org_employee_fkey")
+
+  @@unique([organizationId, id], map: "PayrollProrationOverride_org_id_key")
+  @@index([organizationId, payeeId, active, payFrom, payUntil], map: "PayrollProrationOverride_org_payee_dates_idx")
+  @@index([organizationId, employeeId, active], map: "PayrollProrationOverride_org_employee_idx")
+  @@map("PayrollProrationOverride")
+}
+
+model PayrollAdjustmentApplication {
+  id                  String                                @id @default(cuid())
   organizationId      String
   payrollRunId        String
-  payeeId             String
-  employeeId          String?
-  participantType     payroll_participant_type
-  selectionSource     payroll_participant_selection_source
-  selectedById        String?
-  selectedAt          DateTime                             @default(now())
-  frozenAt            DateTime?
-  calculationSnapshot Json?
-  createdAt           DateTime                             @default(now())
-  updatedAt           DateTime                             @updatedAt
-  payrollRun          PayrollRun                           @relation(fields: [organizationId, payrollRunId], references: [organizationId, id], onDelete: Cascade, map: "PayrollRunParticipant_org_run_fkey")
-  payee               Payee                                @relation(fields: [organizationId, payeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollRunParticipant_org_payee_fkey")
-  employee            Employee?                            @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "PayrollRunParticipant_org_employee_fkey")
-  payeePayment        PayeePayment?
+  participantId       String
+  adjustmentType      payroll_adjustment_application_type
+  bonusId             String?
+  employeeDeductionId String?
+  status              payroll_adjustment_application_status @default(FROZEN)
+  amountSnapshot      Decimal                               @db.Decimal(14, 2)
+  frozenAt            DateTime                              @default(now())
+  appliedAt           DateTime?
+  createdAt           DateTime                              @default(now())
+  updatedAt           DateTime                              @updatedAt
+  organization        Organization                          @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "PayrollAdjustmentApplication_org_fkey")
+  payrollRun          PayrollRun                            @relation(fields: [organizationId, payrollRunId], references: [organizationId, id], onDelete: Restrict, map: "PayrollAdjustmentApplication_org_run_fkey")
+  participant         PayrollRunParticipant                 @relation(fields: [participantId], references: [id], onDelete: Restrict, map: "PayrollAdjustmentApplication_participant_fkey")
+  bonus               PayrollBonus?                         @relation(fields: [bonusId], references: [id], onDelete: Restrict, map: "PayrollAdjustmentApplication_bonus_fkey")
+  employeeDeduction   EmployeeDeduction?                    @relation(fields: [employeeDeductionId], references: [id], onDelete: Restrict, map: "PayrollAdjustmentApplication_deduction_fkey")
+
+  @@unique([bonusId], map: "PayrollAdjustmentApplication_bonus_key")
+  @@unique([employeeDeductionId], map: "PayrollAdjustmentApplication_deduction_key")
+  @@index([organizationId, payrollRunId, status], map: "PayrollAdjustmentApplication_org_run_status_idx")
+  @@index([participantId, adjustmentType], map: "PayrollAdjustmentApplication_participant_type_idx")
+  @@map("PayrollAdjustmentApplication")
+}
+
+model PayrollRunParticipant {
+  id                     String                               @id @default(cuid())
+  organizationId         String
+  payrollRunId           String
+  payeeId                String
+  employeeId             String?
+  participantType        payroll_participant_type
+  selectionSource        payroll_participant_selection_source
+  selectedById           String?
+  selectedAt             DateTime                             @default(now())
+  frozenAt               DateTime?
+  calculationSnapshot    Json?
+  createdAt              DateTime                             @default(now())
+  updatedAt              DateTime                             @updatedAt
+  payrollRun             PayrollRun                           @relation(fields: [organizationId, payrollRunId], references: [organizationId, id], onDelete: Cascade, map: "PayrollRunParticipant_org_run_fkey")
+  payee                  Payee                                @relation(fields: [organizationId, payeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollRunParticipant_org_payee_fkey")
+  employee               Employee?                            @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "PayrollRunParticipant_org_employee_fkey")
+  payeePayment           PayeePayment?
+  adjustmentApplications PayrollAdjustmentApplication[]
 
   @@unique([payrollRunId, payeeId], map: "PayrollRunParticipant_run_payee_key")
   @@unique([payrollRunId, employeeId], map: "PayrollRunParticipant_run_employee_key")
@@ -2985,6 +3096,26 @@ enum payroll_participant_type {
 enum payroll_participant_selection_source {
   AUTO
   MANUAL
+}
+
+enum payroll_adjustment_frequency {
+  ONCE
+  MULTIPLE
+}
+
+enum payroll_proration_basis {
+  WORKING_DAYS
+  CALENDAR_DAYS
+}
+
+enum payroll_adjustment_application_type {
+  BONUS
+  CUSTOM_DEDUCTION
+}
+
+enum payroll_adjustment_application_status {
+  FROZEN
+  APPLIED
 }
 
 enum payee_tax_regime {

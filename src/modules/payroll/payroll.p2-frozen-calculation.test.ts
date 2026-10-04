@@ -35,7 +35,7 @@ test("Process freezes only unified DRAFT membership and enqueues after commit", 
   const body = source.slice(source.indexOf("export const processDraftPayRun"), source.indexOf("export const calculateFrozenExternalPayee"));
   assert.match(body, /status: "DRAFT"/);
   assert.match(body, /membershipVersion: "UNIFIED_PAYEE_V1"/);
-  assert.match(body, /calculationSnapshot: freezeParticipantSnapshot/);
+  assert.match(body, /calculationSnapshot: enrichedFrozenParticipantSnapshot/);
   assert.match(body, /participantsFrozenAt: now/);
   assert.match(body, /PAYROLL_PARTICIPANTS_INELIGIBLE/);
   assert.ok(body.indexOf("await prisma.$transaction") < body.indexOf("enqueuePayrollJob"));
@@ -86,6 +86,7 @@ test("process route requires the existing payroll:runs:update permission", () =>
 
 test("P2.2 migration is additive and does not rewrite historical financial amounts", () => {
   assert.match(migration, /ADD COLUMN `participantIds` JSON NULL/);
+  assert.match(migration, /ADD COLUMN `calculationInputSnapshot` JSON NULL/);
   assert.match(migration, /ADD COLUMN `whtAmount`/);
   assert.match(migration, /PayeePayment_participantId_key/);
   assert.doesNotMatch(migration, /^\s*(DELETE FROM|TRUNCATE|DROP TABLE)/im);

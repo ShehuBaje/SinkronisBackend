@@ -20,6 +20,9 @@ WHERE `membershipVersion` = 'LEGACY_EMPLOYEE';
 ALTER TABLE `PayrollCalculationBatch`
   ADD COLUMN `participantIds` JSON NULL;
 
+ALTER TABLE `Payslip`
+  ADD COLUMN `calculationInputSnapshot` JSON NULL;
+
 ALTER TABLE `PayeePayment`
   ADD COLUMN `payrollRunParticipantId` VARCHAR(191) NULL,
   ADD COLUMN `whtRateSnapshot` DECIMAL(8,6) NOT NULL DEFAULT 0.000000,

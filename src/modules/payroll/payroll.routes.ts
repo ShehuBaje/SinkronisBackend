@@ -18,6 +18,8 @@ import { payrollSettlementSchema, payrollTaxAnnualQuerySchema, payrollTaxEmploye
 import { payrollAvcCreateSchema, payrollPensionMarkRemittedSchema, payrollPensionParamsSchema, payrollPensionQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportExportParamsSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema } from "./payroll.validation";
 import { payrollAllowanceTypeSchema, payrollAllowanceTypeUpdateSchema, payrollDeductionTypeSchema, payrollDeductionTypeUpdateSchema, payrollPayPeriodSettingsSchema, payrollSettingsTypeParamsSchema } from "./payroll.validation";
 import { createPayrollAllowanceTypeController, createPayrollDeductionTypeController, getPayrollPayPeriodSettingsController, getPayrollSettingsController, getPayrollStatutoryRatesController, listPayrollAllowanceTypesController, listPayrollDeductionTypesController, removePayrollAllowanceTypeController, removePayrollDeductionTypeController, updatePayrollAllowanceTypeController, updatePayrollDeductionTypeController, updatePayrollPayPeriodSettingsController } from "./payroll.controller";
+import { archivePayrollBonusController, archivePayrollProrationOverrideController, assignPayrollPayeeGroupController, createPayrollBonusController, createPayrollPayeeGroupController, createPayrollProrationOverrideController, listPayrollBonusesController, listPayrollPayeeGroupsController, listPayrollProrationOverridesController, updatePayrollBonusController, updatePayrollPayeeGroupController, updatePayrollProrationOverrideController } from "./payroll.controller";
+import { payrollBonusParamsSchema, payrollBonusSchema, payrollBonusUpdateSchema, payrollGroupParamsSchema, payrollPayeeGroupAssignmentSchema, payrollPayeeGroupSchema, payrollPayeeGroupUpdateSchema, payrollProrationOverrideSchema, payrollProrationOverrideUpdateSchema, payrollProrationParamsSchema } from "./payroll.validation";
 
 export const payrollRouter = Router();
 const payrollCsv = multer({ storage: boundedMemoryStorage({ perFileBytes: 5 * 1024 * 1024, totalBytes: 5 * 1024 * 1024 }), limits: { fileSize: 5 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ["text/csv", "application/vnd.ms-excel"].includes(file.mimetype)) });
@@ -35,6 +37,9 @@ payrollRouter.post("/settings/deduction-types", authorize("payroll:salary:update
 payrollRouter.patch("/settings/deduction-types/:id", authorize("payroll:salary:update"), validate({ params: payrollSettingsTypeParamsSchema, body: payrollDeductionTypeUpdateSchema }), asyncHandler(updatePayrollDeductionTypeController));
 payrollRouter.delete("/settings/deduction-types/:id", authorize("payroll:salary:update"), validate({ params: payrollSettingsTypeParamsSchema }), asyncHandler(removePayrollDeductionTypeController));
 payrollRouter.get("/settings/statutory-rates", authorize("payroll:statutory:view"), asyncHandler(getPayrollStatutoryRatesController));
+payrollRouter.get("/settings/payee-groups", authorize("payroll:salary:view"), asyncHandler(listPayrollPayeeGroupsController));
+payrollRouter.post("/settings/payee-groups", authorize("payroll:salary:update"), validate({ body: payrollPayeeGroupSchema }), asyncHandler(createPayrollPayeeGroupController));
+payrollRouter.patch("/settings/payee-groups/:groupId", authorize("payroll:salary:update"), validate({ params: payrollGroupParamsSchema, body: payrollPayeeGroupUpdateSchema }), asyncHandler(updatePayrollPayeeGroupController));
 
 
 payrollRouter.get(
@@ -52,6 +57,15 @@ payrollRouter.get("/payees/:payeeId/payment-history", authorize("payroll:salary:
 payrollRouter.get("/payees/:payeeId/documents", authorize("payroll:salary:view"), validate({ params: payrollPayeeParamsSchema }), asyncHandler(listPayrollPayeeDocumentsController));
 payrollRouter.post("/payees/:payeeId/documents", authorize("payroll:salary:update"), payrollPayeeDocument.single("file"), validate({ params: payrollPayeeParamsSchema, body: payrollPayeeDocumentSchema }), asyncHandler(uploadPayrollPayeeDocumentController));
 payrollRouter.get("/payees/:payeeId/documents/:documentId/download", authorize("payroll:salary:view"), validate({ params: payrollPayeeDocumentParamsSchema }), asyncHandler(downloadPayrollPayeeDocumentController));
+payrollRouter.patch("/payees/:payeeId/group", authorize("payroll:salary:update"), validate({ params: payrollPayeeParamsSchema, body: payrollPayeeGroupAssignmentSchema }), asyncHandler(assignPayrollPayeeGroupController));
+payrollRouter.get("/payees/:payeeId/bonuses", authorize("payroll:salary:view"), validate({ params: payrollPayeeParamsSchema }), asyncHandler(listPayrollBonusesController));
+payrollRouter.post("/payees/:payeeId/bonuses", authorize("payroll:salary:update"), validate({ params: payrollPayeeParamsSchema, body: payrollBonusSchema }), asyncHandler(createPayrollBonusController));
+payrollRouter.patch("/payees/:payeeId/bonuses/:bonusId", authorize("payroll:salary:update"), validate({ params: payrollBonusParamsSchema, body: payrollBonusUpdateSchema }), asyncHandler(updatePayrollBonusController));
+payrollRouter.delete("/payees/:payeeId/bonuses/:bonusId", authorize("payroll:salary:update"), validate({ params: payrollBonusParamsSchema }), asyncHandler(archivePayrollBonusController));
+payrollRouter.get("/payees/:payeeId/proration-overrides", authorize("payroll:salary:view"), validate({ params: payrollPayeeParamsSchema }), asyncHandler(listPayrollProrationOverridesController));
+payrollRouter.post("/payees/:payeeId/proration-overrides", authorize("payroll:salary:update"), validate({ params: payrollPayeeParamsSchema, body: payrollProrationOverrideSchema }), asyncHandler(createPayrollProrationOverrideController));
+payrollRouter.patch("/payees/:payeeId/proration-overrides/:overrideId", authorize("payroll:salary:update"), validate({ params: payrollProrationParamsSchema, body: payrollProrationOverrideUpdateSchema }), asyncHandler(updatePayrollProrationOverrideController));
+payrollRouter.delete("/payees/:payeeId/proration-overrides/:overrideId", authorize("payroll:salary:update"), validate({ params: payrollProrationParamsSchema }), asyncHandler(archivePayrollProrationOverrideController));
 payrollRouter.get("/payees/:payeeId", authorize("payroll:salary:view"), validate({ params: payrollPayeeParamsSchema }), asyncHandler(getPayrollPayeeController));
 payrollRouter.patch("/payees/:payeeId", authorize("payroll:salary:update"), validate({ params: payrollPayeeParamsSchema, body: payrollPayeeUpdateSchema }), asyncHandler(updatePayrollPayeeController));
 payrollRouter.patch("/payees/:payeeId/toggle-payroll", authorize("payroll:salary:update"), validate({ params: payrollPayeeParamsSchema, body: payrollPayeeToggleSchema }), asyncHandler(togglePayrollPayeeController));
