@@ -1703,44 +1703,53 @@ model PaymentRequest {
 }
 
 model PayrollRun {
-  id                     String                     @id @default(cuid())
-  organizationId         String
-  name                   String
-  periodStart            DateTime
-  periodEnd              DateTime
-  payDate                DateTime?
-  status                 payrollrun_status          @default(DRAFT)
-  membershipVersion      payroll_membership_version @default(LEGACY_EMPLOYEE)
-  employeeCount          Int                        @default(0)
-  expectedEmployeeCount  Int                        @default(0)
-  processedEmployeeCount Int                        @default(0)
-  failedEmployeeCount    Int                        @default(0)
-  calculationInput       Json?
-  failureReason          String?                    @db.Text
-  processingHeartbeatAt  DateTime?
-  totalGross             Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalPaye              Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalPension           Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalEmployerPension   Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalNhf               Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalLoans             Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalOtherDeductions   Decimal                    @default(0.00) @db.Decimal(14, 2)
-  totalNetPay            Decimal                    @default(0.00) @db.Decimal(14, 2)
-  computedAt             DateTime?
-  approvedAt             DateTime?
-  approvedById           String?
-  disbursedAt            DateTime?
-  createdAt              DateTime                   @default(now())
-  updatedAt              DateTime                   @updatedAt
-  organization           Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollRun_organizationId_fkey")
-  payslip                Payslip[]
-  payeePayments          PayeePayment[]
-  loanRepayments         LoanRepayment[]
-  walletTransactions     WalletTransaction[]
-  taxRemittances         PayrollTaxRemittance[]
-  pensionRemittances     PayrollPensionRemittance[]
-  calculationBatches     PayrollCalculationBatch[]
-  participants           PayrollRunParticipant[]
+  id                        String                     @id @default(cuid())
+  organizationId            String
+  name                      String
+  periodStart               DateTime
+  periodEnd                 DateTime
+  payDate                   DateTime?
+  status                    payrollrun_status          @default(DRAFT)
+  membershipVersion         payroll_membership_version @default(LEGACY_EMPLOYEE)
+  participantsFrozenAt      DateTime?
+  participantCount          Int                        @default(0)
+  permanentEmployeeCount    Int                        @default(0)
+  externalPayeeCount        Int                        @default(0)
+  processedParticipantCount Int                        @default(0)
+  failedParticipantCount    Int                        @default(0)
+  employeeCount             Int                        @default(0)
+  expectedEmployeeCount     Int                        @default(0)
+  processedEmployeeCount    Int                        @default(0)
+  failedEmployeeCount       Int                        @default(0)
+  calculationInput          Json?
+  failureReason             String?                    @db.Text
+  processingHeartbeatAt     DateTime?
+  totalGross                Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalPaye                 Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalPension              Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalEmployerPension      Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalNhf                  Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalLoans                Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalOtherDeductions      Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalNetPay               Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalWht                  Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalPermanentNetPay      Decimal                    @default(0.00) @db.Decimal(14, 2)
+  totalExternalNetPay       Decimal                    @default(0.00) @db.Decimal(14, 2)
+  computedAt                DateTime?
+  approvedAt                DateTime?
+  approvedById              String?
+  disbursedAt               DateTime?
+  createdAt                 DateTime                   @default(now())
+  updatedAt                 DateTime                   @updatedAt
+  organization              Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollRun_organizationId_fkey")
+  payslip                   Payslip[]
+  payeePayments             PayeePayment[]
+  loanRepayments            LoanRepayment[]
+  walletTransactions        WalletTransaction[]
+  taxRemittances            PayrollTaxRemittance[]
+  pensionRemittances        PayrollPensionRemittance[]
+  calculationBatches        PayrollCalculationBatch[]
+  participants              PayrollRunParticipant[]
 
   @@unique([organizationId, id], map: "PayrollRun_organizationId_id_key")
   @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
@@ -1754,6 +1763,7 @@ model PayrollCalculationBatch {
   payrollRunId   String
   batchIndex     Int
   employeeIds    Json
+  participantIds Json?
   status         String     @default("PENDING") @db.VarChar(24)
   expectedCount  Int
   processedCount Int        @default(0)
@@ -1874,6 +1884,7 @@ model PayrollRunParticipant {
   payrollRun          PayrollRun                           @relation(fields: [organizationId, payrollRunId], references: [organizationId, id], onDelete: Cascade, map: "PayrollRunParticipant_org_run_fkey")
   payee               Payee                                @relation(fields: [organizationId, payeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollRunParticipant_org_payee_fkey")
   employee            Employee?                            @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "PayrollRunParticipant_org_employee_fkey")
+  payeePayment        PayeePayment?
 
   @@unique([payrollRunId, payeeId], map: "PayrollRunParticipant_run_payee_key")
   @@unique([payrollRunId, employeeId], map: "PayrollRunParticipant_run_employee_key")
@@ -1884,26 +1895,36 @@ model PayrollRunParticipant {
 }
 
 model PayeePayment {
-  id                String       @id @default(cuid())
-  organizationId    String
-  payrollRunId      String
-  payeeId           String
-  payeeNameSnapshot String
-  payeeTypeSnapshot String
-  grossAmount       Decimal      @db.Decimal(14, 2)
-  payeTax           Decimal      @default(0.00) @db.Decimal(14, 2)
-  netAmount         Decimal      @db.Decimal(14, 2)
-  currency          String       @default("NGN")
-  isTaxableSnapshot Boolean
-  bankSnapshot      Json?
-  status            String       @default("PENDING")
-  paymentDate       DateTime?
-  paymentReference  String?      @unique(map: "PayeePayment_paymentReference_key")
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayeePayment_organizationId_fkey")
-  payrollRun        PayrollRun   @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "PayeePayment_payrollRunId_fkey")
-  payee             Payee        @relation(fields: [payeeId], references: [id], map: "PayeePayment_payeeId_fkey")
+  id                      String                 @id @default(cuid())
+  organizationId          String
+  payrollRunId            String
+  payeeId                 String
+  payrollRunParticipantId String?                @unique(map: "PayeePayment_participantId_key")
+  payeeNameSnapshot       String
+  payeeTypeSnapshot       String
+  grossAmount             Decimal                @db.Decimal(14, 2)
+  payeTax                 Decimal                @default(0.00) @db.Decimal(14, 2)
+  whtRateSnapshot         Decimal                @default(0.000000) @db.Decimal(8, 6)
+  whtAmount               Decimal                @default(0.00) @db.Decimal(14, 2)
+  taxRegimeSnapshot       payee_tax_regime       @default(LEGACY_UNSPECIFIED)
+  externalRoleSnapshot    String?
+  tinSnapshot             String?
+  dateOnboardedSnapshot   DateTime?
+  taxRuleSnapshot         Json?
+  compensationSnapshot    Json?
+  netAmount               Decimal                @db.Decimal(14, 2)
+  currency                String                 @default("NGN")
+  isTaxableSnapshot       Boolean
+  bankSnapshot            Json?
+  status                  String                 @default("PENDING")
+  paymentDate             DateTime?
+  paymentReference        String?                @unique(map: "PayeePayment_paymentReference_key")
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+  organization            Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayeePayment_organizationId_fkey")
+  payrollRun              PayrollRun             @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "PayeePayment_payrollRunId_fkey")
+  payee                   Payee                  @relation(fields: [payeeId], references: [id], map: "PayeePayment_payeeId_fkey")
+  participant             PayrollRunParticipant? @relation(fields: [payrollRunParticipantId], references: [id], onDelete: Restrict, map: "PayeePayment_participant_fkey")
 
   @@unique([payrollRunId, payeeId], map: "PayeePayment_run_payee_key")
   @@index([organizationId, payeeId, createdAt], map: "PayeePayment_org_payee_created_idx")
