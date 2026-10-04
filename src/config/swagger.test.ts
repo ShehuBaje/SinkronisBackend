@@ -99,6 +99,31 @@ test("Swagger is a complete UI-aligned contract for implemented modules", () => 
   assert.equal(documented.has("PATCH /api/v1/hris/leaves/{}/reject"), true);
 });
 
+test("Payroll mixed-run schemas preserve participant and financial compatibility semantics", () => {
+  const spec = openApiSpec as any;
+  const payRun = spec.components.schemas.PayrollPayRun;
+  const totals = spec.components.schemas.PayrollPayRunTotals;
+
+  for (const field of ["participantCount", "permanentEmployeeCount", "externalPayeeCount", "employeeCount"]) {
+    assert.equal(payRun.properties[field].type, "integer");
+  }
+  assert.match(payRun.description, /participantCount equals permanentEmployeeCount plus externalPayeeCount/);
+  assert.match(payRun.properties.employeeCount.description, /backward-compatible Permanent employee count/);
+
+  assert.equal(totals.properties.wht.type, "number");
+  assert.equal(totals.properties.permanentNetPay.type, "number");
+  assert.equal(totals.properties.externalNetPay.type, "number");
+  assert.match(totals.properties.wht.description, /Contract WHT total only/);
+  assert.match(totals.properties.paye.description, /Contract WHT is excluded/);
+  assert.match(totals.properties.permanentNetPay.description, /PayrollRun\.totalPermanentNetPay/);
+  assert.match(totals.properties.externalNetPay.description, /PayrollRun\.totalExternalNetPay/);
+
+  const listSchema = spec.paths["/api/v1/payroll/pay-runs"].get.responses["200"].content["application/json"].schema;
+  assert.equal(listSchema.properties.data.items.$ref, "#/components/schemas/PayrollPayRun");
+  const detailSchema = spec.paths["/api/v1/payroll/pay-runs/{payRunId}"].get.responses["200"].content["application/json"].schema;
+  assert.equal(detailSchema.properties.data.properties.payRun.$ref, "#/components/schemas/PayrollPayRun");
+});
+
 test("Accounting create contracts publish runtime-valid bodies and the invoice catalogue dependency", () => {
   const paths = (openApiSpec as any).paths;
   const catalogue = paths["/api/v1/accounting/items-services"].post;
