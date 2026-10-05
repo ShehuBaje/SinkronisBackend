@@ -155,7 +155,11 @@ test("P2.3 payroll history and mixed export document the runtime contracts", () 
   assert.match(exported.description, /Consultant.*EXEMPT/i);
   assert.match(exported.description, /formula-injection/i);
   assert.ok(exported.responses["200"].content["text/csv"]);
-  assert.match(exported.responses["200"].description, /ParticipantType.*ResultType.*BaseCompensation.*Bonus.*PAYE.*WHT.*NetPay/s);
+  assert.match(exported.responses["200"].description, /ParticipantType.*ResultType.*BaseCompensation.*Bonus.*PAYE.*WHT.*NSITF.*NetPay/s);
+  assert.match(spec.components.schemas.PayrollMixedResult.properties.nsitf.description, /employer-side.*never deducted/i);
+  const process = spec.paths["/api/v1/payroll/pay-runs/{payRunId}/process"].post;
+  assert.match(process.description, /PAYROLL_DEDUCTIONS_EXCEED_GROSS/);
+  assert.match(process.description, /NSITF.*employer-side.*excluded/s);
 });
 
 test("P2.3 templated paths declare exactly their required path parameters", () => {

@@ -22,6 +22,8 @@ test("a frozen Permanent participant produces one regression-compatible Payslip"
     assert.equal(payslip.pension.toFixed(2), "10400.00");
     assert.equal(payslip.employerPension.toFixed(2), "13000.00");
     assert.equal(payslip.nhf.toFixed(2), "2500.00");
+    assert.equal(payslip.nsitf.toFixed(2), "1300.00", "the frozen calculated 1% NSITF is persisted");
+    assert.equal(payslip.netPay.toFixed(2), payslip.grossPay.sub(payslip.deductions).toFixed(2), "employer-side NSITF does not reduce employee net");
     assert.equal(attempts.filter((row) => (row as { processed?: number }).processed === 1).length, 1);
     const completed = await prisma.payrollRun.findUniqueOrThrow({ where: { id: run.id } });
     assert.equal(completed.status, "PENDING_APPROVAL");

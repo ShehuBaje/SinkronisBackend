@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import { payrollRouter } from "./payroll.routes";
-import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, externalPayeeLifecycleTransition, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollAcceptedReportingStatuses, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollGroupDistribution, payrollMixedRunTotals, payrollPayeeLifecycleStatus, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
+import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, externalPayeeLifecycleTransition, finalizePermanentEmployeeNet, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollAcceptedReportingStatuses, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollGroupDistribution, payrollMixedRunTotals, payrollPayeeLifecycleStatus, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
 import { effectiveMonthlyPayDate } from "./payroll.service";
 import { payrollAllowanceTypeSchema, payrollDeductionTypeSchema, payrollPayPeriodSettingsSchema } from "./payroll.validation";
 import { payrollAdjustLoanSchema, payrollAvcCreateSchema, payrollBikSchema, payrollCreateCustomDeductionSchema, payrollCreateEmployeeSchema, payrollCreateLoanSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollLoansQuerySchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema, payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunsQuerySchema, payrollPayslipsQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema, payrollSalaryStructureSchema, payrollSettlementSchema, payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
@@ -167,6 +167,28 @@ test("Payee list filters combine safely and reject tenant or unsafe sort input",
   assert.equal(payrollPayeesQuerySchema.safeParse({ tenantId: "another-tenant" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ sortBy: "accountNumber" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ limit: 101 }).success, false);
+});
+
+test("Permanent net finalization enforces the Decimal employee deduction ceiling", () => {
+  const below = finalizePermanentEmployeeNet({ gross: "100.00", paye: "10", employeePension: "10", nhf: "5", avc: "5", loanDeduction: "10", customDeduction: "10" });
+  assert.equal(below.totalEmployeeDeductions.toFixed(2), "50.00");
+  assert.equal(below.netPay.toFixed(2), "50.00");
+  const equal = finalizePermanentEmployeeNet({ gross: "100.00", paye: "10", employeePension: "10", nhf: "5", avc: "15", loanDeduction: "30", customDeduction: "30" });
+  assert.equal(equal.netPay.toFixed(2), "0.00");
+});
+
+test("Permanent net finalization rejects custom, loan, and AVC excess with a stable safe error", () => {
+  for (const input of [
+    { gross: "100", paye: "0", employeePension: "0", nhf: "0", avc: "0", loanDeduction: "0", customDeduction: "100.01" },
+    { gross: "100", paye: "0", employeePension: "0", nhf: "0", avc: "0", loanDeduction: "100.01", customDeduction: "0" },
+    { gross: "100", paye: "25", employeePension: "25", nhf: "25", avc: "25.01", loanDeduction: "0", customDeduction: "0" }
+  ]) assert.throws(() => finalizePermanentEmployeeNet(input), (error: any) => error?.statusCode === 409 && error?.details?.errorCode === "PAYROLL_DEDUCTIONS_EXCEED_GROSS" && error.details.gross === "100.00" && error.details.totalEmployeeDeductions === "100.01");
+});
+
+test("employer pension and NSITF are excluded from the employee deduction ceiling", () => {
+  const result = finalizePermanentEmployeeNet({ gross: "100", paye: "20", employeePension: "10", nhf: "5", avc: "5", loanDeduction: "10", customDeduction: "10" });
+  assert.equal(result.netPay.toFixed(2), "40.00");
+  assert.equal(result.totalEmployeeDeductions.toFixed(2), "60.00");
 });
 
 test("R5 derives the two-state client lifecycle without collapsing source status", () => {
