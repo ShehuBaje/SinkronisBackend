@@ -158,6 +158,30 @@ test("P2.3 payroll history and mixed export document the runtime contracts", () 
   assert.match(exported.responses["200"].description, /ParticipantType.*ResultType.*BaseCompensation.*Bonus.*PAYE.*WHT.*NetPay/s);
 });
 
+test("P2.3 templated paths declare exactly their required path parameters", () => {
+  const spec = openApiSpec as any;
+  const operations: Array<[string, string]> = [
+    ["/api/v1/payroll/pay-runs/{payRunId}", "get"],
+    ["/api/v1/payroll/pay-runs/{payRunId}/results/{participantId}", "get"],
+    ["/api/v1/payroll/pay-runs/{payRunId}/approve", "post"],
+    ["/api/v1/payroll/pay-runs/{payRunId}/reject", "post"],
+    ["/api/v1/payroll/pay-runs/{payRunId}/replacement", "post"],
+    ["/api/v1/payroll/pay-runs/{payRunId}/export", "get"],
+  ];
+  for (const [path, method] of operations) {
+    const templateVariables = [...path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]).sort();
+    const pathParameters = (spec.paths[path][method].parameters ?? [])
+      .filter((parameter: any) => parameter.in === "path" && parameter.required === true)
+      .map((parameter: any) => parameter.name)
+      .sort();
+    assert.deepEqual(pathParameters, templateVariables, `${method.toUpperCase()} ${path}`);
+  }
+  assert.deepEqual(spec.paths["/api/v1/payroll/pay-runs/{payRunId}/results/{participantId}"].get.parameters.map((parameter: any) => parameter.name), ["payRunId", "participantId"]);
+  for (const path of ["/api/v1/payroll/pay-runs/{payRunId}/approve", "/api/v1/payroll/pay-runs/{payRunId}/reject", "/api/v1/payroll/pay-runs/{payRunId}/replacement"]) {
+    assert.deepEqual(spec.paths[path].post.parameters.map((parameter: any) => parameter.name), ["payRunId"]);
+  }
+});
+
 test("Accounting create contracts publish runtime-valid bodies and the invoice catalogue dependency", () => {
   const paths = (openApiSpec as any).paths;
   const catalogue = paths["/api/v1/accounting/items-services"].post;
