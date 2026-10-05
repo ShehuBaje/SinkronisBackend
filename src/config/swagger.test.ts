@@ -371,3 +371,21 @@ test("R4 specialized Payroll reports explicitly preserve Permanent-only semantic
   const paths = (openApiSpec as any).paths;
   for (const path of ["/api/v1/payroll/reports/department-cost", "/api/v1/payroll/reports/monthly-variance", "/api/v1/payroll/reports/bank-payment-schedule", "/api/v1/payroll/reports/ytd-earnings"]) assert.match(paths[path].get.description, /Permanent/);
 });
+
+test("R5 Swagger exposes Active/Inactive lifecycle and excludes obsolete Pending/invite semantics", () => {
+  const paths = (openApiSpec as any).paths;
+  const schemas = (openApiSpec as any).components.schemas;
+  const list = paths["/api/v1/payroll/payees"].get;
+  const lifecycle = list.parameters.find((item: any) => item.name === "lifecycleStatus");
+  assert.equal(lifecycle.schema.$ref, "#/components/schemas/PayrollPayeeLifecycleStatus");
+  assert.deepEqual(schemas.PayrollPayeeLifecycleStatus.enum, ["ACTIVE", "INACTIVE"]);
+  assert.ok(schemas.PayrollPayee.properties.payrollLifecycleStatus);
+  assert.match(list.description, /no PENDING Payee lifecycle/i);
+  assert.match(list.description, /PayrollEnrollment/);
+  const toggle = paths["/api/v1/payroll/payees/{payeeId}/toggle-payroll"].patch;
+  assert.match(toggle.description, /ON_LEAVE, SUSPENDED, TERMINATED or EXITED/);
+  assert.match(toggle.description, /atomically sets raw ACTIVE/);
+  const remove = paths["/api/v1/payroll/payees/{payeeId}"].delete;
+  assert.match(remove.description, /Archive is not client lifecycle INACTIVE/);
+  assert.doesNotMatch(JSON.stringify({ list, toggle, remove }), /Payee (dashboard|self-signup|self-onboarding)/i);
+});

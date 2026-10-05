@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import { payrollRouter } from "./payroll.routes";
-import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollAcceptedReportingStatuses, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollGroupDistribution, payrollMixedRunTotals, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
+import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, externalPayeeLifecycleTransition, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollAcceptedReportingStatuses, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollGroupDistribution, payrollMixedRunTotals, payrollPayeeLifecycleStatus, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
 import { effectiveMonthlyPayDate } from "./payroll.service";
 import { payrollAllowanceTypeSchema, payrollDeductionTypeSchema, payrollPayPeriodSettingsSchema } from "./payroll.validation";
 import { payrollAdjustLoanSchema, payrollAvcCreateSchema, payrollBikSchema, payrollCreateCustomDeductionSchema, payrollCreateEmployeeSchema, payrollCreateLoanSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollLoansQuerySchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema, payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunsQuerySchema, payrollPayslipsQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema, payrollSalaryStructureSchema, payrollSettlementSchema, payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
@@ -162,10 +162,33 @@ test("new Payee creation accepts only explicit unified type and tax combinations
 });
 
 test("Payee list filters combine safely and reject tenant or unsafe sort input", () => {
-  assert.equal(payrollPayeesQuerySchema.safeParse({ search: "tech", type: "CONTRACTOR", status: "ACTIVE", taxable: "false", sortBy: "amount", sortOrder: "desc", page: 1, limit: 20 }).success, true);
+  assert.equal(payrollPayeesQuerySchema.safeParse({ search: "tech", type: "CONTRACTOR", status: "ACTIVE", lifecycleStatus: "INACTIVE", taxable: "false", sortBy: "amount", sortOrder: "desc", page: 1, limit: 20 }).success, true);
+  assert.equal(payrollPayeesQuerySchema.safeParse({ lifecycleStatus: "PENDING" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ tenantId: "another-tenant" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ sortBy: "accountNumber" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ limit: 101 }).success, false);
+});
+
+test("R5 derives the two-state client lifecycle without collapsing source status", () => {
+  const permanent = (status: string, lifecycleStatus: string, enrolled: boolean) => ({ type: "PERMANENT", deletedAt: null, employee: { status, lifecycleStatus, payrollEnrollment: { isActive: enrolled } } });
+  assert.equal(payrollPayeeLifecycleStatus(permanent("ACTIVE", "CONFIRMED", true)), "ACTIVE");
+  assert.equal(payrollPayeeLifecycleStatus(permanent("ACTIVE", "CONFIRMED", false)), "INACTIVE");
+  for (const status of ["ON_LEAVE", "SUSPENDED", "TERMINATED"]) assert.equal(payrollPayeeLifecycleStatus(permanent(status, "CONFIRMED", true)), "INACTIVE");
+  assert.equal(payrollPayeeLifecycleStatus(permanent("ACTIVE", "EXITED", true)), "INACTIVE");
+  for (const type of ["CONTRACT", "CONSULTANT"]) {
+    assert.equal(payrollPayeeLifecycleStatus({ type, status: "ACTIVE", externalOnPayroll: true, deletedAt: null }), "ACTIVE");
+    assert.equal(payrollPayeeLifecycleStatus({ type, status: "ACTIVE", externalOnPayroll: false, deletedAt: null }), "INACTIVE");
+    for (const status of ["INACTIVE", "ON_LEAVE", "SUSPENDED"]) assert.equal(payrollPayeeLifecycleStatus({ type, status, externalOnPayroll: true, deletedAt: null }), "INACTIVE");
+  }
+  assert.equal(payrollPayeeLifecycleStatus({ type: "CONTRACT", status: "ACTIVE", externalOnPayroll: true, deletedAt: new Date() }), "INACTIVE");
+});
+
+test("R5 external lifecycle transitions normalize ACTIVE deactivation and preserve detailed inactive states", () => {
+  assert.deepEqual(externalPayeeLifecycleTransition("ACTIVE", false), { status: "INACTIVE", externalOnPayroll: false });
+  assert.deepEqual(externalPayeeLifecycleTransition("INACTIVE", false), { status: "INACTIVE", externalOnPayroll: false });
+  assert.deepEqual(externalPayeeLifecycleTransition("ON_LEAVE", false), { status: "ON_LEAVE", externalOnPayroll: false });
+  assert.deepEqual(externalPayeeLifecycleTransition("SUSPENDED", false), { status: "SUSPENDED", externalOnPayroll: false });
+  for (const status of ["INACTIVE", "ON_LEAVE", "SUSPENDED"]) assert.deepEqual(externalPayeeLifecycleTransition(status, true), { status: "ACTIVE", externalOnPayroll: true });
 });
 
 test("mixed dashboard totals use frozen PayrollRun aggregates without merging PAYE and WHT", () => {
