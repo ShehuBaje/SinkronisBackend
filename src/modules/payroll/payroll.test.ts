@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import { payrollRouter } from "./payroll.routes";
-import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
+import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollAcceptedReportingStatuses, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollGroupDistribution, payrollMixedRunTotals, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
 import { effectiveMonthlyPayDate } from "./payroll.service";
 import { payrollAllowanceTypeSchema, payrollDeductionTypeSchema, payrollPayPeriodSettingsSchema } from "./payroll.validation";
 import { payrollAdjustLoanSchema, payrollAvcCreateSchema, payrollBikSchema, payrollCreateCustomDeductionSchema, payrollCreateEmployeeSchema, payrollCreateLoanSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollLoansQuerySchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema, payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunsQuerySchema, payrollPayslipsQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema, payrollSalaryStructureSchema, payrollSettlementSchema, payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
@@ -166,6 +166,33 @@ test("Payee list filters combine safely and reject tenant or unsafe sort input",
   assert.equal(payrollPayeesQuerySchema.safeParse({ tenantId: "another-tenant" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ sortBy: "accountNumber" }).success, false);
   assert.equal(payrollPayeesQuerySchema.safeParse({ limit: 101 }).success, false);
+});
+
+test("mixed dashboard totals use frozen PayrollRun aggregates without merging PAYE and WHT", () => {
+  const permanent = [{ grossPay: money(100000), netPay: money(70000), payeTax: money(10000), pension: money(8000), employerPension: money(10000), nhf: money(2500), nsitf: money(1000) }];
+  const totals = payrollMixedRunTotals({ membershipVersion: "UNIFIED_PAYEE_V1", participantCount: 3, permanentEmployeeCount: 1, externalPayeeCount: 2, employeeCount: 1, totalGross: money(300000), totalPaye: money(10000), totalPension: money(8000), totalEmployerPension: money(10000), totalNhf: money(2500), totalLoans: money(0), totalOtherDeductions: money(0), totalNetPay: money(265000), totalWht: money(5000), totalPermanentNetPay: money(70000), totalExternalNetPay: money(195000) }, permanent);
+  assert.deepEqual(totals, { employees: 1, participants: 3, permanentEmployees: 1, externalPayees: 2, gross: 300000, netPay: 265000, paye: 10000, wht: 5000, pension: 8000, employerPension: 10000, nhf: 2500, nsitf: 1000, permanentNetPay: 70000, externalNetPay: 195000, loans: 0, otherDeductions: 0 });
+});
+
+test("legacy dashboard totals preserve Permanent employee compatibility", () => {
+  const permanent = [{ grossPay: money(100000), netPay: money(70000), payeTax: money(10000), pension: money(8000), employerPension: money(10000), nhf: money(2500), nsitf: money(1000) }];
+  const totals = payrollMixedRunTotals({ membershipVersion: "LEGACY_EMPLOYEE", participantCount: 0, permanentEmployeeCount: 0, externalPayeeCount: 0, employeeCount: 1, totalGross: money(100000), totalPaye: money(10000), totalPension: money(8000), totalEmployerPension: money(10000), totalNhf: money(2500), totalLoans: money(0), totalOtherDeductions: money(0), totalNetPay: money(70000), totalWht: money(0), totalPermanentNetPay: money(0), totalExternalNetPay: money(0) }, permanent);
+  assert.equal(totals.participants, 1); assert.equal(totals.permanentEmployees, 1); assert.equal(totals.externalPayees, 0); assert.equal(totals.netPay, 70000);
+});
+
+test("frozen Payee Group distribution includes mixed and ungrouped participants", () => {
+  const distribution = payrollGroupDistribution([
+    { participantType: "PERMANENT", group: { id: "staff", name: "Permanent Staff" }, cashGross: "100000", netPay: "70000" },
+    { participantType: "CONTRACT", group: { id: "contract", name: "Contract Regular" }, cashGross: "100000", netPay: "95000" },
+    { participantType: "CONSULTANT", group: null, cashGross: "100000", netPay: "100000" }
+  ]);
+  assert.equal(distribution.length, 3); assert.deepEqual(distribution.find((row) => row.groupId === null), { groupId: null, groupName: "Ungrouped", participantCount: 1, permanentEmployeeCount: 0, externalPayeeCount: 1, cashGross: 100000, netPay: 100000 });
+  assert.equal(distribution.reduce((sum, row) => sum + row.cashGross, 0), 300000);
+});
+
+test("accepted reporting excludes rejected and pre-approval revision states", () => {
+  assert.deepEqual(payrollAcceptedReportingStatuses, ["APPROVED", "PENDING_DISBURSEMENT", "DISBURSING", "DISBURSED", "PAID"]);
+  for (const excluded of ["DRAFT", "PROCESSING", "PENDING_APPROVAL", "REJECTED_FOR_REWORK", "FAILED", "CANCELLED"]) assert.equal((payrollAcceptedReportingStatuses as readonly string[]).includes(excluded), false);
 });
 
 test("unified external Payee calculations are Decimal-safe and exclude pension and NHF", () => {

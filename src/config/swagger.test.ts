@@ -348,3 +348,26 @@ test("generated examples do not leak appraisal copy or generic placeholders acro
   const payment = paths["/api/v1/accounting/invoices/{id}/payment"].post.requestBody.content["application/json"].example;
   assert.equal(typeof payment.amount, "string");
 });
+
+test("R4 Payroll dashboard and summary publish mixed frozen-result semantics", () => {
+  const schemas = (openApiSpec as any).components.schemas;
+  const dashboard = (openApiSpec as any).paths["/api/v1/payroll/dashboard"].get;
+  const summary = (openApiSpec as any).paths["/api/v1/payroll/reports/summary"].get;
+  const reportExport = (openApiSpec as any).paths["/api/v1/payroll/reports/{report}/export"].get;
+  for (const field of ["participants", "permanentEmployees", "externalPayees", "permanentNetPay", "externalNetPay", "paye", "wht"]) assert.ok(schemas.PayrollMixedOverviewTotals.properties[field], `missing mixed overview field ${field}`);
+  for (const field of ["participantCount", "permanentEmployeeCount", "externalPayeeCount", "cashGross", "netPay"]) assert.ok(schemas.PayrollPayeeGroupDistributionItem.properties[field], `missing group distribution field ${field}`);
+  assert.match(dashboard.description, /Payslip.*PayeePayment/);
+  assert.match(dashboard.description, /REJECTED_FOR_REWORK never inflate/);
+  assert.match(dashboard.description, /PAYE is Permanent-only, WHT is Contract-only/);
+  assert.deepEqual(summary.parameters.map((item: any) => item.name), ["year", "period"]);
+  assert.equal(summary.responses["200"].content["application/json"].schema.$ref, "#/components/schemas/PayrollReportSummaryResponse");
+  assert.match(summary.description, /Rejected and pre-approval revisions are excluded/);
+  assert.match(reportExport.description, /synchronous mixed CSV/);
+  assert.match(reportExport.description, /formula-injection protection/);
+  assert.deepEqual(reportExport.parameters[0].schema.enum, ["summary", "department", "variance", "bank", "ytd"]);
+});
+
+test("R4 specialized Payroll reports explicitly preserve Permanent-only semantics", () => {
+  const paths = (openApiSpec as any).paths;
+  for (const path of ["/api/v1/payroll/reports/department-cost", "/api/v1/payroll/reports/monthly-variance", "/api/v1/payroll/reports/bank-payment-schedule", "/api/v1/payroll/reports/ytd-earnings"]) assert.match(paths[path].get.description, /Permanent/);
+});
