@@ -1116,28 +1116,46 @@ model LeaveBalance {
 }
 
 model LoanAdvance {
-  id               String          @id @default(cuid())
-  organizationId   String
-  employeeId       String
-  amount           Decimal         @db.Decimal(14, 2)
-  outstanding      Decimal         @db.Decimal(14, 2)
-  reason           String?         @db.Text
-  issuedAt         DateTime
-  loanType         String          @default("RECURRING")
-  monthlyRepayment Decimal?        @db.Decimal(14, 2)
-  status           String          @default("ACTIVE")
-  pausedAt         DateTime?
-  adjustedAt       DateTime?
-  closedAt         DateTime?
-  closedById       String?
-  closeReason      String?         @db.Text
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
-  employee         Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LoanAdvance_employeeId_fkey")
-  repayments       LoanRepayment[]
+  id                       String          @id @default(cuid())
+  organizationId           String
+  employeeId               String
+  amount                   Decimal         @db.Decimal(14, 2)
+  openingOutstanding       Decimal?        @db.Decimal(14, 2)
+  outstanding              Decimal         @db.Decimal(14, 2)
+  currency                 String?         @db.VarChar(3)
+  reason                   String?         @db.Text
+  notes                    String?         @db.Text
+  issuedAt                 DateTime
+  externalDisbursementDate DateTime?
+  recoveryStartDate        DateTime?
+  loanType                 String          @default("RECURRING")
+  monthlyRepayment         Decimal?        @db.Decimal(14, 2)
+  status                   String          @default("ACTIVE")
+  origin                   String          @default("LEGACY_UNCONFIRMED") @db.VarChar(32)
+  confirmationStatus       String          @default("LEGACY_UNCONFIRMED") @db.VarChar(32)
+  externalReference        String?         @db.VarChar(191)
+  evidenceDocumentId       String?
+  recordedById             String?
+  recordedAt               DateTime?
+  attestedById             String?
+  attestedAt               DateTime?
+  pausedAt                 DateTime?
+  adjustedAt               DateTime?
+  closedAt                 DateTime?
+  closedById               String?
+  closeReason              String?         @db.Text
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+  employee                 Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LoanAdvance_employeeId_fkey")
+  evidenceDocument         PayeeDocument?  @relation(fields: [evidenceDocumentId], references: [id], onDelete: SetNull, map: "LoanAdvance_evidenceDocumentId_fkey")
+  repayments               LoanRepayment[]
 
+  @@unique([organizationId, externalReference], map: "LoanAdvance_org_externalReference_key")
   @@index([employeeId], map: "LoanAdvance_employeeId_fkey")
   @@index([organizationId, employeeId], map: "LoanAdvance_organizationId_employeeId_idx")
+  @@index([organizationId, confirmationStatus, status], map: "LoanAdvance_org_confirmation_status_idx")
+  @@index([organizationId, employeeId, recoveryStartDate], map: "LoanAdvance_org_employee_recovery_idx")
+  @@index([evidenceDocumentId], map: "LoanAdvance_evidenceDocumentId_idx")
   @@map("LoanAdvance")
 }
 
@@ -2056,7 +2074,7 @@ model PayeePayment {
 }
 
 model PayeeDocument {
-  id             String       @id @default(cuid())
+  id             String        @id @default(cuid())
   organizationId String
   payeeId        String
   documentName   String
@@ -2065,9 +2083,10 @@ model PayeeDocument {
   mimeType       String
   size           Int
   uploadedById   String?
-  createdAt      DateTime     @default(now())
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayeeDocument_organizationId_fkey")
-  payee          Payee        @relation(fields: [payeeId], references: [id], onDelete: Cascade, map: "PayeeDocument_payeeId_fkey")
+  createdAt      DateTime      @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayeeDocument_organizationId_fkey")
+  payee          Payee         @relation(fields: [payeeId], references: [id], onDelete: Cascade, map: "PayeeDocument_payeeId_fkey")
+  loanEvidence   LoanAdvance[]
 
   @@index([organizationId, payeeId, createdAt], map: "PayeeDocument_org_payee_created_idx")
   @@map("PayeeDocument")

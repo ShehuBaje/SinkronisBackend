@@ -186,6 +186,36 @@ test("P2.3 templated paths declare exactly their required path parameters", () =
   }
 });
 
+test("R6A.3 documents externally disbursed loan recording without origination or money movement", () => {
+  const spec = openApiSpec as any;
+  const canonical = spec.paths["/api/v1/payroll/deductions/loans"].post;
+  const compatibility = spec.paths["/api/v1/payroll/employees/{employeeId}/loans"].post;
+  const request = spec.components.schemas.PayrollExternalLoanRecordRequest;
+  const response = spec.components.schemas.PayrollLoan;
+  assert.equal(canonical.requestBody.content["application/json"].schema.$ref, "#/components/schemas/PayrollExternalLoanRecordRequest");
+  assert.match(canonical.summary, /externally disbursed/i);
+  for (const phrase of ["does not request", "does not approve", "wallet", "Paystack", "FinancialSettlement", "LoanRepayment"]) assert.match(canonical.description, new RegExp(phrase, "i"));
+  for (const required of ["employeeId", "originalPrincipal", "openingOutstanding", "externalDisbursementDate", "repaymentType", "recoveryStartDate", "attestation"]) assert.ok(request.required.includes(required), required);
+  assert.deepEqual(request.properties.attestation.enum, [true]);
+  assert.deepEqual(request.properties.currency.enum, ["NGN"]);
+  assert.match(request.properties.openingOutstanding.description, /no LoanRepayment is fabricated/i);
+  for (const field of ["originalPrincipal", "openingOutstanding", "externalDisbursementDate", "recoveryStartDate", "origin", "confirmationStatus", "recordedAt"]) assert.ok(response.properties[field], field);
+  assert.match(response.description, /LEGACY_UNCONFIRMED/);
+  assert.equal(compatibility.deprecated, true);
+  assert.match(compatibility.description, /same canonical/i);
+  assert.equal(spec.paths["/api/v1/employee/loans"], undefined, "no Employee Portal loan-request route is documented");
+});
+
+test("R6A.3 Payroll loan path templates declare exact required path parameters", () => {
+  const paths = (openApiSpec as any).paths;
+  const operations = Object.entries(paths).flatMap(([path, item]: [string, any]) => path.includes("/payroll/deductions/loans/") || path === "/api/v1/payroll/employees/{employeeId}/loans" ? Object.entries(item).filter(([method]) => ["get", "post", "put", "patch", "delete"].includes(method)).map(([, operation]: [string, any]) => ({ path, operation })) : []);
+  for (const { path, operation } of operations) {
+    const variables = new Set([...path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]));
+    const required = new Set((operation.parameters ?? []).filter((parameter: any) => parameter.in === "path" && parameter.required === true).map((parameter: any) => parameter.name));
+    assert.deepEqual([...required].sort(), [...variables].sort(), path);
+  }
+});
+
 test("Accounting create contracts publish runtime-valid bodies and the invoice catalogue dependency", () => {
   const paths = (openApiSpec as any).paths;
   const catalogue = paths["/api/v1/accounting/items-services"].post;

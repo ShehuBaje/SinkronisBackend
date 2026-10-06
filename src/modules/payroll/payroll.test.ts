@@ -65,8 +65,9 @@ test("Payroll Employee filters are bounded, whitelisted and reject tenant manipu
 test("salary, deduction, loan and BIK DTOs enforce Payroll business boundaries", () => {
   assert.equal(payrollSalaryStructureSchema.safeParse({ basicSalary: 100, additionalAllowances: [], proration: { resumeDate: null, method: null } }).success, true);
   assert.equal(payrollDeductionSchema.safeParse({ name: "Union dues", amount: -1 }).success, false);
-  assert.equal(payrollLoanSchema.safeParse({ purpose: "Advance", type: "RECURRING", principal: 100, monthlyRepayment: 101, startDate: "2026-08-01" }).success, false);
-  assert.equal(payrollLoanSchema.safeParse({ purpose: "Advance", type: "ONE_OFF", principal: 100, startDate: "2026-08-01" }).success, true);
+  const externalLoan = { purpose: "Advance", principal: 100, openingOutstanding: 100, externalDisbursementDate: "2026-01-01", startDate: "2026-08-01", currency: "NGN", attestation: true };
+  assert.equal(payrollLoanSchema.safeParse({ ...externalLoan, type: "RECURRING", monthlyRepayment: 101 }).success, false);
+  assert.equal(payrollLoanSchema.safeParse({ ...externalLoan, type: "ONE_OFF" }).success, true);
   assert.equal(payrollBikSchema.safeParse({ hmoHealthInsurance: -1 }).success, false);
   assert.equal(payrollCreateEmployeeSchema.safeParse({ fullName: "Configured Employee", role: "Engineer", email: "employee@example.com", employmentType: "FULL_TIME", salary: { basicSalary: 100 }, tenantId: "other" }).success, false);
 });
@@ -322,8 +323,21 @@ test("Loan schedule reaches zero without a negative final installment", () => {
 });
 
 test("Loan and custom deduction commands enforce Payroll boundaries", () => {
-  assert.equal(payrollCreateLoanSchema.safeParse({ employeeId: "cm1234567890123456789012", purpose: "Advance", principalAmount: 1000, monthlyRepayment: 200, startDate: "2026-09-01" }).success, true);
-  assert.equal(payrollCreateLoanSchema.safeParse({ employeeId: "cm1234567890123456789012", purpose: "Advance", principalAmount: 1000, monthlyRepayment: 1200, startDate: "2026-09-01" }).success, false);
+  const recurring = { employeeId: "cm1234567890123456789012", purpose: "Externally paid staff advance", originalPrincipal: 1000, openingOutstanding: 750, externalDisbursementDate: "2026-01-01", repaymentType: "RECURRING" as const, monthlyRepayment: 200, recoveryStartDate: "2026-02-01", currency: "NGN" as const, attestation: true as const };
+  assert.equal(payrollCreateLoanSchema.safeParse(recurring).success, true);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, originalPrincipal: 0 }).success, false);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, openingOutstanding: 0 }).success, false);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, openingOutstanding: 1001 }).success, false);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, monthlyRepayment: 751 }).success, false);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, monthlyRepayment: undefined }).success, false);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, externalDisbursementDate: undefined }).success, false);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, attestation: false }).success, false);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, recoveryStartDate: "2025-12-01" }).success, false);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, repaymentType: "ONE_OFF", monthlyRepayment: undefined }).success, true);
+  assert.equal(payrollCreateLoanSchema.safeParse({ ...recurring, repaymentType: "ONE_OFF", monthlyRepayment: 200 }).success, false);
+  const compatibility = { purpose: recurring.purpose, type: recurring.repaymentType, principal: recurring.originalPrincipal, openingOutstanding: recurring.openingOutstanding, externalDisbursementDate: recurring.externalDisbursementDate, monthlyRepayment: recurring.monthlyRepayment, startDate: recurring.recoveryStartDate, currency: recurring.currency, attestation: recurring.attestation };
+  assert.equal(payrollLoanSchema.safeParse(compatibility).success, true);
+  assert.equal(payrollLoanSchema.safeParse({ ...compatibility, attestation: false }).success, false);
   assert.equal(payrollAdjustLoanSchema.safeParse({ monthlyRepayment: 0 }).success, false);
   assert.equal(payrollLoansQuerySchema.safeParse({ status: "PAUSED", search: "employee", sortBy: "outstanding" }).success, true);
   assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "Recurring deduction", amount: 50 }).success, true);
