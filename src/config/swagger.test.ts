@@ -3,6 +3,14 @@ import test from "node:test";
 import app from "../app";
 import { openApiSpec } from "./swagger";
 
+test("Swagger preserves aggregate loan deduction while documenting frozen per-loan attribution", () => {
+  const property = (openApiSpec as any).components.schemas.PayrollPreview.properties.loanDeductions;
+  assert.equal(property.type, "number");
+  assert.match(property.description, /sum of immutable per-loan frozen recovery applications/i);
+  assert.match(property.description, /not a repayment commitment/i);
+  assert.equal((openApiSpec as any).paths["/api/v1/payroll/loan-recovery-applications"], undefined);
+});
+
 const normalizePath = (path: string) => {
   const normalized = path
     .replace(/:([A-Za-z0-9_]+)/g, "{}")

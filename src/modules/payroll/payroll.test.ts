@@ -2,12 +2,65 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import { payrollRouter } from "./payroll.routes";
-import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, externalPayeeLifecycleTransition, finalizePermanentEmployeeNet, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollAcceptedReportingStatuses, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollGroupDistribution, payrollMixedRunTotals, payrollPayeeLifecycleStatus, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
+import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, externalPayeeLifecycleTransition, finalizePermanentEmployeeNet, freezeEligibleLoanRecoveries, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollAcceptedReportingStatuses, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollGroupDistribution, payrollMixedRunTotals, payrollPayeeLifecycleStatus, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
 import { effectiveMonthlyPayDate } from "./payroll.service";
 import { payrollAllowanceTypeSchema, payrollDeductionTypeSchema, payrollPayPeriodSettingsSchema } from "./payroll.validation";
 import { payrollAdjustLoanSchema, payrollAvcCreateSchema, payrollBikSchema, payrollCreateCustomDeductionSchema, payrollCreateEmployeeSchema, payrollCreateLoanSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollLoansQuerySchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema, payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunsQuerySchema, payrollPayslipsQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema, payrollSalaryStructureSchema, payrollSettlementSchema, payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
 
 const money = (value: number | string) => new Prisma.Decimal(value);
+
+const recoveryLoan = (overrides: Record<string, unknown> = {}) => ({
+  id: "loan-b",
+  amount: money(300000),
+  openingOutstanding: money(300000),
+  outstanding: money(300000),
+  monthlyRepayment: money(30000),
+  loanType: "RECURRING" as const,
+  status: "ACTIVE" as const,
+  origin: "EXTERNAL_MANUAL" as const,
+  confirmationStatus: "CONFIRMED" as const,
+  recoveryStartDate: new Date("2026-01-01T00:00:00.000Z"),
+  currency: "NGN",
+  updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+  ...overrides,
+});
+
+test("per-loan recovery freeze is deterministic, independently calculated and traceable", () => {
+  const applications = freezeEligibleLoanRecoveries([
+    recoveryLoan(),
+    recoveryLoan({ id: "loan-a", outstanding: money(10000), monthlyRepayment: money(20000) }),
+    recoveryLoan({ id: "loan-c", loanType: "ONE_OFF", outstanding: money(45000), monthlyRepayment: null }),
+  ], new Date("2026-01-31T23:59:59.999Z"));
+
+  assert.deepEqual(applications.map((item) => item.loanAdvanceId), ["loan-a", "loan-b", "loan-c"]);
+  assert.deepEqual(applications.map((item) => item.appliedAmount), ["10000.00", "30000.00", "45000.00"]);
+  assert.equal(applications[0]?.outstandingBefore, "10000.00");
+  assert.equal(applications[0]?.configuredMonthlyRepayment, "20000.00");
+  assert.equal(applications[2]?.configuredMonthlyRepayment, null);
+  assert.equal(applications[2]?.repaymentType, "ONE_OFF");
+  assert.equal(applications[0]?.version, "R6A3_PHASE2_V1");
+});
+
+test("per-loan recovery excludes non-authoritative and ineligible loans", () => {
+  const applications = freezeEligibleLoanRecoveries([
+    recoveryLoan({ id: "paused", status: "PAUSED" }),
+    recoveryLoan({ id: "closed", status: "CLOSED_EARLY" }),
+    recoveryLoan({ id: "legacy", origin: "LEGACY_UNCONFIRMED", confirmationStatus: "LEGACY_UNCONFIRMED" }),
+    recoveryLoan({ id: "future", recoveryStartDate: new Date("2026-02-01T00:00:00.000Z") }),
+    recoveryLoan({ id: "zero", outstanding: money(0) }),
+    recoveryLoan({ id: "currency", currency: "USD" }),
+  ], new Date("2026-01-31T23:59:59.999Z"));
+
+  assert.deepEqual(applications, []);
+});
+
+test("one-off recovery preserves full outstanding without a gross-dependent cap", () => {
+  const [application] = freezeEligibleLoanRecoveries([
+    recoveryLoan({ id: "one-off", loanType: "ONE_OFF", outstanding: money(900000), monthlyRepayment: null }),
+  ], new Date("2026-01-31T23:59:59.999Z"));
+
+  assert.equal(application?.appliedAmount, "900000.00");
+});
 
 test("payroll settlement requires explicit manual evidence while provider preparation does not", () => {
   assert.equal(payrollSettlementSchema.safeParse({ settlementMethod: "MANUAL", idempotencyKey: "payroll-run-1", externalReference: "BANK-BATCH-1", settledAt: "2026-09-18T10:00:00.000Z", note: "Authorized salary batch" }).success, true);

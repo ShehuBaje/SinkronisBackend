@@ -705,6 +705,7 @@ model Employee {
   leaverequest              LeaveRequest[]             @relation("LeaveRequestEmployee")
   leaveRequestsAsReliever   LeaveRequest[]             @relation("LeaveRequestReliever")
   loans                     LoanAdvance[]
+  loanRecoveryApplications  LoanRecoveryApplication[]
   payslip                   Payslip[]
   salaryStructures          SalaryStructure[]
   user                      User?
@@ -1116,24 +1117,24 @@ model LeaveBalance {
 }
 
 model LoanAdvance {
-  id                       String          @id @default(cuid())
+  id                       String                    @id @default(cuid())
   organizationId           String
   employeeId               String
-  amount                   Decimal         @db.Decimal(14, 2)
-  openingOutstanding       Decimal?        @db.Decimal(14, 2)
-  outstanding              Decimal         @db.Decimal(14, 2)
-  currency                 String?         @db.VarChar(3)
-  reason                   String?         @db.Text
-  notes                    String?         @db.Text
+  amount                   Decimal                   @db.Decimal(14, 2)
+  openingOutstanding       Decimal?                  @db.Decimal(14, 2)
+  outstanding              Decimal                   @db.Decimal(14, 2)
+  currency                 String?                   @db.VarChar(3)
+  reason                   String?                   @db.Text
+  notes                    String?                   @db.Text
   issuedAt                 DateTime
   externalDisbursementDate DateTime?
   recoveryStartDate        DateTime?
-  loanType                 String          @default("RECURRING")
-  monthlyRepayment         Decimal?        @db.Decimal(14, 2)
-  status                   String          @default("ACTIVE")
-  origin                   String          @default("LEGACY_UNCONFIRMED") @db.VarChar(32)
-  confirmationStatus       String          @default("LEGACY_UNCONFIRMED") @db.VarChar(32)
-  externalReference        String?         @db.VarChar(191)
+  loanType                 String                    @default("RECURRING")
+  monthlyRepayment         Decimal?                  @db.Decimal(14, 2)
+  status                   String                    @default("ACTIVE")
+  origin                   String                    @default("LEGACY_UNCONFIRMED") @db.VarChar(32)
+  confirmationStatus       String                    @default("LEGACY_UNCONFIRMED") @db.VarChar(32)
+  externalReference        String?                   @db.VarChar(191)
   evidenceDocumentId       String?
   recordedById             String?
   recordedAt               DateTime?
@@ -1143,13 +1144,15 @@ model LoanAdvance {
   adjustedAt               DateTime?
   closedAt                 DateTime?
   closedById               String?
-  closeReason              String?         @db.Text
-  createdAt                DateTime        @default(now())
-  updatedAt                DateTime        @updatedAt
-  employee                 Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LoanAdvance_employeeId_fkey")
-  evidenceDocument         PayeeDocument?  @relation(fields: [evidenceDocumentId], references: [id], onDelete: SetNull, map: "LoanAdvance_evidenceDocumentId_fkey")
+  closeReason              String?                   @db.Text
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  employee                 Employee                  @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "LoanAdvance_employeeId_fkey")
+  evidenceDocument         PayeeDocument?            @relation(fields: [evidenceDocumentId], references: [id], onDelete: SetNull, map: "LoanAdvance_evidenceDocumentId_fkey")
   repayments               LoanRepayment[]
+  recoveryApplications     LoanRecoveryApplication[]
 
+  @@unique([organizationId, id], map: "LoanAdvance_org_id_key")
   @@unique([organizationId, externalReference], map: "LoanAdvance_org_externalReference_key")
   @@index([employeeId], map: "LoanAdvance_employeeId_fkey")
   @@index([organizationId, employeeId], map: "LoanAdvance_organizationId_employeeId_idx")
@@ -1175,6 +1178,40 @@ model LoanRepayment {
   @@unique([loanId, payrollRunId], map: "LoanRepayment_loan_run_key")
   @@index([organizationId, loanId, repaymentDate], map: "LoanRepayment_org_loan_date_idx")
   @@map("LoanRepayment")
+}
+
+model LoanRecoveryApplication {
+  id                      String                           @id @default(cuid())
+  organizationId          String
+  loanAdvanceId           String
+  payrollRunId            String
+  payrollRunParticipantId String
+  payslipId               String
+  employeeId              String
+  revisionRootRunId       String
+  appliedAmount           Decimal                          @db.Decimal(14, 2)
+  currency                String                           @default("NGN") @db.VarChar(3)
+  state                   loan_recovery_application_status @default(FROZEN)
+  frozenSnapshot          Json
+  frozenAt                DateTime                         @default(now())
+  supersededAt            DateTime?
+  createdAt               DateTime                         @default(now())
+  updatedAt               DateTime                         @updatedAt
+  organization            Organization                     @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "LoanRecoveryApplication_org_fkey")
+  loanAdvance             LoanAdvance                      @relation(fields: [organizationId, loanAdvanceId], references: [organizationId, id], onDelete: Restrict, map: "LoanRecoveryApplication_org_loan_fkey")
+  payrollRun              PayrollRun                       @relation(fields: [organizationId, payrollRunId], references: [organizationId, id], onDelete: Restrict, map: "LoanRecoveryApplication_org_run_fkey")
+  payrollRunParticipant   PayrollRunParticipant            @relation(fields: [organizationId, payrollRunParticipantId], references: [organizationId, id], onDelete: Restrict, map: "LoanRecoveryApplication_org_participant_fkey")
+  payslip                 Payslip                          @relation(fields: [organizationId, payslipId], references: [organizationId, id], onDelete: Restrict, map: "LoanRecoveryApplication_org_payslip_fkey")
+  employee                Employee                         @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, map: "LoanRecoveryApplication_org_employee_fkey")
+
+  @@unique([loanAdvanceId, payslipId], map: "LoanRecoveryApplication_loan_payslip_key")
+  @@unique([payrollRunId, payrollRunParticipantId, loanAdvanceId], map: "LoanRecoveryApplication_run_participant_loan_key")
+  @@index([organizationId, payrollRunId, state], map: "LoanRecoveryApplication_org_run_state_idx")
+  @@index([organizationId, loanAdvanceId, state], map: "LoanRecoveryApplication_org_loan_state_idx")
+  @@index([organizationId, revisionRootRunId, state], map: "LoanRecoveryApplication_org_revision_state_idx")
+  @@index([organizationId, payslipId], map: "LoanRecoveryApplication_org_payslip_idx")
+  @@index([organizationId, employeeId], map: "LoanRecoveryApplication_org_employee_idx")
+  @@map("LoanRecoveryApplication")
 }
 
 model PayrollEnrollment {
@@ -1381,6 +1418,7 @@ model Organization {
   payeePayments                 PayeePayment[]
   payeeDocuments                PayeeDocument[]
   loanRepayments                LoanRepayment[]
+  loanRecoveryApplications      LoanRecoveryApplication[]
   platformimpersonationsession  PlatformImpersonationSession[]
   role                          Role[]
   salarystructure               SalaryStructure[]
@@ -1775,6 +1813,7 @@ model PayrollRun {
   payslip                   Payslip[]
   payeePayments             PayeePayment[]
   loanRepayments            LoanRepayment[]
+  loanRecoveryApplications  LoanRecoveryApplication[]
   walletTransactions        WalletTransaction[]
   taxRemittances            PayrollTaxRemittance[]
   pensionRemittances        PayrollPensionRemittance[]
@@ -1819,18 +1858,18 @@ model PayrollCalculationBatch {
 }
 
 model Payslip {
-  id                       String     @id @default(cuid())
+  id                       String                    @id @default(cuid())
   organizationId           String
   payrollRunId             String
   employeeId               String
-  grossPay                 Decimal    @db.Decimal(14, 2)
-  payeTax                  Decimal    @default(0.00) @db.Decimal(14, 2)
-  pension                  Decimal    @default(0.00) @db.Decimal(14, 2)
-  employerPension          Decimal    @default(0.00) @db.Decimal(14, 2)
-  nhf                      Decimal    @default(0.00) @db.Decimal(14, 2)
-  nsitf                    Decimal    @default(0.00) @db.Decimal(14, 2)
-  deductions               Decimal    @default(0.00) @db.Decimal(14, 2)
-  netPay                   Decimal    @db.Decimal(14, 2)
+  grossPay                 Decimal                   @db.Decimal(14, 2)
+  payeTax                  Decimal                   @default(0.00) @db.Decimal(14, 2)
+  pension                  Decimal                   @default(0.00) @db.Decimal(14, 2)
+  employerPension          Decimal                   @default(0.00) @db.Decimal(14, 2)
+  nhf                      Decimal                   @default(0.00) @db.Decimal(14, 2)
+  nsitf                    Decimal                   @default(0.00) @db.Decimal(14, 2)
+  deductions               Decimal                   @default(0.00) @db.Decimal(14, 2)
+  netPay                   Decimal                   @db.Decimal(14, 2)
   currency                 String?
   earningsSnapshot         Json?
   deductionsSnapshot       Json?
@@ -1848,15 +1887,17 @@ model Payslip {
   tinSnapshot              String?
   pfaNameSnapshot          String?
   pensionPinSnapshot       String?
-  avcContribution          Decimal    @default(0.00) @db.Decimal(14, 2)
-  loanDeduction            Decimal    @default(0.00) @db.Decimal(14, 2)
-  customDeduction          Decimal    @default(0.00) @db.Decimal(14, 2)
-  paymentStatus            String     @default("PENDING")
-  createdAt                DateTime   @default(now())
-  updatedAt                DateTime   @updatedAt
-  employee                 Employee   @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
-  payrollrun               PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
+  avcContribution          Decimal                   @default(0.00) @db.Decimal(14, 2)
+  loanDeduction            Decimal                   @default(0.00) @db.Decimal(14, 2)
+  customDeduction          Decimal                   @default(0.00) @db.Decimal(14, 2)
+  paymentStatus            String                    @default("PENDING")
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  employee                 Employee                  @relation(fields: [employeeId], references: [id], map: "Payslip_employeeId_fkey")
+  payrollrun               PayrollRun                @relation(fields: [payrollRunId], references: [id], onDelete: Cascade, map: "Payslip_payrollRunId_fkey")
+  loanRecoveryApplications LoanRecoveryApplication[]
 
+  @@unique([organizationId, id], map: "Payslip_org_id_key")
   @@unique([payrollRunId, employeeId], map: "Payslip_payrollRunId_employeeId_key")
   @@index([employeeId], map: "Payslip_employeeId_fkey")
   @@index([organizationId, employeeId], map: "Payslip_organizationId_employeeId_idx")
@@ -2008,25 +2049,27 @@ model PayrollAdjustmentApplication {
 }
 
 model PayrollRunParticipant {
-  id                     String                               @id @default(cuid())
-  organizationId         String
-  payrollRunId           String
-  payeeId                String
-  employeeId             String?
-  participantType        payroll_participant_type
-  selectionSource        payroll_participant_selection_source
-  selectedById           String?
-  selectedAt             DateTime                             @default(now())
-  frozenAt               DateTime?
-  calculationSnapshot    Json?
-  createdAt              DateTime                             @default(now())
-  updatedAt              DateTime                             @updatedAt
-  payrollRun             PayrollRun                           @relation(fields: [organizationId, payrollRunId], references: [organizationId, id], onDelete: Cascade, map: "PayrollRunParticipant_org_run_fkey")
-  payee                  Payee                                @relation(fields: [organizationId, payeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollRunParticipant_org_payee_fkey")
-  employee               Employee?                            @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "PayrollRunParticipant_org_employee_fkey")
-  payeePayment           PayeePayment?
-  adjustmentApplications PayrollAdjustmentApplication[]
+  id                       String                               @id @default(cuid())
+  organizationId           String
+  payrollRunId             String
+  payeeId                  String
+  employeeId               String?
+  participantType          payroll_participant_type
+  selectionSource          payroll_participant_selection_source
+  selectedById             String?
+  selectedAt               DateTime                             @default(now())
+  frozenAt                 DateTime?
+  calculationSnapshot      Json?
+  createdAt                DateTime                             @default(now())
+  updatedAt                DateTime                             @updatedAt
+  payrollRun               PayrollRun                           @relation(fields: [organizationId, payrollRunId], references: [organizationId, id], onDelete: Cascade, map: "PayrollRunParticipant_org_run_fkey")
+  payee                    Payee                                @relation(fields: [organizationId, payeeId], references: [organizationId, id], onDelete: Restrict, map: "PayrollRunParticipant_org_payee_fkey")
+  employee                 Employee?                            @relation(fields: [organizationId, employeeId], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "PayrollRunParticipant_org_employee_fkey")
+  payeePayment             PayeePayment?
+  adjustmentApplications   PayrollAdjustmentApplication[]
+  loanRecoveryApplications LoanRecoveryApplication[]
 
+  @@unique([organizationId, id], map: "PayrollRunParticipant_org_id_key")
   @@unique([payrollRunId, payeeId], map: "PayrollRunParticipant_run_payee_key")
   @@unique([payrollRunId, employeeId], map: "PayrollRunParticipant_run_employee_key")
   @@index([organizationId, payrollRunId], map: "PayrollRunParticipant_org_run_idx")
@@ -3150,6 +3193,11 @@ enum payroll_adjustment_application_status {
   APPLIED
   SUPERSEDED
   ACCEPTED
+}
+
+enum loan_recovery_application_status {
+  FROZEN
+  SUPERSEDED
 }
 
 enum payee_tax_regime {
