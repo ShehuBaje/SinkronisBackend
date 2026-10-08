@@ -9,6 +9,7 @@ import { assertProviderTransfersEnabled, type ProviderTransferResult, type Settl
 import { releaseSettlementReservation, reverseSucceededSettlement } from "./financial-settlement";
 import { consumeWalletReservation, financialWallet, reserveWalletBalance } from "./wallet-integrity";
 import { assertIncidentWalletMutationAllowed } from "./payroll-wallet-incident-pause";
+import { commitPayrollLoanRecoveries, reversePayrollLoanRecoveries } from "./payroll-loan-repayment";
 
 const txOptions = { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 } as const;
 const activeStatuses = ["RESERVED", "PROVIDER_PROCESSING", "UNKNOWN"] as const;
@@ -83,13 +84,15 @@ const updatePayrollAggregate = async (tx: Prisma.TransactionClient, payslipId: s
   await tx.payrollRun.update({ where: { id: slip.payrollRunId }, data: remaining ? { status: "DISBURSING", disbursedAt: null } : { status: "DISBURSED", disbursedAt: new Date() } });
 };
 
-export const finalizeProviderSettlementSuccess = async (settlementId: string, result: ProviderTransferResult) => prisma.$transaction(async (tx) => {
+export const finalizeProviderSettlementSuccess = async (settlementId: string, result: ProviderTransferResult, testHooks?: { afterLoanApplication?: (applicationId: string) => Promise<void> }) => prisma.$transaction(async (tx) => {
+  await tx.$queryRaw`SELECT id FROM FinancialSettlement WHERE id = ${settlementId} FOR UPDATE`;
   const settlement = await tx.financialSettlement.findUnique({ where: { id: settlementId } });
   if (!settlement) throw notFound("Settlement not found");
   assertIncidentWalletMutationAllowed(settlement.organizationId, settlement.walletAccountId);
   if (settlement.status === "SUCCEEDED") return settlement;
   if (!activeStatuses.includes(settlement.status as typeof activeStatuses[number]) || !settlement.reservedAt || settlement.reservationReleasedAt) throw conflict("Settlement is not eligible for provider success");
   assertResult(settlement, result);
+  const finalizedAt = new Date();
   await financialWallet(tx, settlement.organizationId, settlement.walletAccountId, settlement.currency);
   const debit = await consumeWalletReservation(tx, { organizationId: settlement.organizationId, walletAccountId: settlement.walletAccountId, amount: settlement.amount, currency: settlement.currency });
   await tx.walletTransaction.create({ data: { organizationId: settlement.organizationId, walletAccountId: settlement.walletAccountId, type: `PROVIDER_${settlement.sourceType}`, direction: "DEBIT", amount: settlement.amount, balanceBefore: debit.balanceBefore, balanceAfter: debit.balanceAfter, reference: settlement.internalReference, transferReference: settlement.providerTransferReference, description: `Paystack settlement ${settlement.internalReference}`, sourceType: settlement.sourceType, sourceId: settlement.sourceId, createdById: settlement.createdById } });
@@ -100,9 +103,10 @@ export const finalizeProviderSettlementSuccess = async (settlementId: string, re
   if (settlement.sourceType === "PAYROLL_PAYSLIP") {
     const businessClaim = await tx.payslip.updateMany({ where: { id: settlement.sourceId, organizationId: settlement.organizationId, paymentStatus: { not: "PAID" } }, data: { paymentStatus: "PAID" } });
     if (businessClaim.count !== 1) throw conflict("Payroll obligation is not eligible for settlement finalization");
+    await commitPayrollLoanRecoveries(tx, { ...settlement, settledAt: finalizedAt }, { afterApplication: testHooks?.afterLoanApplication });
     await updatePayrollAggregate(tx, settlement.sourceId, true);
   }
-  return tx.financialSettlement.update({ where: { id: settlement.id }, data: { status: "SUCCEEDED", providerStatus: result.providerStatus, providerTransferCode: result.transferCode, lastVerifiedAt: new Date(), reservationReleasedAt: new Date(), settledAt: new Date(), failureReason: null } });
+  return tx.financialSettlement.update({ where: { id: settlement.id }, data: { status: "SUCCEEDED", providerStatus: result.providerStatus, providerTransferCode: result.transferCode, lastVerifiedAt: finalizedAt, reservationReleasedAt: finalizedAt, settledAt: finalizedAt, failureReason: null } });
 }, txOptions);
 
 export const applyProviderTransferResult = async (settlement: FinancialSettlement, result: ProviderTransferResult) => {
@@ -119,15 +123,16 @@ export const applyProviderTransferResult = async (settlement: FinancialSettlemen
 
 export const reverseProviderSettlement = async (settlement: FinancialSettlement, result: ProviderTransferResult) => {
   assertResult(settlement, result);
-  const reversed = await reverseSucceededSettlement(settlement.organizationId, settlement.id, `paystack-reversal-${result.reference}`);
-  await prisma.$transaction(async (tx) => {
+  const reversalReference = `paystack-reversal-${result.reference}`;
+  const reversed = await reverseSucceededSettlement(settlement.organizationId, settlement.id, reversalReference, undefined, async (tx, current) => {
     if (settlement.sourceType === "ACCOUNTING_PAYMENT_REQUEST") await tx.paymentRequest.updateMany({ where: { id: settlement.sourceId, organizationId: settlement.organizationId, status: "PAID" }, data: { status: "APPROVED", disbursementReference: null, disbursedAt: null } });
     if (settlement.sourceType === "PAYROLL_PAYSLIP") {
+      await reversePayrollLoanRecoveries(tx, current, reversalReference);
       await tx.payslip.updateMany({ where: { id: settlement.sourceId, organizationId: settlement.organizationId, paymentStatus: "PAID" }, data: { paymentStatus: "REVERSED" } });
       await updatePayrollAggregate(tx, settlement.sourceId, false);
     }
-    await tx.financialSettlement.update({ where: { id: reversed.id }, data: { providerStatus: result.providerStatus, lastVerifiedAt: new Date() } });
-  }, txOptions);
+    await tx.financialSettlement.update({ where: { id: current.id }, data: { providerStatus: result.providerStatus, lastVerifiedAt: new Date() } });
+  });
   return prisma.financialSettlement.findUniqueOrThrow({ where: { id: reversed.id } });
 };
 

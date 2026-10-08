@@ -14,7 +14,7 @@ test("loan recovery application schema is compact, tenant-safe and idempotent", 
   assert.match(schema, /model LoanRecoveryApplication[\s\S]*payslipId\s+String/);
   assert.match(schema, /@@unique\(\[loanAdvanceId, payslipId\], map:/);
   assert.match(schema, /@@unique\(\[payrollRunId, payrollRunParticipantId, loanAdvanceId\], map:/);
-  assert.match(schema, /enum loan_recovery_application_status\s*\{\s*FROZEN\s*SUPERSEDED\s*\}/);
+  assert.match(schema, /enum loan_recovery_application_status\s*\{\s*FROZEN\s*SUPERSEDED\s*COMMITTED\s*REVERSED\s*\}/);
 });
 
 test("migration 79 is additive and fabricates no recovery history", () => {

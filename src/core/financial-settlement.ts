@@ -6,6 +6,7 @@ import { assertFinancialCurrency, consumeWalletReservation, financialWallet, rel
 import { assertIncidentWalletMutationAllowed } from "./payroll-wallet-incident-pause";
 
 type Db = Prisma.TransactionClient;
+type SettlementReversalFinalize = (tx: Db, settlement: FinancialSettlement, reversalLedgerId: string) => Promise<void>;
 const financialTransactionOptions = { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 } as const;
 export type ManualSettlementInput = { idempotencyKey: string; externalReference: string; settledAt: Date; note: string };
 export type SettlementSource = { organizationId: string; walletAccountId: string; sourceType: string; sourceId: string; amount: Prisma.Decimal; currency: string; beneficiarySnapshot?: Prisma.InputJsonValue; createdById?: string };
@@ -76,6 +77,7 @@ export const reverseSucceededSettlement = async (
   settlementId: string,
   reversalReference: string,
   testHooks?: { afterLedger?: () => Promise<void> },
+  finalize?: SettlementReversalFinalize,
 ) => {
   try {
     return await prisma.$transaction(async (tx) => {
@@ -110,6 +112,7 @@ export const reverseSucceededSettlement = async (
         },
       });
       await testHooks?.afterLedger?.();
+      await finalize?.(tx, settlement, ledger.id);
       return tx.financialSettlement.update({
         where: { id: settlement.id },
         data: { status: "REVERSED", reversedAt: new Date(), reversalReference, reversalLedgerId: ledger.id },

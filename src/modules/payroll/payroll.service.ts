@@ -13,6 +13,7 @@ import { createObjectKey, deleteObject, readObject, uploadObject } from "../../c
 import { createPayslipPdf, payslipComponents } from "../employee/employee.service";
 import { getQueueByName, isQueueBackendAvailable, PAYROLL_QUEUE_NAME } from "../../queues";
 import { completeManualSettlement, prepareProviderSettlement, settlementDto } from "../../core/financial-settlement";
+import { commitPayrollLoanRecoveries } from "../../core/payroll-loan-repayment";
 import { initiateProviderSettlement } from "../../core/provider-settlement";
 import { assertProviderTransfersEnabled } from "../../core/settlement-provider";
 import { assertFinancialCurrency, debitUnreservedWallet, normalizeFinancialCurrency, spendableBalance } from "../../core/wallet-integrity";
@@ -877,7 +878,11 @@ export const settlePayrollRun = async (organizationId: string, payrollRunId: str
   await prisma.payrollRun.updateMany({ where: { id: payrollRunId, organizationId, status: { in: ["APPROVED", "PENDING_DISBURSEMENT"] } }, data: { status: "DISBURSING" } });
   const settlements = [];
   for (const slip of payslips) {
-    const result = await completeManualSettlement({ organizationId, walletAccountId: wallet.id, sourceType: "PAYROLL_PAYSLIP", sourceId: slip.id, amount: slip.netPay, currency: slip.currency ?? wallet.currency, beneficiarySnapshot: slip.bankSnapshot as Prisma.InputJsonValue, createdById: user.id }, { idempotencyKey: `${input.idempotencyKey}:${slip.id}`, externalReference: `${input.externalReference!}:${slip.id}`, settledAt: input.settledAt!, note: input.note! }, (tx) => tx.payslip.update({ where: { id: slip.id }, data: { paymentStatus: "PAID" } }));
+    const result = await completeManualSettlement({ organizationId, walletAccountId: wallet.id, sourceType: "PAYROLL_PAYSLIP", sourceId: slip.id, amount: slip.netPay, currency: slip.currency ?? wallet.currency, beneficiarySnapshot: slip.bankSnapshot as Prisma.InputJsonValue, createdById: user.id }, { idempotencyKey: `${input.idempotencyKey}:${slip.id}`, externalReference: `${input.externalReference!}:${slip.id}`, settledAt: input.settledAt!, note: input.note! }, async (tx, settlement) => {
+      const updated = await tx.payslip.update({ where: { id: slip.id }, data: { paymentStatus: "PAID" } });
+      await commitPayrollLoanRecoveries(tx, settlement);
+      return updated;
+    });
     settlements.push(settlementDto(result.settlement));
   }
   const remaining = await prisma.payslip.count({ where: { organizationId, payrollRunId, paymentStatus: { not: "PAID" } } });
