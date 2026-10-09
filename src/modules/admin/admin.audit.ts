@@ -13,14 +13,23 @@ type CreateAuditLogInput = {
   metadata?: Prisma.InputJsonValue;
 };
 
-const stableStringify = (value: unknown): string => {
+export const stableAuditStringify = (value: unknown): string => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (Array.isArray(value)) return `[${value.map(stableAuditStringify).join(",")}]`;
 
   return `{${Object.entries(value as Record<string, unknown>)
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableAuditStringify(entry)}`)
     .join(",")}}`;
+};
+
+export const AUDIT_HASH_VERSION_V2 = "V2" as const;
+
+/** Mirrors JSON-column persistence before hashing so a stored row can be replayed exactly. */
+export const canonicalizeAuditMetadata = (metadata: Prisma.InputJsonValue | undefined): Prisma.InputJsonObject => {
+  const serialized = JSON.stringify(metadata ?? {});
+  const parsed = JSON.parse(serialized) as Prisma.InputJsonValue;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Prisma.InputJsonObject : {};
 };
 
 const mergeAuditMetadata = (metadata: Prisma.InputJsonValue | undefined) => {
@@ -34,8 +43,8 @@ const mergeAuditMetadata = (metadata: Prisma.InputJsonValue | undefined) => {
   } as Prisma.InputJsonValue;
 };
 
-const buildAuditHash = (
-  input: CreateAuditLogInput & { sequence: number; previousHash: string | null; createdAt: Date; metadata: Prisma.InputJsonValue }
+export const buildAuditHash = (
+  input: CreateAuditLogInput & { sequence: number; previousHash: string | null; createdAt: Date; metadata: Prisma.InputJsonValue; hashVersion?: string | null }
 ) => {
   const payload = {
     organizationId: input.organizationId,
@@ -47,14 +56,19 @@ const buildAuditHash = (
     summary: input.summary,
     metadata: input.metadata,
     previousHash: input.previousHash,
-    createdAt: input.createdAt.toISOString()
+    createdAt: input.createdAt.toISOString(),
+    ...(input.hashVersion ? { hashVersion: input.hashVersion } : {})
   };
 
-  return crypto.createHash("sha256").update(stableStringify(payload)).digest("hex");
+  return crypto.createHash("sha256").update(stableAuditStringify(payload)).digest("hex");
 };
 
+export const replayAuditHash = (row: CreateAuditLogInput & { sequence: number; previousHash: string | null; createdAt: Date; metadata: Prisma.InputJsonValue; hashVersion?: string | null }) =>
+  buildAuditHash({ ...row, metadata: row.hashVersion === AUDIT_HASH_VERSION_V2 ? canonicalizeAuditMetadata(row.metadata) : row.metadata });
+
 const persistAuditLog = async (input: CreateAuditLogInput, tx: Prisma.TransactionClient) => {
-  const metadata = mergeAuditMetadata(input.metadata);
+  const metadata = canonicalizeAuditMetadata(mergeAuditMetadata(input.metadata));
+  const hashVersion = AUDIT_HASH_VERSION_V2;
   const txAny = tx as any;
   await txAny.auditLogChain.upsert({ where: { organizationId: input.organizationId }, create: { organizationId: input.organizationId }, update: {} });
 
@@ -68,7 +82,7 @@ const persistAuditLog = async (input: CreateAuditLogInput, tx: Prisma.Transactio
     const sequence = (chain?.sequence ?? 0) + 1;
     const previousHash = chain?.lastHash ?? null;
     const createdAt = new Date();
-    const hash = buildAuditHash({ ...input, metadata, sequence, previousHash, createdAt });
+    const hash = buildAuditHash({ ...input, metadata, sequence, previousHash, createdAt, hashVersion });
 
     await txAny.auditLog.create({
       data: {
@@ -82,6 +96,7 @@ const persistAuditLog = async (input: CreateAuditLogInput, tx: Prisma.Transactio
         metadata,
         previousHash,
         hash,
+        hashVersion,
         createdAt
       }
     });

@@ -7,7 +7,7 @@ import { env } from "../../config/env";
 import { badRequest, unauthorized } from "../../core/http-error";
 import { prisma } from "../../core/prisma";
 import { sendLoginOtpEmail, sendLoginSmsOtp, sendPasswordResetOtpEmail } from "./auth.mailer";
-import { permissions } from "./permissions";
+import { permissions, restrictedPermissions } from "./permissions";
 import type {
   beginAuthenticatorSetupSchema,
   acceptTenantInvitationSchema,
@@ -616,7 +616,7 @@ export const registerOrganization = async (input: z.infer<typeof registerOrganiz
     });
 
     const allPermissions = await tx.permission.findMany({
-      where: { key: { in: [...permissions] } }
+      where: { key: { in: [...permissions], notIn: [...restrictedPermissions] } }
     });
 
     const role = await tx.role.create({

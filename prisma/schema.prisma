@@ -307,6 +307,7 @@ model AuditLog {
   createdAt      DateTime     @default(now())
   previousHash   String?      @db.Char(64)
   hash           String?      @db.Char(64)
+  hashVersion    String?      @db.VarChar(16)
   sequence       Int?
   actorUser      User?        @relation(fields: [actorUserId], references: [id], map: "AuditLog_actorUserId_fkey")
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "AuditLog_organizationId_fkey")
@@ -1152,6 +1153,7 @@ model LoanAdvance {
   evidenceDocument         PayeeDocument?            @relation(fields: [evidenceDocumentId], references: [id], onDelete: SetNull, map: "LoanAdvance_evidenceDocumentId_fkey")
   repayments               LoanRepayment[]
   recoveryApplications     LoanRecoveryApplication[]
+  legacyVerifications      LegacyLoanVerification[]
 
   @@unique([organizationId, id], map: "LoanAdvance_org_id_key")
   @@unique([organizationId, externalReference], map: "LoanAdvance_org_externalReference_key")
@@ -1239,6 +1241,53 @@ model LoanRecoveryApplication {
   @@index([organizationId, payslipId], map: "LoanRecoveryApplication_org_payslip_idx")
   @@index([organizationId, employeeId], map: "LoanRecoveryApplication_org_employee_idx")
   @@map("LoanRecoveryApplication")
+}
+
+model LegacyLoanVerification {
+  id                          String                          @id @default(cuid())
+  organizationId              String
+  loanAdvanceId               String
+  attemptNumber               Int
+  status                      legacy_loan_verification_status @default(PENDING_VERIFICATION)
+  recordedPrincipalSnapshot   Decimal                         @db.Decimal(14, 2)
+  recordedOutstandingSnapshot Decimal                         @db.Decimal(14, 2)
+  assertedOriginalPrincipal   Decimal                         @db.Decimal(14, 2)
+  assertedCutoverOutstanding  Decimal                         @db.Decimal(14, 2)
+  currency                    String                          @db.VarChar(3)
+  externalDisbursementDate    DateTime
+  proposedRecoveryStartDate   DateTime
+  repaymentType               String                          @db.VarChar(32)
+  proposedMonthlyRepayment    Decimal?                        @db.Decimal(14, 2)
+  externalReference           String?                         @db.VarChar(191)
+  evidenceDocumentId          String?
+  evidenceNote                String?                         @db.Text
+  evidenceFingerprint         String                          @db.Char(64)
+  attestationVersion          String                          @db.VarChar(32)
+  attestationAccepted         Boolean                         @default(false)
+  reason                      String                          @db.Text
+  submittedById               String
+  submittedAt                 DateTime                        @default(now())
+  confirmedById               String?
+  confirmedAt                 DateTime?
+  reconciliationReason        String?                         @db.Text
+  decisionAt                  DateTime?
+  idempotencyKey              String                          @db.VarChar(191)
+  pendingVerificationKey      String?                         @unique(map: "LegacyLoanVerification_pending_key") @db.VarChar(191)
+  confirmedVerificationKey    String?                         @unique(map: "LegacyLoanVerification_confirmed_key") @db.VarChar(191)
+  createdAt                   DateTime                        @default(now())
+  organization                Organization                    @relation(fields: [organizationId], references: [id], onDelete: Restrict, map: "LegacyLoanVerification_org_fkey")
+  loanAdvance                 LoanAdvance                     @relation(fields: [organizationId, loanAdvanceId], references: [organizationId, id], onDelete: Restrict, map: "LegacyLoanVerification_org_loan_fkey")
+  evidenceDocument            PayeeDocument?                  @relation(fields: [organizationId, evidenceDocumentId], references: [organizationId, id], onDelete: Restrict, map: "LegacyLoanVerification_org_document_fkey")
+  submittedBy                 User                            @relation("LegacyLoanVerificationSubmittedBy", fields: [organizationId, submittedById], references: [organizationId, id], onDelete: Restrict, map: "LegacyLoanVerification_org_submitter_fkey")
+  confirmedBy                 User?                           @relation("LegacyLoanVerificationConfirmedBy", fields: [organizationId, confirmedById], references: [organizationId, id], onDelete: Restrict, map: "LegacyLoanVerification_org_confirmer_fkey")
+
+  @@unique([organizationId, id], map: "LegacyLoanVerification_org_id_key")
+  @@unique([organizationId, loanAdvanceId, attemptNumber], map: "LegacyLoanVerification_org_loan_attempt_key")
+  @@unique([organizationId, idempotencyKey], map: "LegacyLoanVerification_org_idempotency_key")
+  @@index([organizationId, loanAdvanceId, status, createdAt], map: "LegacyLoanVerification_org_loan_status_idx")
+  @@index([organizationId, submittedById, submittedAt], map: "LegacyLoanVerification_org_submitter_idx")
+  @@index([organizationId, confirmedById, decisionAt], map: "LegacyLoanVerification_org_confirmer_idx")
+  @@map("LegacyLoanVerification")
 }
 
 model PayrollEnrollment {
@@ -1446,6 +1495,7 @@ model Organization {
   payeeDocuments                PayeeDocument[]
   loanRepayments                LoanRepayment[]
   loanRecoveryApplications      LoanRecoveryApplication[]
+  legacyLoanVerifications       LegacyLoanVerification[]
   platformimpersonationsession  PlatformImpersonationSession[]
   role                          Role[]
   salarystructure               SalaryStructure[]
@@ -2159,7 +2209,9 @@ model PayeeDocument {
   organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayeeDocument_organizationId_fkey")
   payee          Payee         @relation(fields: [payeeId], references: [id], onDelete: Cascade, map: "PayeeDocument_payeeId_fkey")
   loanEvidence   LoanAdvance[]
+  legacyLoanVerificationEvidence LegacyLoanVerification[]
 
+  @@unique([organizationId, id], map: "PayeeDocument_org_id_key")
   @@index([organizationId, payeeId, createdAt], map: "PayeeDocument_org_payee_created_idx")
   @@map("PayeeDocument")
 }
@@ -2547,8 +2599,11 @@ model User {
   accountingInvoicePayments                                                           AccountingInvoicePayment[]
   accountingReminderConfigurations                                                    AccountingReminderConfiguration[]
   accountingExportJobs                                                                AccountingExportJob[]
+  submittedLegacyLoanVerifications                                                    LegacyLoanVerification[]          @relation("LegacyLoanVerificationSubmittedBy")
+  confirmedLegacyLoanVerifications                                                    LegacyLoanVerification[]          @relation("LegacyLoanVerificationConfirmedBy")
 
   @@unique([organizationId, email], map: "User_organizationId_email_key")
+  @@unique([organizationId, id], map: "User_organizationId_id_key")
   @@index([isPlatformAdmin, isActive], map: "User_isPlatformAdmin_isActive_idx")
   @@index([organizationId], map: "User_organizationId_idx")
   @@index([roleId], map: "User_roleId_fkey")
@@ -3231,6 +3286,12 @@ enum loan_recovery_application_status {
   SUPERSEDED
   COMMITTED
   REVERSED
+}
+
+enum legacy_loan_verification_status {
+  PENDING_VERIFICATION
+  CONFIRMED
+  NEEDS_RECONCILIATION
 }
 
 enum payee_tax_regime {

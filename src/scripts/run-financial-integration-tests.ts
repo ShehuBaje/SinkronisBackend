@@ -13,7 +13,8 @@ const files = [
   'src/financial-tests/financial-integrity-certification.integration.test.ts',
   'src/financial-tests/financial-operations.integration.test.ts',
   'src/financial-tests/phase3f-release.integration.test.ts',
-  'src/financial-tests/payroll-loan-repayment.integration.test.ts'
+  'src/financial-tests/payroll-loan-repayment.integration.test.ts',
+  'src/financial-tests/legacy-loan-verification-foundation.integration.test.ts'
 ];
 if (!process.env.FINANCIAL_TEST_PATTERN || /TEST_E2E/i.test(process.env.FINANCIAL_TEST_PATTERN)) files.push('src/financial-tests/test-e2e-infrastructure.integration.test.ts');
 args.push(...files);

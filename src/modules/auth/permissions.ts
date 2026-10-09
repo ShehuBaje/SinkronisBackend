@@ -138,7 +138,11 @@ export const permissions = [
   "payroll:loans:view",
   "payroll:loans:create",
   "payroll:loans:update",
-  "payroll:loans:approve"
+  "payroll:loans:approve",
+  "payroll:loans:confirm-legacy"
 ] as const;
 
 export type PermissionKey = (typeof permissions)[number];
+
+/** High-risk permissions that must be explicitly assigned and never enter default/system templates. */
+export const restrictedPermissions = ["payroll:loans:confirm-legacy"] as const satisfies readonly PermissionKey[];

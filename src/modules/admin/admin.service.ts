@@ -7,7 +7,7 @@ import { badRequest, conflict, notFound, serviceUnavailable } from "../../core/h
 import { deleteObject, readObject, uploadObject } from "../../core/object-storage";
 import { getPagination } from "../../core/pagination";
 import { prisma } from "../../core/prisma";
-import { permissions } from "../auth/permissions";
+import { permissions, restrictedPermissions } from "../auth/permissions";
 import type { PermissionKey } from "../auth/permissions";
 import { createAuditLog, extractEntityId } from "./admin.audit";
 import { syncSystemAlerts } from "./admin.dashboard";
@@ -733,7 +733,7 @@ const roleTemplates: Array<{
     key: "SYSTEM_ADMIN",
     name: "System Admin",
     description: "Full administrative access across all currently available modules and settings.",
-    permissionKeys: [...permissions]
+    permissionKeys: permissions.filter((permission) => !restrictedPermissions.includes(permission as (typeof restrictedPermissions)[number]))
   },
   {
     key: "MANAGER",

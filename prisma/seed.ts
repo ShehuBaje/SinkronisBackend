@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import { env } from "../src/config/env";
-import { permissions } from "../src/modules/auth/permissions";
+import { permissions, restrictedPermissions } from "../src/modules/auth/permissions";
 
 const prisma = new PrismaClient();
 
@@ -37,7 +37,7 @@ async function main() {
     }
   });
 
-  const allPermissions = await prisma.permission.findMany();
+  const allPermissions = await prisma.permission.findMany({ where: { key: { notIn: [...restrictedPermissions] } } });
   await prisma.rolePermission.createMany({
     data: allPermissions.map((permission) => ({
       roleId: ownerRole.id,

@@ -1,10 +1,11 @@
 import { PrismaClient } from "@prisma/client";
-import { permissions } from "../modules/auth/permissions";
+import { permissions, restrictedPermissions } from "../modules/auth/permissions";
 
 const prisma = new PrismaClient();
 
 async function main() {
   const canonicalPermissionSet = new Set(permissions);
+  const restrictedPermissionSet = new Set<string>(restrictedPermissions);
 
   await prisma.permission.createMany({
     data: permissions.map((key) => ({ key, description: key.replace(/:/g, " ") })),
@@ -56,7 +57,7 @@ async function main() {
     }
 
     const result = await prisma.rolePermission.createMany({
-      data: permissionRows.map((permission) => ({
+      data: permissionRows.filter((permission) => !restrictedPermissionSet.has(permission.key)).map((permission) => ({
         roleId: role.id,
         permissionId: permission.id
       })),
