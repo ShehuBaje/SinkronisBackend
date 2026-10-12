@@ -31,14 +31,15 @@ test("external calculation fails closed for legacy or contradictory tax semantic
   assert.throws(() => calculateFrozenExternalPayee({ participantType: "CONTRACT", taxRegime: "EXEMPT", monthlyAmount: "100000" }));
 });
 
-test("Process freezes only unified DRAFT membership and enqueues after commit", () => {
+test("Process freezes only unified DRAFT membership and dispatches after commit", () => {
   const body = source.slice(source.indexOf("export const processDraftPayRun"), source.indexOf("export const calculateFrozenExternalPayee"));
   assert.match(body, /status: "DRAFT"/);
   assert.match(body, /membershipVersion: "UNIFIED_PAYEE_V1"/);
-  assert.match(body, /calculationSnapshot: enrichedFrozenParticipantSnapshot/);
+  assert.match(body, /snapshot: enrichedFrozenParticipantSnapshot/);
+  assert.match(body, /calculationSnapshot: item\.snapshot/);
   assert.match(body, /participantsFrozenAt: now/);
   assert.match(body, /PAYROLL_PARTICIPANTS_INELIGIBLE/);
-  assert.ok(body.indexOf("await prisma.$transaction") < body.indexOf("enqueuePayrollJob"));
+  assert.ok(body.indexOf("await prisma.$transaction") < body.indexOf("dispatchPayRunCalculation"));
 });
 
 test("unified batching derives work only from frozen participant IDs", () => {

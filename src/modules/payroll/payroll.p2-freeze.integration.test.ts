@@ -23,7 +23,7 @@ test("process atomically freezes, revalidates and makes membership immutable", {
     assert.equal(claims.filter((result) => result.status === "fulfilled").length, 1);
     assert.equal(claims.filter((result) => result.status === "rejected").length, 1);
     const frozen = await prisma.payrollRun.findUniqueOrThrow({ where: { id: run.id }, include: { participants: true } });
-    assert.equal(frozen.status, "PROCESSING");
+    assert.equal(frozen.status, process.env.BACKGROUND_JOBS_MODE === "inline" ? "PENDING_APPROVAL" : "PROCESSING");
     assert.ok(frozen.participantsFrozenAt);
     assert.ok(frozen.participants[0].frozenAt);
     assert.ok(frozen.participants[0].calculationSnapshot);
@@ -83,8 +83,8 @@ test("excess one-off deductions fail before freeze and remain retryable after co
 
     await prisma.employeeDeduction.update({ where: { id: deduction.id }, data: { amount: 10 } });
     const retried = await processDraftPayRun(organization.id, run.id, user);
-    assert.equal(retried.status, "PROCESSING");
-    assert.equal((await prisma.payrollAdjustmentApplication.findFirstOrThrow({ where: { payrollRunId: run.id, employeeDeductionId: deduction.id } })).status, "FROZEN");
+    assert.equal(retried.status, process.env.BACKGROUND_JOBS_MODE === "inline" ? "PENDING_APPROVAL" : "PROCESSING");
+    assert.equal((await prisma.payrollAdjustmentApplication.findFirstOrThrow({ where: { payrollRunId: run.id, employeeDeductionId: deduction.id } })).status, process.env.BACKGROUND_JOBS_MODE === "inline" ? "APPLIED" : "FROZEN");
   } finally {
     await prisma.payrollAdjustmentApplication.deleteMany({ where: { payrollRunId: run.id } });
     await prisma.payrollRun.delete({ where: { id: run.id } });

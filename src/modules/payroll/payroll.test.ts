@@ -5,7 +5,7 @@ import { payrollRouter } from "./payroll.routes";
 import { assertUnifiedPayeeTypeTax, buildLoanSchedule, calculatePayeePayroll, calculatePayrollPreview, calculateUnifiedExternalPayee, externalPayeeLifecycleTransition, finalizePermanentEmployeeNet, freezeEligibleLoanRecoveries, inspectPayrollPayeeDocument, parsePayrollCsv, parsePayrollPayeeCsv, payrollAcceptedReportingStatuses, payrollBulkHeaders, payrollBulkTemplate, payrollDashboardMonths, payrollDashboardRunTotals, payrollEmployerCost, payrollGroupDistribution, payrollMixedRunTotals, payrollPayeeLifecycleStatus, payrollPensionSnapshotTotals, payrollProrationFactor, payrollVariance, payrollWalletShortfall, payRunAvailableActions, sanitizePayrollCsv, statutoryObligationStatus, walletBalanceAfter } from "./payroll.service";
 import { effectiveMonthlyPayDate } from "./payroll.service";
 import { payrollAllowanceTypeSchema, payrollDeductionTypeSchema, payrollPayPeriodSettingsSchema } from "./payroll.validation";
-import { payrollAdjustLoanSchema, payrollAvcCreateSchema, payrollBikSchema, payrollCreateCustomDeductionSchema, payrollCreateEmployeeSchema, payrollCreateLoanSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollLoansQuerySchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema, payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunsQuerySchema, payrollPayslipsQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema, payrollSalaryStructureSchema, payrollSettlementSchema, payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
+import { normalizePayrollPayeePhone, payrollAdjustLoanSchema, payrollAvcCreateSchema, payrollBikSchema, payrollCreateCustomDeductionSchema, payrollCreateEmployeeSchema, payrollCreateLoanSchema, payrollDashboardQuerySchema, payrollDeductionSchema, payrollEmployeesQuerySchema, payrollLoanSchema, payrollLoansQuerySchema, payrollPayeeSchema, payrollPayeesQuerySchema, payrollPayeeUpdateSchema, payrollPayRunCreateSchema, payrollPayRunEligibilityQuerySchema, payrollPayRunsQuerySchema, payrollPayslipsQuerySchema, payrollPfaTransferAdvanceSchema, payrollPfaTransferCreateSchema, payrollReportsBankQuerySchema, payrollReportsDepartmentQuerySchema, payrollReportsSummaryQuerySchema, payrollReportsVarianceQuerySchema, payrollReportsYtdQuerySchema, payrollSalaryStructureSchema, payrollSettlementSchema, payrollTaxAnnualQuerySchema, payrollTaxEmployeesQuerySchema, payrollTaxRemittancesQuerySchema, payrollWalletFundSchema, payrollWalletTransactionsQuerySchema } from "./payroll.validation";
 
 const money = (value: number | string) => new Prisma.Decimal(value);
 
@@ -319,6 +319,18 @@ test("Payee CSV parsing preserves the exact P1 contract and structured values", 
   assert.throws(() => parsePayrollPayeeCsv(Buffer.from("name,type\r\nWrong,CONTRACT")));
 });
 
+test("Payroll Payee phones normalize Nigerian presentation formats and international E.164", () => {
+  for (const input of ["08031234567", "0803 123 4567", "0803-123-4567", "2348031234567", "+2348031234567", "+234 803 123 4567"]) assert.equal(normalizePayrollPayeePhone(input), "+2348031234567");
+  assert.equal(normalizePayrollPayeePhone("+12025550123"), "+12025550123");
+  for (const input of ["0803CALLNOW", "0803.123.4567", "123", "+1234567890123456", "++2348031234567"]) assert.equal(normalizePayrollPayeePhone(input), null);
+  const created = payrollPayeeSchema.parse({ type: "CONTRACT", name: "Phone fixture", monthlyAmount: 100, taxRegime: "WHT", phone: "0803 123 4567" });
+  assert.equal((created as { phone?: string }).phone, "+2348031234567");
+  assert.equal(payrollPayeeUpdateSchema.parse({ phone: "0803-123-4567" }).phone, "+2348031234567");
+  const invalid = payrollPayeeSchema.safeParse({ type: "CONTRACT", name: "Phone fixture", monthlyAmount: 100, taxRegime: "WHT", phone: "0803CALLNOW" });
+  assert.equal(invalid.success, false);
+  if (!invalid.success) assert.deepEqual((invalid.error.issues[0] as { params?: unknown })?.params, { errorCode: "INVALID_PHONE_FORMAT" });
+});
+
 test("Payee payroll uses Decimal snapshots and taxability without mutating configuration", () => {
   const taxable = calculatePayeePayroll(money("100000.25"), true);
   const nonTaxable = calculatePayeePayroll(money("100000.25"), false);
@@ -336,7 +348,7 @@ test("Payee documents validate file signatures instead of MIME labels alone", ()
 
 test("Pay Run UI routes use explicit workflow endpoints inside Payroll", () => {
   const routes = (payrollRouter as any).stack.filter((layer: any) => layer.route).flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => `${method.toUpperCase()} ${layer.route.path}`));
-  for (const route of ["GET /pay-runs/eligibility", "GET /pay-runs", "POST /pay-runs", "GET /pay-runs/:payRunId", "POST /pay-runs/:payRunId/approve", "GET /pay-runs/:payRunId/export"]) assert.ok(routes.includes(route), route);
+  for (const route of ["GET /pay-runs/eligibility", "GET /pay-runs", "POST /pay-runs", "GET /pay-runs/:payRunId", "POST /pay-runs/:payRunId/resume-processing", "POST /pay-runs/:payRunId/approve", "GET /pay-runs/:payRunId/export"]) assert.ok(routes.includes(route), route);
 });
 
 test("Pay Run input validates dates, filters, sorting, and rejects tenant manipulation", () => {
@@ -394,6 +406,10 @@ test("Loan and custom deduction commands enforce Payroll boundaries", () => {
   assert.equal(payrollAdjustLoanSchema.safeParse({ monthlyRepayment: 0 }).success, false);
   assert.equal(payrollLoansQuerySchema.safeParse({ status: "PAUSED", search: "employee", sortBy: "outstanding" }).success, true);
   assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "Recurring deduction", amount: 50 }).success, true);
+  assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "One-off deduction", amount: 50, type: "ONE_OFF", effectiveFrom: "2026-10-01", currency: "NGN" }).success, true);
+  assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "One-off deduction", amount: 50, type: "ONE_OFF" }).success, false);
+  assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "One-off deduction", amount: 50, type: "ONE_OFF", effectiveFrom: "2026-10-02", effectiveTo: "2026-10-01" }).success, false);
+  assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "One-off deduction", amount: 50, type: "ONE_OFF", effectiveFrom: "2026-10-01", currency: "USD" }).success, false);
   assert.equal(payrollCreateCustomDeductionSchema.safeParse({ employeeId: "cm1234567890123456789012", name: "Recurring deduction", amount: -1 }).success, false);
 });
 

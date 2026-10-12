@@ -19,7 +19,7 @@ export const validate =
     } catch (error) {
       next(badRequest("Validation failed", error instanceof ZodError ? {
         errorCode: "VALIDATION_ERROR",
-        validationErrors: error.issues.map((issue) => ({ field: issue.path.join("."), message: issue.message, code: issue.code }))
+        validationErrors: error.issues.map((issue) => { const params = (issue as { params?: { errorCode?: unknown } }).params; return { field: issue.path.join("."), message: issue.message, code: typeof params?.errorCode === "string" ? params.errorCode : issue.code }; })
       } : error));
     }
   };

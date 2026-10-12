@@ -66,6 +66,7 @@ export const envSchema = z.object({
   FINANCIAL_INTEGRITY_FRESHNESS_MINUTES: z.coerce.number().int().min(1).max(10080).default(1440),
   PAYROLL_CRON_RUN_LIMIT: z.coerce.number().int().min(1).max(20).default(5),
   PAYROLL_CRON_BATCH_LIMIT: z.coerce.number().int().min(1).max(20).default(5),
+  PAYROLL_INLINE_PARTICIPANT_LIMIT: z.coerce.number().int().min(1).max(100).default(25),
   SUBSCRIPTION_CRON_BATCH_LIMIT: z.coerce.number().int().min(1).max(500).default(100),
   APPLICATION_VERSION: z.string().max(191).optional(),
   STORAGE_PROVIDER: z.enum(["local", "vercel-blob"]).default("local"),
