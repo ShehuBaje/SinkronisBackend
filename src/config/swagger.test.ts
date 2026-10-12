@@ -431,3 +431,31 @@ test("R5 Swagger exposes Active/Inactive lifecycle and excludes obsolete Pending
   assert.match(remove.description, /Archive is not client lifecycle INACTIVE/);
   assert.doesNotMatch(JSON.stringify({ list, toggle, remove }), /Payee (dashboard|self-signup|self-onboarding)/i);
 });
+
+test("Payroll Payee create, update and bulk contracts publish Nigerian phone normalization", () => {
+  const spec = openApiSpec as any;
+  const phone = spec.components.schemas.PayrollPayeePhone;
+  const accepted = ["08031234567", "0803 123 4567", "0803-123-4567", "2348031234567", "+2348031234567"];
+  assert.deepEqual(phone["x-acceptedExamples"], accepted);
+  assert.equal(phone["x-canonicalExample"], "+2348031234567");
+  assert.equal(phone["x-validationError"].code, "INVALID_PHONE_FORMAT");
+  assert.match(phone["x-validationError"].message, /valid Nigerian mobile number or international E\.164 number/);
+  assert.match(phone.description, /normalized and persisted as `\+2348031234567`/);
+  assert.match(phone.description, /international E\.164/);
+  assert.match(phone.description, /Alphabetic input.*unsupported extensions.*ambiguous punctuation.*invalid lengths/);
+
+  const create = spec.components.schemas.PayrollPayeeRequest.oneOf[1].properties.phone;
+  const update = spec.components.schemas.PayrollPayeeUpdateRequest.properties.phone;
+  assert.equal(create.$ref, "#/components/schemas/PayrollPayeePhone");
+  assert.equal(update.$ref, "#/components/schemas/PayrollPayeePhone");
+  assert.equal(spec.components.schemas.PayrollPayeeRequest.example.phone, "0803 123 4567");
+
+  const paths = spec.paths;
+  const single = paths["/api/v1/payroll/payees"].post.requestBody.content["application/json"].schema;
+  const bulk = paths["/api/v1/payroll/payees/bulk"].post.requestBody.content["application/json"].schema.items;
+  const patch = paths["/api/v1/payroll/payees/{payeeId}"].patch.requestBody.content["application/json"].schema;
+  assert.equal(single.$ref, "#/components/schemas/PayrollPayeeRequest");
+  assert.equal(bulk.$ref, "#/components/schemas/PayrollPayeeRequest");
+  assert.equal(patch.$ref, "#/components/schemas/PayrollPayeeUpdateRequest");
+  assert.match(paths["/api/v1/payroll/payees/bulk"].post.responses["400"].description, /row\/field\/code\/message/i);
+});
