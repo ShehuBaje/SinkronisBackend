@@ -72,6 +72,34 @@ export const payrollLoanSchema = z.object({
   ...externalLoanRecordingFields,
   recoveryStartDate: payrollDate.optional()
 }).strict().superRefine((value, context) => validateExternalLoanRecording({ originalPrincipal: value.principal, openingOutstanding: value.openingOutstanding, repaymentType: value.type, monthlyRepayment: value.monthlyRepayment, externalDisbursementDate: value.externalDisbursementDate, recoveryStartDate: value.startDate }, context));
+export const payrollLegacyLoanVerificationParamsSchema = z.object({ loanId: z.string().cuid() }).strict();
+export const payrollLegacyLoanVerificationDecisionParamsSchema = z.object({ loanId: z.string().cuid(), verificationId: z.string().cuid() }).strict();
+export const payrollLegacyLoanVerificationSchema = z.object({
+  assertedOriginalPrincipal: payrollMoney.refine((value) => value > 0),
+  assertedCutoverOutstanding: payrollMoney.refine((value) => value > 0),
+  currency: z.literal("NGN"),
+  externalDisbursementDate: payrollDate,
+  proposedRecoveryStartDate: payrollDate,
+  repaymentType: z.enum(["RECURRING", "ONE_OFF"]),
+  proposedMonthlyRepayment: payrollMoney.refine((value) => value > 0).optional(),
+  externalReference: z.string().trim().min(3).max(191).optional(),
+  evidenceDocumentId: z.string().cuid().optional(),
+  evidenceNote: z.string().trim().min(10).max(2000).optional(),
+  attestation: z.literal(true),
+  reason: z.string().trim().min(10).max(2000),
+  idempotencyKey: z.string().trim().min(8).max(191).regex(/^[A-Za-z0-9._:-]+$/)
+}).strict().superRefine((value, context) => {
+  if (!value.evidenceDocumentId && !(value.externalReference && value.evidenceNote)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["evidenceDocumentId"], message: "Provide a tenant-owned evidence document or an external reference with a corroborating evidence note" });
+  if (value.repaymentType === "RECURRING" && !value.proposedMonthlyRepayment) context.addIssue({ code: z.ZodIssueCode.custom, path: ["proposedMonthlyRepayment"], message: "proposedMonthlyRepayment is required for RECURRING recovery" });
+  if (value.repaymentType === "ONE_OFF" && value.proposedMonthlyRepayment !== undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: ["proposedMonthlyRepayment"], message: "proposedMonthlyRepayment is not allowed for ONE_OFF recovery" });
+  if (value.proposedMonthlyRepayment && value.proposedMonthlyRepayment > value.assertedCutoverOutstanding) context.addIssue({ code: z.ZodIssueCode.custom, path: ["proposedMonthlyRepayment"], message: "proposedMonthlyRepayment must not exceed assertedCutoverOutstanding" });
+  if (value.externalDisbursementDate > new Date().toISOString().slice(0, 10)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["externalDisbursementDate"], message: "External disbursement date cannot be in the future" });
+  if (value.proposedRecoveryStartDate < value.externalDisbursementDate) context.addIssue({ code: z.ZodIssueCode.custom, path: ["proposedRecoveryStartDate"], message: "Recovery start date cannot precede external disbursement date" });
+});
+export const payrollLegacyLoanVerificationDecisionSchema = z.object({
+  decision: z.enum(["CONFIRM", "NEEDS_RECONCILIATION"]),
+  reason: z.string().trim().min(10).max(2000)
+}).strict();
 export const payrollBikSchema = z.object({ hmoHealthInsurance: payrollMoney.default(0), airtimeAllowance: payrollMoney.default(0), mealAllowance: payrollMoney.default(0), thirteenthMonthAnnual: payrollMoney.default(0) }).strict();
 export const payrollCreateEmployeeSchema = z.object({ fullName: z.string().trim().min(2).max(200), role: z.string().trim().min(2).max(150), departmentId: z.string().cuid().optional(), email: z.string().email(), phone: z.string().trim().max(30).optional(), state: z.string().trim().max(100).optional(), employmentType: z.enum(["FULL_TIME", "PART_TIME", "CONTRACT"]), employeeStatus: z.enum(["ACTIVE", "INACTIVE", "ON_LEAVE", "SUSPENDED"]).default("ACTIVE"), taxStatus: z.enum(["PAYE", "EXEMPT", "CONTRACTOR"]).default("PAYE"), bankName: z.string().trim().max(150).optional(), accountNumber: z.string().trim().regex(/^\d{6,20}$/).optional(), salary: payrollSalaryStructureSchema, enroll: z.boolean().default(false) }).strict();
 

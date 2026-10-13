@@ -64,9 +64,11 @@ test("V2 audit metadata canonicalizes Date and nested JSON for independent repla
   assert.equal(replayAuditHash(row), buildAuditHash(row));
 });
 
-test("Swagger exposes additive read fields and no verification CRUD route", () => {
+test("Swagger preserves additive reads and exposes only the two governed verification actions", () => {
   const swagger = read("src/config/swagger.ts");
   for (const field of ["verificationStatus", "verificationAttemptCount", "evidencePresent", "evidenceCompleteness", "reconciliationRequired", "recoveryEligible", "recoveryIneligibilityReasons"]) assert.match(swagger, new RegExp(field));
   assert.doesNotMatch(swagger, /legacy-verifications[`"']/);
-  assert.match(swagger, /no public confirmation or verification mutation route exists/i);
+  assert.match(swagger, /loans\/\{loanId\}\/legacy-verification/);
+  assert.match(swagger, /legacy-verification\/\{verificationId\}\/decision/);
+  assert.match(swagger, /payroll:loans:confirm-legacy/);
 });

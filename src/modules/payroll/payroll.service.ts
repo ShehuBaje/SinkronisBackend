@@ -293,6 +293,96 @@ export const recordExternalPayrollLoan = async (organizationId: string, input: E
   }
 };
 export const createPayrollLoanForDeductions = (organizationId: string, input: ExternalPayrollLoanInput, user: AuthUser) => recordExternalPayrollLoan(organizationId, input, user);
+type LegacyLoanVerificationInput = { assertedOriginalPrincipal: number; assertedCutoverOutstanding: number; currency: "NGN"; externalDisbursementDate: string; proposedRecoveryStartDate: string; repaymentType: "RECURRING" | "ONE_OFF"; proposedMonthlyRepayment?: number; externalReference?: string; evidenceDocumentId?: string; evidenceNote?: string; attestation: true; reason: string; idempotencyKey: string };
+type LegacyLoanVerificationDecisionInput = { decision: "CONFIRM" | "NEEDS_RECONCILIATION"; reason: string };
+const legacyVerificationAttestationVersion = "LEGACY_EXTERNAL_V1";
+const verificationFingerprint = (input: LegacyLoanVerificationInput) => crypto.createHash("sha256").update(JSON.stringify({ assertedOriginalPrincipal: new Prisma.Decimal(input.assertedOriginalPrincipal).toFixed(2), assertedCutoverOutstanding: new Prisma.Decimal(input.assertedCutoverOutstanding).toFixed(2), currency: input.currency, externalDisbursementDate: input.externalDisbursementDate, proposedRecoveryStartDate: input.proposedRecoveryStartDate, repaymentType: input.repaymentType, proposedMonthlyRepayment: input.proposedMonthlyRepayment === undefined ? null : new Prisma.Decimal(input.proposedMonthlyRepayment).toFixed(2), externalReference: input.externalReference ?? null, evidenceDocumentId: input.evidenceDocumentId ?? null, evidenceNote: input.evidenceNote ?? null, attestation: input.attestation, reason: input.reason })).digest("hex");
+const referenceFingerprint = (reference?: string | null) => reference ? crypto.createHash("sha256").update(reference.trim().toUpperCase()).digest("hex") : null;
+const legacyVerificationDto = (row: any, idempotent = false) => ({ id: row.id, loanAdvanceId: row.loanAdvanceId, attemptNumber: row.attemptNumber, status: row.status, recordedPrincipalSnapshot: Number(row.recordedPrincipalSnapshot), recordedOutstandingSnapshot: Number(row.recordedOutstandingSnapshot), assertedOriginalPrincipal: Number(row.assertedOriginalPrincipal), assertedCutoverOutstanding: Number(row.assertedCutoverOutstanding), currency: row.currency, externalDisbursementDate: row.externalDisbursementDate, proposedRecoveryStartDate: row.proposedRecoveryStartDate, repaymentType: row.repaymentType, proposedMonthlyRepayment: row.proposedMonthlyRepayment === null ? null : Number(row.proposedMonthlyRepayment), externalReferencePresent: Boolean(row.externalReference), evidenceDocumentPresent: Boolean(row.evidenceDocumentId), evidenceNotePresent: Boolean(row.evidenceNote), attestationAccepted: row.attestationAccepted, submittedAt: row.submittedAt, confirmedAt: row.confirmedAt, decisionAt: row.decisionAt, reconciliationRequired: row.status === "NEEDS_RECONCILIATION", idempotent });
+const assertLegacyReferenceAvailable = async (tx: Prisma.TransactionClient, organizationId: string, loanAdvanceId: string, externalReference?: string) => {
+  if (!externalReference) return;
+  const [loanConflict, verificationConflict] = await Promise.all([
+    tx.loanAdvance.findFirst({ where: { organizationId, externalReference, id: { not: loanAdvanceId } }, select: { id: true } }),
+    tx.legacyLoanVerification.findFirst({ where: { organizationId, externalReference, loanAdvanceId: { not: loanAdvanceId } }, select: { id: true } })
+  ]);
+  if (loanConflict || verificationConflict) throw conflict("External reference is already associated with another tenant loan", { errorCode: "LEGACY_LOAN_EXTERNAL_REFERENCE_CONFLICT" });
+};
+export const submitLegacyLoanVerification = async (organizationId: string, loanId: string, input: LegacyLoanVerificationInput, user: AuthUser) => {
+  const fingerprint = verificationFingerprint(input);
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM LoanAdvance WHERE id = ${loanId} AND organizationId = ${organizationId} FOR UPDATE`;
+      const existing = await tx.legacyLoanVerification.findUnique({ where: { organizationId_idempotencyKey: { organizationId, idempotencyKey: input.idempotencyKey } } });
+      if (existing) {
+        if (existing.loanAdvanceId !== loanId || existing.evidenceFingerprint !== fingerprint) throw conflict("Idempotency key was already used with a different verification request", { errorCode: "LEGACY_LOAN_IDEMPOTENCY_CONFLICT" });
+        return { row: existing, idempotent: true };
+      }
+      const loan = await tx.loanAdvance.findFirst({ where: { id: loanId, organizationId }, include: { employee: { select: { payrollPayee: { select: { id: true, type: true } } } } } });
+      if (!loan) throw notFound("Loan not found");
+      if (loan.origin !== "LEGACY_UNCONFIRMED" || loan.confirmationStatus !== "LEGACY_UNCONFIRMED") throw conflict("Only unconfirmed legacy loans can enter verification", { errorCode: "LEGACY_LOAN_NOT_UNCONFIRMED" });
+      if (loan.employee.payrollPayee?.type !== "PERMANENT") throw conflict("Legacy loan must belong to a Permanent Payee", { errorCode: "LEGACY_LOAN_PERMANENT_PAYEE_REQUIRED" });
+      if (input.evidenceDocumentId) {
+        const evidence = await tx.payeeDocument.findFirst({ where: { id: input.evidenceDocumentId, organizationId, payeeId: loan.employee.payrollPayee.id }, select: { id: true } });
+        if (!evidence) throw notFound("Tenant-owned document for the loan employee's Permanent Payee was not found");
+      }
+      await assertLegacyReferenceAvailable(tx, organizationId, loan.id, input.externalReference);
+      const latest = await tx.legacyLoanVerification.findFirst({ where: { organizationId, loanAdvanceId: loan.id }, orderBy: { attemptNumber: "desc" }, select: { attemptNumber: true } });
+      const row = await tx.legacyLoanVerification.create({ data: { organizationId, loanAdvanceId: loan.id, attemptNumber: (latest?.attemptNumber ?? 0) + 1, status: "PENDING_VERIFICATION", recordedPrincipalSnapshot: loan.amount, recordedOutstandingSnapshot: loan.outstanding, assertedOriginalPrincipal: input.assertedOriginalPrincipal, assertedCutoverOutstanding: input.assertedCutoverOutstanding, currency: input.currency, externalDisbursementDate: new Date(`${input.externalDisbursementDate}T00:00:00.000Z`), proposedRecoveryStartDate: new Date(`${input.proposedRecoveryStartDate}T00:00:00.000Z`), repaymentType: input.repaymentType, proposedMonthlyRepayment: input.repaymentType === "RECURRING" ? input.proposedMonthlyRepayment! : null, ...(input.externalReference ? { externalReference: input.externalReference } : {}), ...(input.evidenceDocumentId ? { evidenceDocumentId: input.evidenceDocumentId } : {}), ...(input.evidenceNote ? { evidenceNote: input.evidenceNote } : {}), evidenceFingerprint: fingerprint, attestationVersion: legacyVerificationAttestationVersion, attestationAccepted: true, reason: input.reason, submittedById: user.id, idempotencyKey: input.idempotencyKey, pendingVerificationKey: `${organizationId}:${loan.id}` } });
+      await createAuditLog({ organizationId, actorUserId: user.id, action: "LEGACY_LOAN_VERIFICATION_SUBMITTED", resource: "LOAN_ADVANCE", resourceId: loan.id, summary: "Submitted legacy loan evidence for independent verification", metadata: { verificationId: row.id, attemptNumber: row.attemptNumber, recordedPrincipal: row.recordedPrincipalSnapshot.toFixed(2), recordedOutstanding: row.recordedOutstandingSnapshot.toFixed(2), assertedOriginalPrincipal: row.assertedOriginalPrincipal.toFixed(2), assertedCutoverOutstanding: row.assertedCutoverOutstanding.toFixed(2), currency: row.currency, evidenceFingerprint: row.evidenceFingerprint, externalReferenceFingerprint: referenceFingerprint(row.externalReference), evidenceDocumentPresent: Boolean(row.evidenceDocumentId), attestationVersion: row.attestationVersion } }, tx);
+      return { row, idempotent: false };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
+    return legacyVerificationDto(result.row, result.idempotent);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw conflict("A pending verification, attempt identity, or idempotency key already exists", { errorCode: "LEGACY_LOAN_VERIFICATION_CONFLICT" });
+    throw error;
+  }
+};
+const confirmationDiscrepancies = (loan: any, verification: any) => {
+  const reasons: string[] = [];
+  if (!new Prisma.Decimal(verification.assertedOriginalPrincipal).eq(loan.amount)) reasons.push("ORIGINAL_PRINCIPAL_MISMATCH");
+  if (!new Prisma.Decimal(verification.assertedCutoverOutstanding).eq(loan.outstanding)) reasons.push("CUTOVER_OUTSTANDING_MISMATCH");
+  if (!new Prisma.Decimal(verification.recordedPrincipalSnapshot).eq(loan.amount) || !new Prisma.Decimal(verification.recordedOutstandingSnapshot).eq(loan.outstanding)) reasons.push("LOAN_CHANGED_AFTER_SUBMISSION");
+  if ((loan.currency ?? "NGN") !== verification.currency) reasons.push("CURRENCY_MISMATCH");
+  if (loan.loanType !== verification.repaymentType) reasons.push("REPAYMENT_TYPE_MISMATCH");
+  const currentMonthly = loan.monthlyRepayment === null ? null : new Prisma.Decimal(loan.monthlyRepayment);
+  const assertedMonthly = verification.proposedMonthlyRepayment === null ? null : new Prisma.Decimal(verification.proposedMonthlyRepayment);
+  if ((currentMonthly === null) !== (assertedMonthly === null) || (currentMonthly && assertedMonthly && !currentMonthly.eq(assertedMonthly))) reasons.push("MONTHLY_REPAYMENT_MISMATCH");
+  if (loan.status === "CLOSED_EARLY" && /paid|settled|repaid|written[ -]?off/i.test(`${loan.closeReason ?? ""} ${verification.evidenceNote ?? ""} ${verification.reason ?? ""}`)) reasons.push("CLOSED_EARLY_SETTLEMENT_EVIDENCE_CONFLICT");
+  return reasons;
+};
+export const decideLegacyLoanVerification = async (organizationId: string, loanId: string, verificationId: string, input: LegacyLoanVerificationDecisionInput, user: AuthUser) => {
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM LoanAdvance WHERE id = ${loanId} AND organizationId = ${organizationId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM LegacyLoanVerification WHERE id = ${verificationId} AND organizationId = ${organizationId} AND loanAdvanceId = ${loanId} FOR UPDATE`;
+    const [loan, verification] = await Promise.all([
+      tx.loanAdvance.findFirst({ where: { id: loanId, organizationId } }),
+      tx.legacyLoanVerification.findFirst({ where: { id: verificationId, organizationId, loanAdvanceId: loanId } })
+    ]);
+    if (!loan || !verification) throw notFound("Legacy loan verification not found");
+    if (verification.submittedById === user.id) throw conflict("The verification submitter cannot confirm or reconcile the same attempt", { errorCode: "LEGACY_LOAN_SEPARATION_OF_DUTIES_REQUIRED" });
+    if (verification.status !== "PENDING_VERIFICATION") {
+      const requestedStatus = input.decision === "CONFIRM" ? "CONFIRMED" : "NEEDS_RECONCILIATION";
+      if (verification.status !== requestedStatus) throw conflict("Verification already has a different final decision", { errorCode: "LEGACY_LOAN_DECISION_CONFLICT" });
+      return { row: verification, idempotent: true, confirmed: verification.status === "CONFIRMED" };
+    }
+    if (loan.origin !== "LEGACY_UNCONFIRMED" || loan.confirmationStatus !== "LEGACY_UNCONFIRMED") throw conflict("Legacy loan state changed before verification decision", { errorCode: "LEGACY_LOAN_STATE_CONFLICT" });
+    if (!verification.attestationAccepted || verification.attestationVersion !== legacyVerificationAttestationVersion) throw conflict("Verification attestation is invalid", { errorCode: "LEGACY_LOAN_ATTESTATION_INVALID" });
+    if (verification.evidenceDocumentId) {
+      const employeePayee = await tx.employee.findFirst({ where: { id: loan.employeeId, organizationId }, select: { payrollPayee: { select: { id: true, type: true } } } });
+      const evidence = employeePayee?.payrollPayee ? await tx.payeeDocument.findFirst({ where: { id: verification.evidenceDocumentId, organizationId, payeeId: employeePayee.payrollPayee.id }, select: { id: true } }) : null;
+      if (!evidence || employeePayee?.payrollPayee?.type !== "PERMANENT") throw conflict("Verification evidence is no longer valid for the loan employee", { errorCode: "LEGACY_LOAN_EVIDENCE_INVALID" });
+    } else if (!(verification.externalReference && verification.evidenceNote?.trim())) throw conflict("Verification evidence is incomplete", { errorCode: "LEGACY_LOAN_EVIDENCE_INCOMPLETE" });
+    await assertLegacyReferenceAvailable(tx, organizationId, loan.id, verification.externalReference ?? undefined);
+    const discrepancies = confirmationDiscrepancies(loan, verification);
+    const needsReconciliation = input.decision === "NEEDS_RECONCILIATION" || discrepancies.length > 0;
+    const now = new Date();
+    const row = await tx.legacyLoanVerification.update({ where: { id: verification.id }, data: { status: needsReconciliation ? "NEEDS_RECONCILIATION" : "CONFIRMED", pendingVerificationKey: null, confirmedVerificationKey: needsReconciliation ? null : `${organizationId}:${loan.id}`, confirmedById: user.id, confirmedAt: needsReconciliation ? null : now, decisionAt: now, reconciliationReason: needsReconciliation ? [input.reason, ...discrepancies].join(" | ") : null } });
+    if (!needsReconciliation) await tx.loanAdvance.update({ where: { id: loan.id }, data: { origin: "EXTERNAL_MANUAL", confirmationStatus: "CONFIRMED", openingOutstanding: verification.assertedCutoverOutstanding, currency: verification.currency, externalDisbursementDate: verification.externalDisbursementDate, recoveryStartDate: verification.proposedRecoveryStartDate, externalReference: verification.externalReference, evidenceDocumentId: verification.evidenceDocumentId, attestedById: user.id, attestedAt: now } });
+    await createAuditLog({ organizationId, actorUserId: user.id, action: needsReconciliation ? "LEGACY_LOAN_VERIFICATION_RECONCILIATION_REQUIRED" : "LEGACY_LOAN_VERIFICATION_CONFIRMED", resource: "LOAN_ADVANCE", resourceId: loan.id, summary: needsReconciliation ? "Legacy loan verification requires reconciliation" : "Confirmed legacy loan as externally disbursed", metadata: { verificationId: row.id, decision: row.status, recordedPrincipal: row.recordedPrincipalSnapshot.toFixed(2), recordedOutstanding: row.recordedOutstandingSnapshot.toFixed(2), assertedOriginalPrincipal: row.assertedOriginalPrincipal.toFixed(2), assertedCutoverOutstanding: row.assertedCutoverOutstanding.toFixed(2), currency: row.currency, evidenceFingerprint: row.evidenceFingerprint, externalReferenceFingerprint: referenceFingerprint(row.externalReference), discrepancyCodes: discrepancies, loanStatusPreserved: loan.status } }, tx);
+    return { row, idempotent: false, confirmed: !needsReconciliation };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
+  return { ...legacyVerificationDto(result.row, result.idempotent), confirmed: result.confirmed, loan: await getPayrollLoan(organizationId, loanId) };
+};
 export const adjustPayrollLoan = async (organizationId: string, loanId: string, input: any, user: AuthUser) => { const loan = await tenantLoan(organizationId, loanId); if (!["ACTIVE", "PAUSED"].includes(loan.status)) throw conflict("Only active or paused loans can be adjusted"); if (new Prisma.Decimal(input.monthlyRepayment).gt(loan.outstanding)) throw badRequest("Monthly repayment cannot exceed outstanding balance"); const row = await prisma.loanAdvance.update({ where: { id: loan.id }, data: { monthlyRepayment: input.monthlyRepayment, adjustedAt: input.effectiveFrom ? new Date(`${input.effectiveFrom}T00:00:00.000Z`) : new Date() } }); await createAuditLog({ organizationId, actorUserId: user.id, action: "PAYROLL_LOAN_REPAYMENT_ADJUSTED", resource: "LOAN_ADVANCE", resourceId: row.id, summary: "Adjusted future loan repayment" }); return getPayrollLoan(organizationId, row.id); };
 export const setPayrollLoanPaused = async (organizationId: string, loanId: string, paused: boolean, user: AuthUser) => { const loan = await tenantLoan(organizationId, loanId); const expected = paused ? "ACTIVE" : "PAUSED"; if (loan.status !== expected) throw conflict(`Loan cannot be ${paused ? "paused" : "resumed"} from ${loan.status}`); const row = await prisma.loanAdvance.update({ where: { id: loan.id }, data: { status: paused ? "PAUSED" : "ACTIVE", pausedAt: paused ? new Date() : null } }); await createAuditLog({ organizationId, actorUserId: user.id, action: paused ? "PAYROLL_LOAN_PAUSED" : "PAYROLL_LOAN_RESUMED", resource: "LOAN_ADVANCE", resourceId: row.id, summary: paused ? "Paused loan repayment" : "Resumed loan repayment" }); return getPayrollLoan(organizationId, row.id); };
 export const closePayrollLoanEarly = async (organizationId: string, loanId: string, reason: string, user: AuthUser) => { const loan = await tenantLoan(organizationId, loanId); if (!["ACTIVE", "PAUSED"].includes(loan.status)) throw conflict("Loan is not open"); const row = await prisma.loanAdvance.update({ where: { id: loan.id }, data: { status: "CLOSED_EARLY", closedAt: new Date(), closedById: user.id, closeReason: reason } }); await createAuditLog({ organizationId, actorUserId: user.id, action: "PAYROLL_LOAN_CLOSED_EARLY", resource: "LOAN_ADVANCE", resourceId: row.id, summary: "Closed loan from future payroll deductions", metadata: { outstandingPreserved: true } }); return getPayrollLoan(organizationId, row.id); };
