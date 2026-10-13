@@ -1232,15 +1232,6 @@ const buildPermissionGroups = (permissionKeys: PermissionKey[]): PermissionModul
   }));
 };
 
-const getRoleUsageStats = async (organizationId: string, roleId: string) => {
-  const [assignedUsers, pendingInvitations] = await Promise.all([
-    prisma.user.count({ where: { organizationId, roleId } }),
-    prisma.agentInvitation.count({ where: { organizationId, roleId, status: "PENDING" } })
-  ]);
-
-  return { assignedUsers, pendingInvitations };
-};
-
 export const deriveInvitationStatus = (status: string, expiresAt: Date): "PENDING" | "EXPIRED" => {
   if (status === "PENDING" && expiresAt < new Date()) {
     return "EXPIRED";
@@ -4319,77 +4310,82 @@ export const createRole = async (req: Request) => {
   assertNonSystemRoleAccessScope(resolvedPermissionKeys);
   const { permissionRows, permissionKeys } = await resolvePermissionRecords(resolvedPermissionKeys);
 
-  const role = await prisma.role.create({
-    data: {
-      organizationId: req.organizationId!,
-      name: payload.name,
-      description: payload.description,
-      permissions: {
-        create: permissionRows.map((permission) => ({ permissionId: permission.id }))
+  return prisma.$transaction(async (tx) => {
+    const role = await tx.role.create({
+      data: {
+        organizationId: req.organizationId!,
+        name: payload.name,
+        description: payload.description,
+        permissions: {
+          create: permissionRows.map((permission) => ({ permissionId: permission.id }))
+        }
+      },
+      include: { permissions: { include: { permission: true } } }
+    });
+
+    await logAdminActivity({
+      organizationId: req.organizationId,
+      actorUserId: req.user?.id,
+      action: "ROLE_CREATED",
+      resource: "ROLE",
+      resourceId: role.id,
+      summary: `Created role ${role.name}`,
+      metadata: {
+        permissionKeys,
+        templateKey: payload.templateKey ?? null,
+        cloneFromRoleId: payload.cloneFromRoleId ?? null
       }
-    },
-    include: { permissions: { include: { permission: true } } }
-  });
+    }, tx);
 
-  await logAdminActivity({
-    organizationId: req.organizationId,
-    actorUserId: req.user?.id,
-    action: "ROLE_CREATED",
-    resource: "ROLE",
-    resourceId: role.id,
-    summary: `Created role ${role.name}`,
-    metadata: {
-      permissionKeys,
-      templateKey: payload.templateKey ?? null,
-      cloneFromRoleId: payload.cloneFromRoleId ?? null
-    }
-  });
-
-  return normalizeRole(role as RoleWithPermissionsRow);
+    return normalizeRole(role as RoleWithPermissionsRow);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
 };
 
 export const updateRole = async (req: Request) => {
   const id = String(req.params.id);
   const payload = roleUpdateSchema.parse(req.body);
-  const existing = await prisma.role.findFirst({
-    where: { id, organizationId: req.organizationId },
-    select: { id: true, isSystem: true }
-  });
-  if (!existing) throw notFound();
-  assertRoleIsMutable(existing);
-
   const resolvedPermissions = payload.permissionKeys ? await resolvePermissionRecords(payload.permissionKeys) : undefined;
 
   if (resolvedPermissions) {
     assertNonSystemRoleAccessScope(resolvedPermissions.permissionKeys as PermissionKey[]);
   }
 
-  const role = await prisma.role.update({
-    where: { id },
-    data: {
-      name: payload.name,
-      description: payload.description,
-      permissions: resolvedPermissions
-        ? {
-            deleteMany: {},
-            create: resolvedPermissions.permissionRows.map((permission) => ({ permissionId: permission.id }))
-          }
-        : undefined
-    },
-    include: { permissions: { include: { permission: true } } }
-  });
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM Role WHERE id = ${id} AND organizationId = ${req.organizationId} FOR UPDATE`;
+    const existing = await tx.role.findFirst({
+      where: { id, organizationId: req.organizationId },
+      select: { id: true, isSystem: true }
+    });
+    if (!existing) throw notFound();
+    assertRoleIsMutable(existing);
 
-  await logAdminActivity({
-    organizationId: req.organizationId,
-    actorUserId: req.user?.id,
-    action: "ROLE_UPDATED",
-    resource: "ROLE",
-    resourceId: role.id,
-    summary: `Updated role ${role.name}`,
-    metadata: { permissionKeys: resolvedPermissions?.permissionKeys }
-  });
+    const role = await tx.role.update({
+      where: { id },
+      data: {
+        name: payload.name,
+        description: payload.description,
+        permissions: resolvedPermissions
+          ? {
+              deleteMany: {},
+              create: resolvedPermissions.permissionRows.map((permission) => ({ permissionId: permission.id }))
+            }
+          : undefined
+      },
+      include: { permissions: { include: { permission: true } } }
+    });
 
-  return normalizeRole(role as RoleWithPermissionsRow);
+    await logAdminActivity({
+      organizationId: req.organizationId,
+      actorUserId: req.user?.id,
+      action: "ROLE_UPDATED",
+      resource: "ROLE",
+      resourceId: role.id,
+      summary: `Updated role ${role.name}`,
+      metadata: { permissionKeys: resolvedPermissions?.permissionKeys }
+    }, tx);
+
+    return normalizeRole(role as RoleWithPermissionsRow);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
 };
 
 export const cloneRole = async (req: Request) => {
@@ -4430,32 +4426,21 @@ export const cloneRole = async (req: Request) => {
 
 export const deleteRole = async (req: Request) => {
   const id = String(req.params.id);
-  const existing = await prisma.role.findFirst({
-    where: { id, organizationId: req.organizationId },
-    select: { id: true, name: true, isSystem: true }
-  });
-  if (!existing) throw notFound();
-  assertRoleIsMutable(existing);
-
-  const usage = await getRoleUsageStats(req.organizationId!, id);
-  if (usage.assignedUsers > 0) {
-    throw badRequest("Cannot delete a role that is assigned to users", usage);
-  }
-
-  if (usage.pendingInvitations > 0) {
-    throw badRequest("Cannot delete a role with pending invitations", usage);
-  }
-
-  await prisma.role.delete({ where: { id } });
-
-  await logAdminActivity({
-    organizationId: req.organizationId,
-    actorUserId: req.user?.id,
-    action: "ROLE_DELETED",
-    resource: "ROLE",
-    resourceId: id,
-    summary: `Deleted role ${existing.name}`
-  });
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM Role WHERE id = ${id} AND organizationId = ${req.organizationId} FOR UPDATE`;
+    const existing = await tx.role.findFirst({ where: { id, organizationId: req.organizationId }, select: { id: true, name: true, isSystem: true } });
+    if (!existing) throw notFound();
+    assertRoleIsMutable(existing);
+    const [assignedUsers, pendingInvitations] = await Promise.all([
+      tx.user.count({ where: { organizationId: req.organizationId!, roleId: id } }),
+      tx.agentInvitation.count({ where: { organizationId: req.organizationId!, roleId: id, status: "PENDING" } })
+    ]);
+    const usage = { assignedUsers, pendingInvitations };
+    if (usage.assignedUsers > 0) throw badRequest("Cannot delete a role that is assigned to users", usage);
+    if (usage.pendingInvitations > 0) throw badRequest("Cannot delete a role with pending invitations", usage);
+    await tx.role.delete({ where: { id } });
+    await logAdminActivity({ organizationId: req.organizationId, actorUserId: req.user?.id, action: "ROLE_DELETED", resource: "ROLE", resourceId: id, summary: `Deleted role ${existing.name}` }, tx);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
 };
 
 export const departmentsCrudOptions = {
