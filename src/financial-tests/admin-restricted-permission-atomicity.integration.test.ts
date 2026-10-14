@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { createRole, deleteRole, updateRole } from "../modules/admin/admin.service.js";
+import { cloneRole, createRole, deleteRole, updateRole } from "../modules/admin/admin.service.js";
 import { replayAuditHash } from "../modules/admin/admin.audit.js";
 import { assertSafeTestDatabase } from "../test-infrastructure/test-database.js";
 
@@ -83,6 +83,48 @@ it("serializes concurrent permission replacements and audits every committed sta
     assert.ok(permissionKeys.length === 1 && [restricted, "payroll:loans:view"].includes(permissionKeys[0]));
     assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, resourceId: created.id, action: "ROLE_UPDATED" } }), committed);
   } finally { await cleanup(fx.organization.id); }
+});
+
+it("clones permission links and V2 audit evidence atomically", async () => {
+  const fx = await fixture();
+  try {
+    const source: any = await createRole(fx.request({ name: uid("clone-source"), permissionKeys: [restricted] }));
+    const cloneName = uid("clone-target");
+    const cloned: any = await cloneRole(fx.request({ name: cloneName }, { id: source.id }));
+    assert.equal(await prisma.rolePermission.count({ where: { roleId: cloned.id, permission: { key: restricted } } }), 1);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { organizationId: fx.organization.id, resourceId: cloned.id, action: "ROLE_CLONED" } });
+    assert.equal(audit.hashVersion, "V2");
+    assert.equal(replayAuditHash({ organizationId: audit.organizationId, actorUserId: audit.actorUserId ?? undefined, action: audit.action, resource: audit.resource, resourceId: audit.resourceId ?? undefined, summary: audit.summary, metadata: audit.metadata as Prisma.InputJsonValue, sequence: audit.sequence!, previousHash: audit.previousHash, createdAt: audit.createdAt, hashVersion: audit.hashVersion }), audit.hash);
+  } finally { await cleanup(fx.organization.id); }
+});
+
+it("rolls back cloned role and permissions when audit persistence fails", async () => {
+  const fx = await fixture();
+  try {
+    const source: any = await createRole(fx.request({ name: uid("rollback-source"), permissionKeys: [restricted] }));
+    const cloneName = uid("must-not-survive");
+    await assert.rejects(() => cloneRole(fx.request({ name: cloneName }, { id: source.id }, `missing-${crypto.randomUUID()}`)));
+    assert.equal(await prisma.role.count({ where: { organizationId: fx.organization.id, name: cloneName } }), 0);
+    assert.equal(await prisma.rolePermission.count({ where: { role: { organizationId: fx.organization.id, name: cloneName } } }), 0);
+  } finally { await cleanup(fx.organization.id); }
+});
+
+it("rejects cross-tenant cloning and never commits an unaudited concurrent clone", async () => {
+  const fx = await fixture();
+  const other = await fixture();
+  try {
+    const source: any = await createRole(fx.request({ name: uid("concurrent-source"), permissionKeys: [restricted] }));
+    await assert.rejects(() => cloneRole(other.request({}, { id: source.id })));
+    const outcomes = await Promise.allSettled([
+      cloneRole(fx.request({}, { id: source.id })),
+      cloneRole(fx.request({}, { id: source.id }))
+    ]);
+    const committed = outcomes.filter((result) => result.status === "fulfilled").length;
+    assert.ok(committed >= 1);
+    const clones = await prisma.role.findMany({ where: { organizationId: fx.organization.id, name: { startsWith: `${source.name} Copy` } } });
+    assert.equal(clones.length, committed);
+    assert.equal(await prisma.auditLog.count({ where: { organizationId: fx.organization.id, action: "ROLE_CLONED", resourceId: { in: clones.map((role) => role.id) } } }), committed);
+  } finally { await cleanup(fx.organization.id); await cleanup(other.organization.id); }
 });
 
 test.after(async () => prisma.$disconnect());

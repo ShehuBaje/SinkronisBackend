@@ -343,6 +343,11 @@ export const submitLegacyLoanVerification = async (organizationId: string, loanI
     throw error;
   }
 };
+export const hasClosedEarlyFinancialResolutionClaim = (...values: Array<string | null | undefined>) => {
+  const text = values.filter(Boolean).join(" ").normalize("NFKC").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  return /\b(?:settlement|settled|paid|fully paid|paid in full|paid off|repaid|repayment|repayment completed?|payment completed?|written off|write off|waived|forgiven|balance (?:cleared|settled))\b/.test(text);
+};
+
 const confirmationDiscrepancies = (loan: any, verification: any) => {
   const reasons: string[] = [];
   if (!new Prisma.Decimal(verification.assertedOriginalPrincipal).eq(loan.amount)) reasons.push("ORIGINAL_PRINCIPAL_MISMATCH");
@@ -353,7 +358,7 @@ const confirmationDiscrepancies = (loan: any, verification: any) => {
   const currentMonthly = loan.monthlyRepayment === null ? null : new Prisma.Decimal(loan.monthlyRepayment);
   const assertedMonthly = verification.proposedMonthlyRepayment === null ? null : new Prisma.Decimal(verification.proposedMonthlyRepayment);
   if ((currentMonthly === null) !== (assertedMonthly === null) || (currentMonthly && assertedMonthly && !currentMonthly.eq(assertedMonthly))) reasons.push("MONTHLY_REPAYMENT_MISMATCH");
-  if (loan.status === "CLOSED_EARLY" && /paid|settled|repaid|written[ -]?off/i.test(`${loan.closeReason ?? ""} ${verification.evidenceNote ?? ""} ${verification.reason ?? ""}`)) reasons.push("CLOSED_EARLY_SETTLEMENT_EVIDENCE_CONFLICT");
+  if (loan.status === "CLOSED_EARLY" && hasClosedEarlyFinancialResolutionClaim(loan.closeReason, verification.evidenceNote, verification.reason)) reasons.push("CLOSED_EARLY_SETTLEMENT_EVIDENCE_CONFLICT");
   return reasons;
 };
 export const decideLegacyLoanVerification = async (organizationId: string, loanId: string, verificationId: string, input: LegacyLoanVerificationDecisionInput, user: AuthUser, dependencies: LegacyLoanVerificationDependencies = {}) => {

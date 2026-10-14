@@ -71,6 +71,23 @@ it("routes monetary conflicts to reconciliation and preserves CLOSED_EARLY", asy
   } finally { await cleanup(fx.organization.id); }
 });
 
+it("routes CLOSED_EARLY financial-resolution language to reconciliation without changing debt", async () => {
+  for (const closeReason of ["Early settlement by employee", "Loan settled externally", "Paid in full", "Loan repaid", "Balance written off"]) {
+    const fx = await fixture("CLOSED_EARLY");
+    try {
+      await prisma.loanAdvance.update({ where: { id: fx.loan.id }, data: { closeReason } });
+      const submitted = await submitLegacyLoanVerification(fx.organization.id, fx.loan.id, input(fx.document.id), fx.submitterUser);
+      const decided = await decideLegacyLoanVerification(fx.organization.id, fx.loan.id, submitted.id, { decision: "CONFIRM", reason: "Independent reviewer evaluated historical evidence" }, fx.confirmerUser);
+      assert.equal(decided.status, "NEEDS_RECONCILIATION");
+      const loan = await prisma.loanAdvance.findUniqueOrThrow({ where: { id: fx.loan.id } });
+      assert.equal(loan.origin, "LEGACY_UNCONFIRMED");
+      assert.equal(loan.confirmationStatus, "LEGACY_UNCONFIRMED");
+      assert.equal(loan.status, "CLOSED_EARLY");
+      assert.equal(loan.outstanding.toFixed(2), "100000.00");
+    } finally { await cleanup(fx.organization.id); }
+  }
+});
+
 it("confirms supported historical facts for a suspended employee without enabling recovery", async () => {
   const fx = await fixture("ACTIVE", "SUSPENDED");
   try {

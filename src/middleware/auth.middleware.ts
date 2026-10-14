@@ -3,7 +3,7 @@ import type { RequestHandler } from "express";
 import { env } from "../config/env";
 import { prisma } from "../core/prisma";
 import { unauthorized } from "../core/http-error";
-import { permissions as permissionCatalog } from "../modules/auth/permissions";
+import { resolveEffectivePermissions } from "../modules/auth/effective-permissions";
 import type { AuthUser } from "../types";
 
 type JwtPayload = {
@@ -79,14 +79,11 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
       return next(unauthorized("Access token is not bound to an active session"));
     }
 
-    const grantedPermissions = new Set(user.role.permissions.map((item) => item.permission.key));
-
-    // Keep system Owner users forward-compatible with new permission keys.
-    if (user.role.isSystem && user.role.name === "Owner") {
-      for (const permission of permissionCatalog) {
-        grantedPermissions.add(permission);
-      }
-    }
+    const grantedPermissions = resolveEffectivePermissions({
+      name: user.role.name,
+      isSystem: user.role.isSystem,
+      permissions: user.role.permissions.map((item) => item.permission.key)
+    });
 
     req.user = {
       id: user.id,
@@ -99,7 +96,7 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
       ...(payload.purpose === "platform-impersonation" && payload.impersonationSessionId && payload.platformAdminUserId
         ? { impersonation: { sessionId: payload.impersonationSessionId, platformAdminUserId: payload.platformAdminUserId, platformAdminSessionId: payload.platformAdminSessionId! } }
         : {}),
-      permissions: [...grantedPermissions] as AuthUser["permissions"]
+      permissions: grantedPermissions as AuthUser["permissions"]
     };
     return next();
   } catch {

@@ -971,18 +971,6 @@ const assertNonSystemRoleAccessScope = (permissionKeys: PermissionKey[]) => {
   }
 };
 
-const buildRoleCopyName = async (organizationId: string, baseName: string) => {
-  let candidate = baseName;
-  let suffix = 2;
-
-  while (await prisma.role.findFirst({ where: { organizationId, name: candidate }, select: { id: true } })) {
-    candidate = `${baseName} ${suffix}`;
-    suffix += 1;
-  }
-
-  return candidate;
-};
-
 const buildPermissionCatalog = () => {
   const groupedCatalog = new Map<
     string,
@@ -4391,37 +4379,56 @@ export const updateRole = async (req: Request) => {
 export const cloneRole = async (req: Request) => {
   const id = String(req.params.id);
   const payload = roleCloneSchema.parse(req.body);
-  const sourceRole = await findRoleWithPermissions(req.organizationId!, id);
-  if (!sourceRole) throw notFound("Role not found");
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM Role WHERE id = ${id} AND organizationId = ${req.organizationId} FOR UPDATE`;
+    const sourceRole = await tx.role.findFirst({
+      where: { id, organizationId: req.organizationId },
+      include: { permissions: { include: { permission: true } } }
+    });
+    if (!sourceRole) throw notFound("Role not found");
 
-  const sourcePermissionKeys = sourceRole.permissions.map((row) => row.permission.key as PermissionKey);
-  assertNonSystemRoleAccessScope(sourcePermissionKeys);
-  const { permissionRows, permissionKeys } = await resolvePermissionRecords(sourcePermissionKeys);
-  const name = payload.name ?? (await buildRoleCopyName(req.organizationId!, `${sourceRole.name} Copy`));
+    const permissionKeys = sourceRole.permissions.map((row) => row.permission.key as PermissionKey);
+    assertNonSystemRoleAccessScope(permissionKeys);
+    const permissionRows = permissionKeys.length
+      ? await tx.permission.findMany({ where: { key: { in: permissionKeys } }, select: { id: true, key: true } })
+      : [];
+    if (permissionRows.length !== new Set(permissionKeys).size) {
+      throw badRequest("Some permission keys are invalid or not initialized");
+    }
 
-  const role = await prisma.role.create({
-    data: {
-      organizationId: req.organizationId!,
-      name,
-      description: payload.description ?? sourceRole.description,
-      permissions: {
-        create: permissionRows.map((permission) => ({ permissionId: permission.id }))
+    let name = payload.name;
+    if (!name) {
+      const baseName = `${sourceRole.name} Copy`;
+      name = baseName;
+      let suffix = 2;
+      while (await tx.role.findFirst({ where: { organizationId: req.organizationId, name }, select: { id: true } })) {
+        name = `${baseName} ${suffix}`;
+        suffix += 1;
       }
-    },
-    include: { permissions: { include: { permission: true } } }
-  });
+    }
 
-  await logAdminActivity({
-    organizationId: req.organizationId,
-    actorUserId: req.user?.id,
-    action: "ROLE_CLONED",
-    resource: "ROLE",
-    resourceId: role.id,
-    summary: `Cloned role ${sourceRole.name} into ${role.name}`,
-    metadata: { sourceRoleId: sourceRole.id, permissionKeys }
-  });
+    const role = await tx.role.create({
+      data: {
+        organizationId: req.organizationId!,
+        name,
+        description: payload.description ?? sourceRole.description,
+        permissions: { create: permissionRows.map((permission) => ({ permissionId: permission.id })) }
+      },
+      include: { permissions: { include: { permission: true } } }
+    });
 
-  return normalizeRole(role as RoleWithPermissionsRow);
+    await logAdminActivity({
+      organizationId: req.organizationId,
+      actorUserId: req.user?.id,
+      action: "ROLE_CLONED",
+      resource: "ROLE",
+      resourceId: role.id,
+      summary: `Cloned role ${sourceRole.name} into ${role.name}`,
+      metadata: { sourceRoleId: sourceRole.id, permissionKeys }
+    }, tx);
+
+    return normalizeRole(role as RoleWithPermissionsRow);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 20_000, timeout: 60_000 });
 };
 
 export const deleteRole = async (req: Request) => {
