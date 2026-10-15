@@ -424,6 +424,7 @@ export const listPaymentRequestsController = async (
     await listPaymentRequests(
       req.organizationId!,
       req.query as unknown as PaymentRequestListQuery,
+      req.user!,
     ),
   );
 export const createPaymentRequestController = async (
@@ -447,7 +448,7 @@ export const getPaymentRequestController = async (
   sendSuccess(
     res,
     "Payment request retrieved",
-    await getPaymentRequest(req.organizationId!, req.params.id),
+    await getPaymentRequest(req.organizationId!, req.params.id, req.user!),
   );
 export const approvePaymentRequestController = async (
   req: Request,

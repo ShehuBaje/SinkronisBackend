@@ -8,6 +8,7 @@ import { badRequest, conflict, forbidden, notFound, serviceUnavailable } from ".
 import { prisma } from "../../core/prisma";
 import { safeEmailDeliveryError } from "../../core/email-security";
 import { createAuditLog } from "../admin/admin.audit";
+import { restrictedPermissions } from "../auth/permissions";
 import { forgotPassword } from "../auth/auth.service";
 import { sendTenantAdminInvitationEmail, sendTenantCheckInEmail, workspaceInvitationSetupUrl } from "../auth/auth.mailer";
 import { snapshotTenantModuleUsage } from "../telemetry/telemetry.service";
@@ -767,7 +768,7 @@ export const createPlatformTenant = async (body: unknown, platformAdmin: AuthUse
     const slug = await nextTenantSlug(tx, payload.companyName);
     const organization = await tx.organization.create({ data: { name: payload.companyName, slug, email: payload.adminEmail, country: payload.country, industry: payload.industry, status: "ACTIVE", currency: "NGN" } });
     const role = await tx.role.create({ data: { organizationId: organization.id, name: "Owner", description: "Tenant organization owner", isSystem: true } });
-    const tenantPermissions = await tx.permission.findMany({ where: { key: { not: { startsWith: "platform:" } } }, select: { id: true } });
+    const tenantPermissions = await tx.permission.findMany({ where: { AND: [{ key: { not: { startsWith: "platform:" } } }, { key: { notIn: [...restrictedPermissions] } }] }, select: { id: true } });
     await tx.rolePermission.createMany({ data: tenantPermissions.map((permission) => ({ roleId: role.id, permissionId: permission.id })), skipDuplicates: true });
     const [firstName, ...lastParts] = payload.adminEmail.split("@")[0].split(/[._-]+/).filter(Boolean);
     const admin = await tx.user.create({ data: { organizationId: organization.id, roleId: role.id, email: payload.adminEmail, firstName: firstName || "Tenant", lastName: lastParts.join(" ") || "Admin", passwordHash: temporaryPasswordHash, isActive: true } });

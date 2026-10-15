@@ -1861,6 +1861,7 @@ model PayrollRun {
   processedEmployeeCount    Int                            @default(0)
   failedEmployeeCount       Int                            @default(0)
   calculationInput          Json?
+  createdById               String?
   failureReason             String?                        @db.Text
   processingHeartbeatAt     DateTime?
   totalGross                Decimal                        @default(0.00) @db.Decimal(14, 2)
@@ -1887,6 +1888,7 @@ model PayrollRun {
   createdAt                 DateTime                       @default(now())
   updatedAt                 DateTime                       @updatedAt
   organization              Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "PayrollRun_organizationId_fkey")
+  createdBy                 User?                          @relation("PayrollRunCreatedBy", fields: [organizationId, createdById], references: [organizationId, id], onDelete: Restrict, onUpdate: Cascade, map: "PayrollRun_org_createdBy_fkey")
   payslip                   Payslip[]
   payeePayments             PayeePayment[]
   loanRepayments            LoanRepayment[]
@@ -1903,6 +1905,7 @@ model PayrollRun {
   @@unique([organizationId, id], map: "PayrollRun_organizationId_id_key")
   @@unique([organizationId, replacesPayrollRunId], map: "PayrollRun_org_replaces_key")
   @@index([organizationId, status], map: "PayrollRun_organizationId_status_idx")
+  @@index([organizationId, createdById], map: "PayrollRun_org_createdBy_idx")
   @@index([organizationId, periodEnd], map: "PayrollRun_organizationId_periodEnd_idx")
   @@index([organizationId, revisionRootRunId, revisionNumber], map: "PayrollRun_org_revision_idx")
   @@map("PayrollRun")
@@ -2601,6 +2604,7 @@ model User {
   accountingExportJobs                                                                AccountingExportJob[]
   submittedLegacyLoanVerifications                                                    LegacyLoanVerification[]          @relation("LegacyLoanVerificationSubmittedBy")
   confirmedLegacyLoanVerifications                                                    LegacyLoanVerification[]          @relation("LegacyLoanVerificationConfirmedBy")
+  createdPayrollRuns                                                                  PayrollRun[]                       @relation("PayrollRunCreatedBy")
 
   @@unique([organizationId, email], map: "User_organizationId_email_key")
   @@unique([organizationId, id], map: "User_organizationId_id_key")

@@ -32,6 +32,7 @@ import { processSubscriptionPaystackWebhook } from "../admin/admin.service";
 import { claimPaystackTransferWebhook } from "../../core/paystack-transfer-webhook";
 import { assertFinancialCurrency } from "../../core/wallet-integrity";
 import { assertIncidentWalletMutationAllowed } from "../../core/payroll-wallet-incident-pause";
+import { assertCurrentPermission, assertIndependentFinancialActor, financialActionEligibility } from "../../core/financial-approval-policy";
 import { claimWalletFundingRecovery, inboundRecoveryDelayMs, releaseWalletFundingRecovery } from "../../core/inbound-payment-recovery";
 import type {
   AccountingListQuery,
@@ -1892,17 +1893,22 @@ const paymentRequestInclude = {
     select: { id: true, reference: true, name: true, clientId: true },
   },
 };
-const paymentRequestOwned = async (organizationId: string, id: string) => {
-  const row = await prisma.paymentRequest.findFirst({
+const paymentRequestOwned = async (organizationId: string, id: string, client: Prisma.TransactionClient | typeof prisma = prisma) => {
+  const row = await client.paymentRequest.findFirst({
     where: { id, organizationId },
     include: paymentRequestInclude,
   });
   if (!row) throw notFound("Payment request not found");
   return row;
 };
+const paymentRequestDto = (row: Awaited<ReturnType<typeof paymentRequestOwned>>, user?: AuthUser) => {
+  const eligibility = financialActionEligibility({ creatorId: row.requesterUserId, actorId: user?.id ?? "", status: row.status, canApprove: Boolean(user?.permissions.includes("accounting:payments:approve")), canExecute: Boolean(user?.permissions.includes("accounting:payments:approve") && user.permissions.includes("accounting:wallets:update")), decisionStatus: "PENDING" });
+  return { ...row, amount: amount(row.amount), bankDetails: { bankName: row.bankName, accountName: row.accountName, accountNumber: row.accountNumber ? `****${row.accountNumber.slice(-4)}` : null }, status: row.status === "PAID" ? "COMPLETED" : row.status === "REJECTED" ? "DECLINED" : row.status, ...eligibility };
+};
 export const listPaymentRequests = async (
   organizationId: string,
   query: PaymentRequestListQuery,
+  user: AuthUser,
 ) => {
   const where: Prisma.PaymentRequestWhereInput = {
     organizationId,
@@ -1951,23 +1957,7 @@ export const listPaymentRequests = async (
       totalCompleted: amount(completed._sum.amount),
       declined,
     },
-    requests: rows.map((row) => ({
-      ...row,
-      amount: amount(row.amount),
-      bankDetails: {
-        bankName: row.bankName,
-        accountName: row.accountName,
-        accountNumber: row.accountNumber
-          ? `****${row.accountNumber.slice(-4)}`
-          : null,
-      },
-      status:
-        row.status === "PAID"
-          ? "COMPLETED"
-          : row.status === "REJECTED"
-            ? "DECLINED"
-            : row.status,
-    })),
+    requests: rows.map((row) => paymentRequestDto(row, user)),
     pagination: pagination(query.page, query.limit, total),
   };
 };
@@ -2024,8 +2014,8 @@ export const createPaymentRequest = async (
       },
     },
   });
-  const row = await prisma.paymentRequest.create({
-    data: {
+  const row = await prisma.$transaction(async (tx) => {
+    const created = await tx.paymentRequest.create({ data: {
       organizationId,
       title: input.title,
       description: input.description,
@@ -2042,43 +2032,30 @@ export const createPaymentRequest = async (
       bankCode: requester?.employee?.bankCode,
       accountNumber: requester?.employee?.bankAccountNumber,
       accountName: requester?.employee?.bankAccountName,
-    },
+    } });
+    await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_CREATED", "PAYMENT_REQUEST", created.id, `Created payment request ${created.title}`, undefined, tx);
+    return created;
   });
-  await audit(
-    organizationId,
-    user,
-    "ACCOUNTING_PAYMENT_REQUEST_CREATED",
-    "PAYMENT_REQUEST",
-    row.id,
-    `Created payment request ${row.title}`,
-  );
   return paymentRequestOwned(organizationId, row.id);
 };
-export const getPaymentRequest = paymentRequestOwned;
+export const getPaymentRequest = async (organizationId: string, id: string, user: AuthUser) => paymentRequestDto(await paymentRequestOwned(organizationId, id), user);
 export const approvePaymentRequest = async (
   organizationId: string,
   id: string,
   _input: PaymentRequestDecisionInput,
   user: AuthUser,
 ) => {
-  const row = await paymentRequestOwned(organizationId, id);
-  if (row.status !== "PENDING")
-    throw conflict("Only pending payment requests can be approved");
-  const claimed = await prisma.paymentRequest.updateMany({
-    where: { id, organizationId, status: "PENDING" },
-    data: { status: "APPROVED", approvedBy: user.id, approvedAt: new Date() },
-  });
-  if (claimed.count !== 1) throw conflict("Payment request has already been decided");
-  const updated = await paymentRequestOwned(organizationId, id);
-  await audit(
-    organizationId,
-    user,
-    "ACCOUNTING_PAYMENT_REQUEST_APPROVED",
-    "PAYMENT_REQUEST",
-    id,
-    `Approved payment request ${row.title}`,
-  );
-  return updated;
+  assertCurrentPermission(user, "accounting:payments:approve");
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM PaymentRequest WHERE id = ${id} AND organizationId = ${organizationId} FOR UPDATE`;
+    const row = await paymentRequestOwned(organizationId, id, tx);
+    if (row.status !== "PENDING") throw conflict("Only pending payment requests can be approved", { errorCode: "FINANCIAL_TRANSACTION_ALREADY_DECIDED" });
+    assertIndependentFinancialActor(row.requesterUserId, user.id, "DECISION");
+    const claimed = await tx.paymentRequest.updateMany({ where: { id, organizationId, status: "PENDING" }, data: { status: "APPROVED", approvedBy: user.id, approvedAt: new Date() } });
+    if (claimed.count !== 1) throw conflict("Payment request has already been decided", { errorCode: "FINANCIAL_APPROVAL_STALE" });
+    await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_APPROVED", "PAYMENT_REQUEST", id, `Approved payment request ${row.title}`, { requesterUserId: row.requesterUserId }, tx);
+    return paymentRequestOwned(organizationId, id, tx);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 10_000, timeout: 60_000 });
 };
 export const declinePaymentRequest = async (
   organizationId: string,
@@ -2086,30 +2063,17 @@ export const declinePaymentRequest = async (
   input: PaymentRequestDecisionInput,
   user: AuthUser,
 ) => {
-  const row = await paymentRequestOwned(organizationId, id);
-  if (row.status !== "PENDING")
-    throw conflict("Only pending payment requests can be declined");
-  const claimed = await prisma.paymentRequest.updateMany({
-    where: { id, organizationId, status: "PENDING" },
-    data: {
-      status: "REJECTED",
-      declinedBy: user.id,
-      declinedAt: new Date(),
-      decisionReason: input.reason,
-    },
-  });
-  if (claimed.count !== 1) throw conflict("Payment request has already been decided");
-  const updated = await paymentRequestOwned(organizationId, id);
-  await audit(
-    organizationId,
-    user,
-    "ACCOUNTING_PAYMENT_REQUEST_DECLINED",
-    "PAYMENT_REQUEST",
-    id,
-    `Declined payment request ${row.title}`,
-    { reason: input.reason ?? null },
-  );
-  return updated;
+  assertCurrentPermission(user, "accounting:payments:approve");
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM PaymentRequest WHERE id = ${id} AND organizationId = ${organizationId} FOR UPDATE`;
+    const row = await paymentRequestOwned(organizationId, id, tx);
+    if (row.status !== "PENDING") throw conflict("Only pending payment requests can be declined", { errorCode: "FINANCIAL_TRANSACTION_ALREADY_DECIDED" });
+    assertIndependentFinancialActor(row.requesterUserId, user.id, "DECISION");
+    const claimed = await tx.paymentRequest.updateMany({ where: { id, organizationId, status: "PENDING" }, data: { status: "REJECTED", declinedBy: user.id, declinedAt: new Date(), decisionReason: input.reason } });
+    if (claimed.count !== 1) throw conflict("Payment request has already been decided", { errorCode: "FINANCIAL_APPROVAL_STALE" });
+    await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_DECLINED", "PAYMENT_REQUEST", id, `Declined payment request ${row.title}`, { reason: input.reason ?? null, requesterUserId: row.requesterUserId }, tx);
+    return paymentRequestOwned(organizationId, id, tx);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 10_000, timeout: 60_000 });
 };
 export const disbursePaymentRequest = async (
   organizationId: string,
@@ -2117,6 +2081,8 @@ export const disbursePaymentRequest = async (
   input: PaymentRequestDisbursementInput,
   user: AuthUser,
 ) => {
+  assertCurrentPermission(user, "accounting:payments:approve");
+  assertCurrentPermission(user, "accounting:wallets:update");
   const current = await paymentRequestOwned(organizationId, id);
   if (current.status === "PAID") {
     const settlement = await prisma.financialSettlement.findFirst({
@@ -2135,7 +2101,9 @@ export const disbursePaymentRequest = async (
     return { request: current, transaction };
   }
   if (current.status !== "APPROVED")
-    throw conflict("Only approved payment requests can be disbursed");
+    throw conflict("Only approved payment requests can be disbursed", { errorCode: "FINANCIAL_APPROVAL_REQUIRED" });
+  assertIndependentFinancialActor(current.requesterUserId, user.id, "EXECUTION");
+  if (env.FINANCIAL_APPROVAL_ENFORCEMENT_MODE === "MAKER_CHECKER" && !current.approvedBy) throw conflict("Independent approval is required before payment initiation", { errorCode: "FINANCIAL_APPROVAL_REQUIRED" });
   if (!current.bankName || !current.accountNumber || !current.accountName)
     throw conflict("Approved bank destination is incomplete");
   if (input.settlementMethod === "PROVIDER" && !current.bankCode) throw conflict("Provider settlement requires an authoritative beneficiary bank code");
@@ -2151,14 +2119,20 @@ export const disbursePaymentRequest = async (
   const manual = await completeManualSettlement(source, { idempotencyKey: input.idempotencyKey, externalReference: input.externalReference!, settledAt: input.settledAt!, note: input.note! }, async (tx, settlement) => {
     const claimed = await tx.paymentRequest.updateMany({ where: { id, organizationId, status: "APPROVED" }, data: { status: "PAID", disbursementReference: settlement.internalReference, disbursedAt: settlement.settledAt } });
     if (claimed.count !== 1) throw conflict("Payment request has already been settled");
+    await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_MANUALLY_SETTLED", "PAYMENT_REQUEST", id, `Recorded external settlement for ${current.title}`, { settlementId: settlement.id, externalReference: input.externalReference, requesterUserId: current.requesterUserId, approvedBy: current.approvedBy, paymentOperatorId: user.id }, tx);
     return tx.paymentRequest.findUniqueOrThrow({ where: { id } });
   });
-  await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_MANUALLY_SETTLED", "PAYMENT_REQUEST", id, `Recorded external settlement for ${current.title}`, { settlementId: manual.settlement.id, externalReference: input.externalReference });
   return { request: manual.result ?? await paymentRequestOwned(organizationId, id), settlement: settlementDto(manual.settlement), idempotentReplay: manual.idempotentReplay };
 
 };
 
 export const finalizeAccountingSettlementOtp = async (organizationId: string, settlementId: string, otp: string, user: AuthUser) => {
+  assertCurrentPermission(user, "accounting:payments:approve");
+  assertCurrentPermission(user, "accounting:wallets:update");
+  const attempt = await prisma.financialSettlement.findFirst({ where: { id: settlementId, organizationId, sourceType: "ACCOUNTING_PAYMENT_REQUEST" }, select: { sourceId: true } });
+  if (!attempt) throw notFound("Accounting settlement not found");
+  const request = await paymentRequestOwned(organizationId, attempt.sourceId);
+  assertIndependentFinancialActor(request.requesterUserId, user.id, "EXECUTION");
   try {
     const settlement = await finalizeProviderSettlementOtp(organizationId, settlementId, otp);
     await audit(organizationId, user, "ACCOUNTING_PROVIDER_TRANSFER_OTP_FINALIZATION_ATTEMPTED", "FINANCIAL_SETTLEMENT", settlement.id, "Submitted provider transfer OTP for finalization", { provider: "PAYSTACK", outcome: "ACCEPTED_FOR_PROCESSING", providerStatus: settlement.providerStatus });
