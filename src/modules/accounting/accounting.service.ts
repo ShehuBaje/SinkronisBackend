@@ -2036,7 +2036,7 @@ export const createPaymentRequest = async (
     await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_CREATED", "PAYMENT_REQUEST", created.id, `Created payment request ${created.title}`, undefined, tx);
     return created;
   });
-  return paymentRequestOwned(organizationId, row.id);
+  return paymentRequestDto(await paymentRequestOwned(organizationId, row.id), user);
 };
 export const getPaymentRequest = async (organizationId: string, id: string, user: AuthUser) => paymentRequestDto(await paymentRequestOwned(organizationId, id), user);
 export const approvePaymentRequest = async (
@@ -2046,7 +2046,7 @@ export const approvePaymentRequest = async (
   user: AuthUser,
 ) => {
   assertCurrentPermission(user, "accounting:payments:approve");
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM PaymentRequest WHERE id = ${id} AND organizationId = ${organizationId} FOR UPDATE`;
     const row = await paymentRequestOwned(organizationId, id, tx);
     if (row.status !== "PENDING") throw conflict("Only pending payment requests can be approved", { errorCode: "FINANCIAL_TRANSACTION_ALREADY_DECIDED" });
@@ -2056,6 +2056,7 @@ export const approvePaymentRequest = async (
     await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_APPROVED", "PAYMENT_REQUEST", id, `Approved payment request ${row.title}`, { requesterUserId: row.requesterUserId }, tx);
     return paymentRequestOwned(organizationId, id, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 10_000, timeout: 60_000 });
+  return paymentRequestDto(result, user);
 };
 export const declinePaymentRequest = async (
   organizationId: string,
@@ -2064,7 +2065,7 @@ export const declinePaymentRequest = async (
   user: AuthUser,
 ) => {
   assertCurrentPermission(user, "accounting:payments:approve");
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM PaymentRequest WHERE id = ${id} AND organizationId = ${organizationId} FOR UPDATE`;
     const row = await paymentRequestOwned(organizationId, id, tx);
     if (row.status !== "PENDING") throw conflict("Only pending payment requests can be declined", { errorCode: "FINANCIAL_TRANSACTION_ALREADY_DECIDED" });
@@ -2074,6 +2075,7 @@ export const declinePaymentRequest = async (
     await audit(organizationId, user, "ACCOUNTING_PAYMENT_REQUEST_DECLINED", "PAYMENT_REQUEST", id, `Declined payment request ${row.title}`, { reason: input.reason ?? null, requesterUserId: row.requesterUserId }, tx);
     return paymentRequestOwned(organizationId, id, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, maxWait: 10_000, timeout: 60_000 });
+  return paymentRequestDto(result, user);
 };
 export const disbursePaymentRequest = async (
   organizationId: string,

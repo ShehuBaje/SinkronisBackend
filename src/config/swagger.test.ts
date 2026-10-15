@@ -459,3 +459,20 @@ test("Payroll Payee create, update and bulk contracts publish Nigerian phone nor
   assert.equal(patch.$ref, "#/components/schemas/PayrollPayeeUpdateRequest");
   assert.match(paths["/api/v1/payroll/payees/bulk"].post.responses["400"].description, /row\/field\/code\/message/i);
 });
+
+test("FAS-2.1 publishes actor-specific financial action eligibility in actual response envelopes", () => {
+  const spec = openApiSpec as any;
+  const payRun = spec.components.schemas.PayrollPayRun;
+  for (const field of ["canApprove", "canReject", "canInitiatePayment", "approvalBlockedReason", "requiresIndependentApprover"]) assert.ok(payRun.properties[field]);
+  assert.ok(payRun.properties.availableActions.items.enum.includes("INITIATE_PAYMENT"));
+
+  const paths = spec.paths;
+  const requestRef = "#/components/schemas/AccountingPaymentRequest";
+  const responseRef = (path: string, method: string, status = "200") => paths[path][method].responses[status].content["application/json"].schema.properties.data;
+  assert.equal(responseRef("/api/v1/accounting/payment-requests", "post", "201").$ref, requestRef);
+  assert.equal(responseRef("/api/v1/accounting/payment-requests/{id}", "get").$ref, requestRef);
+  assert.equal(responseRef("/api/v1/accounting/payment-requests/{id}/approve", "post").$ref, requestRef);
+  assert.equal(responseRef("/api/v1/accounting/payment-requests/{id}/decline", "post").$ref, requestRef);
+  assert.equal(responseRef("/api/v1/accounting/payment-requests", "get").properties.requests.items.$ref, requestRef);
+  assert.equal(responseRef("/api/v1/accounting/payment-requests/{id}/disburse", "post").properties.request.$ref, requestRef);
+});

@@ -4100,6 +4100,27 @@ const enrichOpenApiExamples = (spec: OpenApiRecord) => {
       },
     };
   }
+  const successEnvelope = (data: OpenApiRecord) => ({
+    type: "object",
+    required: ["success", "message", "data"],
+    properties: { success: { type: "boolean" }, message: { type: "string" }, data },
+  });
+  const paymentRequestRef = { $ref: "#/components/schemas/AccountingPaymentRequest" };
+  const paymentRequestOperations = [
+    [`${env.API_PREFIX}/accounting/payment-requests`, "post"],
+    [`${env.API_PREFIX}/accounting/payment-requests/{id}`, "get"],
+    [`${env.API_PREFIX}/accounting/payment-requests/{id}/approve`, "post"],
+    [`${env.API_PREFIX}/accounting/payment-requests/{id}/decline`, "post"],
+  ] as const;
+  for (const [path, method] of paymentRequestOperations) {
+    const operation = spec.paths?.[path]?.[method];
+    const response = operation?.responses?.[method === "post" && path === `${env.API_PREFIX}/accounting/payment-requests` ? "201" : "200"];
+    if (response) response.content = { "application/json": { schema: successEnvelope(paymentRequestRef), example: { success: true, message: response.description, data: { id: "payment_request_id", status: path.endsWith("/decline") ? "DECLINED" : path.endsWith("/approve") ? "APPROVED" : "PENDING", amount: 100, canApprove: false, canReject: false, canInitiatePayment: path.endsWith("/approve"), approvalBlockedReason: null, requiresIndependentApprover: true } } } };
+  }
+  const paymentRequestList = spec.paths?.[`${env.API_PREFIX}/accounting/payment-requests`]?.get?.responses?.["200"];
+  if (paymentRequestList) paymentRequestList.content = { "application/json": { schema: successEnvelope({ type: "object", required: ["summary", "requests", "pagination"], properties: { summary: { type: "object" }, requests: { type: "array", items: paymentRequestRef }, pagination: { type: "object" } } }), example: { success: true, message: "Payment requests retrieved", data: { summary: { pendingApproval: 1, totalCompleted: 0, declined: 0 }, requests: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } } } } };
+  const paymentRequestDisbursement = spec.paths?.[`${env.API_PREFIX}/accounting/payment-requests/{id}/disburse`]?.post?.responses?.["200"];
+  if (paymentRequestDisbursement) paymentRequestDisbursement.content = { "application/json": { schema: successEnvelope({ type: "object", required: ["request"], properties: { request: paymentRequestRef, settlement: { type: "object", nullable: true }, transaction: { type: "object", nullable: true }, idempotentReplay: { type: "boolean" } } }), example: { success: true, message: "Payment request disbursed", data: { request: { id: "payment_request_id", status: "COMPLETED", canApprove: false, canReject: false, canInitiatePayment: false, approvalBlockedReason: null, requiresIndependentApprover: true }, settlement: {}, idempotentReplay: false } } } };
   return spec;
 };
 

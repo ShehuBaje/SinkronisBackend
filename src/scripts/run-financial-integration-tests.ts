@@ -17,7 +17,8 @@ const files = [
   'src/financial-tests/legacy-loan-verification-foundation.integration.test.ts',
   'src/financial-tests/legacy-loan-verification-confirmation.integration.test.ts',
   'src/financial-tests/admin-restricted-permission-atomicity.integration.test.ts',
-  'src/financial-tests/financial-approval-security.integration.test.ts'
+  'src/financial-tests/financial-approval-security.integration.test.ts',
+  'src/financial-tests/financial-approval-http-contract.integration.test.ts'
 ];
 if (!process.env.FINANCIAL_TEST_PATTERN || /TEST_E2E/i.test(process.env.FINANCIAL_TEST_PATTERN)) files.push('src/financial-tests/test-e2e-infrastructure.integration.test.ts');
 args.push(...files);

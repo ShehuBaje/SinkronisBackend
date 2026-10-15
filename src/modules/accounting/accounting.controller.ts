@@ -481,17 +481,19 @@ export const declinePaymentRequestController = async (
 export const disbursePaymentRequestController = async (
   req: Request,
   res: Response,
-) =>
-  sendSuccess(
+) => {
+  const result = await disbursePaymentRequest(
+    req.organizationId!,
+    req.params.id,
+    req.body as PaymentRequestDisbursementInput,
+    req.user!,
+  );
+  return sendSuccess(
     res,
     "Payment request disbursed",
-    await disbursePaymentRequest(
-      req.organizationId!,
-      req.params.id,
-      req.body as PaymentRequestDisbursementInput,
-      req.user!,
-    ),
+    { ...result, request: await getPaymentRequest(req.organizationId!, req.params.id, req.user!) },
   );
+};
 
 export const listExpensesController = async (req: Request, res: Response) =>
   sendSuccess(
